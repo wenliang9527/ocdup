@@ -1,0 +1,451 @@
+# Ocdup 设计计划方案
+
+| 项目 | 内容 |
+|---|---|
+| 文档版本 | v0.3（范围收敛版） |
+| 日期 | 2026-09-30 |
+| 状态 | **阶段一进行中**：控制层 + 烧录 + 读内存已实现并验证；断点/观察点/执行控制/符号层/L3 明确后置 |
+| 读者 | 项目负责人（硬件/嵌入式）、后续实现者（Agent 或工程师） |
+| 上游参考 | [microhenrio/openocd-mcp](https://github.com/microhenrio/openocd-mcp) v0.4.5 架构（已逐文件审查） |
+
+---
+
+## 变更记录
+
+| 版本 | 变更 |
+|---|---|
+| v0.3 | **范围收敛为「下载 + 读指定地址」**：断点/观察点/执行控制/条件断点/符号层（ELF/SVD）/L3 协议字典/串口协同/watch 全部后置（见第 12 节）；实现层落地 TclRpcClient、OpenOcdLauncher、BackendSession、PermissionGate、ConfigStore 与 6 个工具；配置文件新增 `command_timeout_seconds` / `memory_read_max_bytes`，权限项支持 `permissions` 嵌套块；来源追踪改为按「JSON 属性是否存在」判定；清除 v0.2 残留的 Python 表述 |
+| v0.2 | Q1 定案：C# / .NET 8；探针画像：AT-Link（主力，CMSIS-DAP）+ ST-Link / J-Link / DAPLink；新增「阶段一：烧录闭环先行」（见第 12 节）；第 11 节项目结构改为 C# 形态 |
+| v0.1 | 初稿 |
+
+---
+
+## 1. 能力定义（CAPABILITY）
+
+**一句话**：Ocdup 是一个运行在 PC 侧的 OpenOCD 门面（MCP 服务器），把「连接探针 → 烧录固件 → 按地址读回数据」封装成 MCP 工具，让任何 MCP 客户端（DSH、Claude Code、Cursor 等）都能用自然语言驱动硬件，并与既有串口工具链（acccom）协同。
+
+**本轮（v0.3）范围**——只做两件事，做到真机可用：
+
+1. **下载**：`flash_write` 把构建产物烧进目标 flash（写 + 可选校验 + 可选复位运行）；`flash_info` 报告 flash 布局。
+2. **读指定地址的数据**：`read_memory` 按地址与宽度读回目标内存。
+
+支撑这两件事的是**控制层**（TclRpcClient / OpenOcdLauncher / BackendSession）与**权限闸**（PermissionGate）——它们是后续所有能力的地基，本轮必须打牢。
+
+**明确后置**（本轮不做，见第 12 节后置里程碑）：断点/观察点/条件断点、halt/resume/step/reset 执行控制、符号层（ELF 变量名、SVD 外设寄存器）、L3 协议字典、`watch_variables`、`run_command` 逃生舱、与 acccom 的串口协同。
+
+**能力变化**：调试动作的发起方从「人手动敲 TCL / 点 IDE 按钮」变为「模型调用工具」；调试知识的载体从个人经验变为可版本化的项目配置与符号层（符号层后置）。
+
+---
+
+## 2. 背景与参考架构提炼
+
+对 openocd-mcp 的源码审查（10 个文件，约 92KB Python）得出四个被实战验证过的设计决策，Ocdup 的架构直接继承它们：
+
+| # | 决策 | 做法 | 来源 |
+|---|---|---|---|
+| 1 | **走干净的请求/响应控制通道** | 连 OpenOCD TCL-RPC 端口 6666 而非 telnet 4444：telnet 会回显、打提示符、混入异步日志；TCL-RPC 每条命令/响应用单个 `0x1a` 分隔，命令包一层 `capture {…}` 收回日志文本 | `openocd.py` |
+| 2 | **条件断点在服务器侧驱动** | OpenOCD 的 `halted` 事件里调 `resume` 会被忽略，所以服务器侧存 `地址→TCL条件` 字典，`resume` 时轮询：等 halt → 读 PC → `echo [eval {cond}]` → 假则续跑、真则停（**本轮后置**） | `server.py` |
+| 3 | **权限闸是一等公民** | `read_only` 总闸 + 分能力开关 + 文件路径白名单 + 大小上限；被拦时返回 `BLOCKED: … See show_config`（报错即教模型下一步） | `config.py` |
+| 4 | **自 provisioning，许可证洁癖** | GPL 的 OpenOCD 二进制不进发布产物；首次使用时从 xPack 下载、**校验钉死的 SHA-256**、缓存到各平台用户数据目录（**本轮只实现解析顺序的前两步**，下载后置） | `provision.py` |
+
+同时继承它的**项目无关性**：interface_cfg / target_cfg 等全部外置到项目配置文件，服务器本身不绑定任何芯片——这是「任何板子都能用」的关键。
+
+Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留这些机制，但工具集按自己的工具链定制、按阶段收敛。
+
+---
+
+## 3. 总体架构
+
+```
+┌────────────────────────────────────────────────────────┐
+│  MCP 客户端层（DSH / Claude Code / Cursor / …）          │
+│    stdio 传输（本地） ｜ 预留 Streamable HTTP（远程）      │
+├────────────────────────────────────────────────────────┤
+│  接入层  ModelContextProtocol SDK：工具注册 / schema / 分发│
+│          （Program.cs：Host + WithStdioServerTransport）  │
+├────────────────────────────────────────────────────────┤
+│  工具层  Tools/*.cs：每个 [McpServerTool] = 一个能力      │
+│          已实现：connect / status / show_config /         │
+│                  flash_info / flash_write / read_memory   │
+├──────────────┬────────────────┬────────────────────────┤
+│ 控制层        │ 权限层          │ 配置层                  │
+│ BackendSession│ PermissionGate │ ConfigStore             │
+│ TclRpcClient  │ read_only      │ 机器默认 → ocd.json      │
+│ (TCL-RPC 6666)│ 分能力开关      │ → 运行时 → 工具参数      │
+│ OpenOcdLauncher│ 路径白名单     │ （来源追踪）             │
+│ (子进程/端口) │ 大小上限        │                         │
+├──────────────┴────────────────┴────────────────────────┤
+│  被控对象  OpenOCD（TCL-RPC 6666）→ 探针 → 目标 MCU        │
+│  协同对象  acccom 串口栈（独立 MCP server，松耦合，后置）   │
+└────────────────────────────────────────────────────────┘
+```
+
+**分层职责**：
+
+| 层 | 职责 | 不许做的事 |
+|---|---|---|
+| 接入层 | 传输、schema 校验、工具分发 | 不含任何硬件逻辑 |
+| 工具层 | one tool = one capability；docstring 写给模型看 | 不直接拼协议帧 |
+| 控制层 | 与被控进程的所有 I/O；请求串行化（锁） | 不解析业务语义 |
+| 权限层 | 所有变更类操作的闸门（前置检查） | 不做「事后审计」式拦截 |
+| 配置层 | 分层合并与来源追踪（单一入口 + 可重载） | 不写入任何配置（只读合并） |
+
+**关键不变量**（实现时逐条保持，测试逐条覆盖）：
+
+1. 控制通道的每个请求必须串行化；响应必须能和无交互日志区分开。
+2. 任何会写目标（memory/register/flash/erase/raw）的工具，**第一行**就是权限检查。
+3. 被拦截的操作返回的字符串必须包含「如何解除拦截」的指引。
+4. 项目配置（芯片型号、探针、ELF/SVD 路径）不得硬编码在任何模块里。
+5. 服务器退出时必须回收自己启动的子进程，且不得杀掉非自己启动的实例。
+
+---
+
+## 4. 核心机制设计
+
+### 4.1 控制通道选型
+
+优先级：**TCP 命令端口 > REST > 可解析输出的 CLI > 交互式终端**。判据是「响应干净、不被异步日志污染」。OpenOCD 的 TCL-RPC（6666）即标准答案。
+
+实现（`Backend/TclRpcClient.cs`）：
+
+- 发送 `capture { <cmd> }` + `0x1a`，读到 `0x1a` 为止（一条命令 ↔ 一条响应）。
+- 响应字节先累积到 `MemoryStream` 再统一 UTF-8 解码——避免多字节字符被 TCP 分段切裂。
+- `SemaphoreSlim(1,1)` 串行化命令（C1）；并发调用被排队而不是交错。
+- **连接超时与命令超时分离**：握手 5s，命令用 `command_timeout_seconds`（默认 60s）。烧录一条 `program` 可能跑几十秒，不能用握手超时去掐它。
+- 参数引用见 `Backend/Tcl.cs`：优先大括号字面量 `{…}`（TCL 对大括号内不做替换，Windows 路径的反斜杠与空格安全）；仅当值含 `{`/`}` 时退回双引号形式并转义 `\ " $ [ ]`。
+
+### 4.2 工具设计规范
+
+1. **docstring 写给模型看**：何时调用、参数形态（`hex address, e.g. '0x20000000'`）、失败时怎么办。
+2. **返回格式化文本**：带上下文的行式输出，人和模型都能直接读；不返回裸 JSON。
+3. **报错带行动指引**：非法参数（`ERROR: address 'hello' is not a hex value…`）、权限（`BLOCKED: … See show_config.`）、后端（`ERROR: … call connect and retry.`）。
+4. **逃生舱后置**：`run_command` 原始命令通道（挂在 `allow_raw_command` 后）留到后续阶段。
+
+### 4.3 分层配置
+
+```
+机器默认（只含探针等本机固定项，当前为空）
+  → 项目文件 ocd.json（CWD 自动加载；OCD_CONFIG 可指路径）
+  → 运行时修改（ConfigStore.Reload；configure/set_permissions 工具后置）
+  → 单个工具显式参数（最高优先）
+```
+
+- **单一入口**：所有工具从 `ConfigStore.Instance.Current` 取配置，不允许各自 `Load()`——否则会出现「有的工具用启动快照、有的每次重读」的时机不一致。
+- **来源追踪按「属性是否存在」判定**：显式写 `"read_only": false` 也会标为来自 ocd.json，而不是错标成默认值（v0.2 实现的缺陷，v0.3 修正）。
+- `show_config(reload: true)` 可在编辑 ocd.json 后原地重读，无需重启客户端。
+- **相对路径基准 = ocd.json 所在目录**（Q7 定案）；例外：interface_cfg / target_cfg 是 OpenOCD scripts 目录下的脚本名，由 `-s` 参数解析，不走本地路径解析。
+
+### 4.4 权限与安全
+
+| 权限项 | 默认 | 闸住的操作 | 状态 |
+|---|---|---|---|
+| `read_only` | false（总闸） | 以下全部 | ✅ 已实现 |
+| `allow_memory_write` | true | write_memory / write_register … | 闸就位，工具后置 |
+| `allow_flash` | true | flash_write | ✅ 已实现 |
+| `allow_flash_erase` | **false** | flash_erase_sector（破坏性，显式开启） | 闸就位，工具后置 |
+| `allow_raw_command` | true | run_command | 闸就位，工具后置 |
+| `flash_allowed_paths` | []（不限） | 烧录文件必须位于白名单目录内 | ✅ 已实现 |
+| `flash_max_bytes` | 0（不限） | 超过大小的烧录文件拒绝 | ✅ 已实现 |
+| `memory_read_max_bytes` | 4096 | 单次读回体积上限（防呆，不是安全边界） | ✅ 已实现 |
+
+- 拦截文案模板（`PermissionGate.Blocked`）：`BLOCKED: '<op>' is not permitted by the current safety settings ('<setting>'). To allow it, <如何开启>. See show_config.`
+- 设置途径（后者优先）：`ocd.json` 的 `permissions` 块（或顶层平铺同名字段）→ 环境变量 `OCD_READONLY=1`（⏸ 后置）→ `set_permissions` 工具（⏸ 后置；`flash_allowed_paths` 只走文件）。
+- 检查必须前置到操作第一步（C2）；被拦时**不得**触碰后端。
+- 路径白名单支持「目录」与「文件」两种写法；相对项以 ocd.json 目录为基准解析。
+
+### 4.5 进程生命周期
+
+实现（`Launcher/OpenOcdLauncher.cs`）：
+
+- **启动**：拼命令行 → `Process.Start`（用 `ArgumentList`，含空格的参数自动引用）→ **后台两个 Task 抽干 stdout/stderr**（否则管道填满会把 OpenOCD 挂死）→ 轮询端口等就绪（超时 15s）。
+- **重复启动防护**：先探测端口；已在运行（无论是谁启动的）就不重复拉起。
+- **启动失败诊断**：进程提前退出或超时，回报**近期输出**（rolling buffer 200 行）+ 一句「下一步怎么做」。
+- **退出**：`AppDomain.ProcessExit` 钩子 + `Dispose` 回收自己启动的进程（`Kill(entireProcessTree: true)`）；超时也回收，不留半死实例占着探针（C5）。
+- 命令行固定形态：`-s <scripts>` `-c bindto <host>` `-f <interface_cfg>` `[-c "transport select <t>"]` `[-f <target_cfg>]` `-c gdb_port 0` `-c telnet_port 0` `-c tcl_port <port>`——禁用 gdb/telnet 端口避免与其它工具抢 3333/4444，TCL-RPC 是唯一对外端口；`bindto` 保证只监听 localhost（C8）。
+
+### 4.6 自 provisioning
+
+- OpenOCD 二进制**不进发布产物**（GPL + 平台相关）。
+- 解析顺序：`OCD_BIN`/`OCD_SCRIPTS` 环境变量 → PATH（**✅ 已实现**）→ 随包分发 → 用户缓存目录 → 下载 + SHA-256 校验（⏸ 后置）。
+- 找不到二进制时给出可操作报错：`ERROR: no openocd executable found. Set OCD_BIN … or install OpenOCD and put it on PATH …`。
+
+---
+
+## 5. 功能设计（工具清单）
+
+图例：**✅ 已实现（v0.3）** ｜ ⏸ 后置（不在本轮范围）
+
+| 优先级 | 工具 | 用途 | 权限 | 状态 |
+|---|---|---|---|---|
+| P0 | `connect` | 连接控制通道；无监听时按配置自动拉起后端 | — | ✅ |
+| P0 | `status` | 后端是否运行、版本、target 列表（只读探测，不启动任何东西） | 只读 | ✅ |
+| P0 | `show_config` | 查看有效设置与每项来源（`reload=true` 重读磁盘） | — | ✅ |
+| **本轮** | `flash_info` | 列出 flash banks（驱动、基址、大小） | 只读 | ✅ |
+| **本轮** | `flash_write` | **下载**：烧录镜像（写 + 可选校验 + 可选复位运行） | read_only / allow_flash / 白名单 / 上限 | ✅ |
+| **本轮** | `read_memory` | **读指定地址**：按宽度读回目标内存 | 只读 + 体积上限 | ✅ |
+| P1 | `halt` / `resume` / `step` / `reset` | 执行控制 | 变更目标状态 | ⏸ |
+| P1 | `write_memory` / `write_register` | 存储器与寄存器写 | `allow_memory_write` | ⏸ |
+| P1 | `add_breakpoint` / `remove_breakpoint` / `list_breakpoints` | 断点管理 | — | ⏸ |
+| P1 | `add_conditional_breakpoint` | 条件断点（服务器侧驱动，见决策 2） | — | ⏸ |
+| P1 | `add_watchpoint` / `remove_watchpoint` | 数据观察点 | — | ⏸ |
+| P1 | `flash_erase_sector` | 擦除（破坏性） | `allow_flash_erase` | ⏸ |
+| P1 | `load_elf` / `read_variable` / `write_variable` / `list_variables` | 按名访问变量（符号层 L1） | 写操作走 memory 闸 | ⏸ |
+| P1 | `load_svd` / `read_peripheral_register` / … | 按名访问外设寄存器（L2，位域解码） | 同上 | ⏸ |
+| P1 | `run_command` | 原始命令逃生舱 | `allow_raw_command` | ⏸ |
+| P2 | `watch_variables` | 不停 CPU 的定时采样 | 只读 | ⏸ |
+| P2 | `set_permissions` | 运行时调整权限 | — | ⏸ |
+| P2 | 串口协同工具组 | 烧录后走 acccom 验证协议帧 | — | ⏸ |
+| P2 | `start_openocd` / `stop_openocd` / `install_openocd` | 后端进程与 provisioning 管理 | — | ⏸ |
+| P2 | L3 协议字典工具组 | `ping_req` → 字节模板 + 期望响应 | — | ⏸ |
+
+**本轮验收标准**：模型经 MCP 工具完成「连接 → 烧录 → 校验 → 复位运行」与「按地址读回数据」。
+
+**工具行为细节**：
+
+- `flash_write`：默认 `verify=true`、`reset=true`。命令序列为 `program <file> [verify] [<address>]`，成功后若 `reset=true` 再执行 `reset run`。若后端输出含 `Error:`/`failed`（保守判定），跳过 `reset run` 并提示失败可能；`.bin` 必须显式给 `address`（`.elf`/`.hex` 自带地址）。
+- `read_memory`：`mdb`/`mdh`/`mdw` 对应 `width=8/16/32`；返回 `read N x W-bit from 0xADDR (B bytes):` + 后端原始数据行。
+- `status`：只用 300ms 端口探测 + 已连通的 TCL-RPC 查询，**不启动**任何进程。
+
+---
+
+## 6. 接口设计
+
+### 6.1 工具约定
+
+- 命名：动词_名词，小写下划线；地址类参数一律 hex 字符串（`'0x20000000'`），避免 int 溢出与歧义（也接受不带 `0x` 前缀的 hex 与 `_` 分隔）。
+- schema：每个工具声明参数类型与必填项；枚举类参数（如 `width: 8|16|32`）在 docstring 给出合法值。
+- 返回：一律 `str`；成功带上下文，失败带下一步指引。
+- 工具输出用英文（面向模型与跨客户端一致性）；代码注释用中文。
+
+### 6.2 项目配置文件（`ocd.json`）
+
+放项目根（或用 `OCD_CONFIG` 指向）；仓库内提供 `ocd.json.example` 作为模板。完整字段：
+
+```json
+{
+  "interface_cfg": "interface/cmsis-dap.cfg",
+  "target_cfg": "target/at32f435xx.cfg",
+  "transport": "swd",
+  "host": "127.0.0.1",
+  "port": 6666,
+  "command_timeout_seconds": 60,
+  "permissions": {
+    "read_only": false,
+    "allow_memory_write": true,
+    "allow_flash": true,
+    "allow_flash_erase": false,
+    "allow_raw_command": true,
+    "flash_allowed_paths": ["build/"],
+    "flash_max_bytes": 1048576,
+    "memory_read_max_bytes": 4096
+  }
+}
+```
+
+- 权限项既可写在 `permissions` 块里（规范写法），也可写在顶层（同名字段）；**同名时嵌套块优先**。
+- 未知键被忽略；类型不符或超范围的值降级为默认值，并由 `show_config` 报 `WARNING`（配置文件坏不该让服务器起不来）。
+- 相对路径基准 = 本文件所在目录；`interface_cfg`/`target_cfg` 例外（见 4.3）。
+- 环境变量：`OCD_CONFIG`（配置文件路径）、`OCD_BIN`（openocd 可执行文件）、`OCD_SCRIPTS`（scripts 目录）。
+
+### 6.3 错误消息约定
+
+| 场景 | 返回形态 |
+|---|---|
+| 权限拦截 | `BLOCKED: '<op>' is not permitted by the current safety settings ('<setting>'). To allow it, <how>. See show_config.` |
+| 参数非法 | `ERROR: address 'hello' is not a hex value. Use a hex string like '0x20000000'.` |
+| 文件缺失 | `ERROR: '<resolved>' does not exist. Pass the path of the built image (.elf/.hex/.bin); relative paths are resolved against the ocd.json directory …` |
+| 后端未就绪 | `ERROR: nothing is listening on <host>:<port>. Call connect to start the backend …` |
+| 后端启动失败 | `ERROR: <binary> did not become ready: <原因>.` + `--- recent openocd output ---`（最后 200 行）+ 下一步建议 |
+| 控制通道中断 | `ERROR: the control channel failed while running '<cmd>': … The connection was reset; call connect and retry.` |
+
+---
+
+## 7. 符号层设计（⏸ 后置）
+
+三层名字映射，自底向上，**本轮不实现**，接口形态先定：
+
+| 层 | 数据源 | 提供 | 依赖 |
+|---|---|---|---|
+| L1 变量名 | ELF `.symtab`（`STT_OBJECT` 且地址非 0） | 变量名 → (地址, 字节数) | 自研 ELF 解析（C# 无 pyelftools 等价物） |
+| L2 外设寄存器 | CMSIS-SVD | `RCC.CR` → (地址, 位域表) | 自研 SVD 解析（XML） |
+| L3 协议字典（自有扩展） | 项目内的协议描述文件（帧名/ID/字段表） | `ping_req` → 字节模板 + 期望响应 | 自研 |
+
+- L3 是 Ocdup 相对参考项目的**主要增量**：把「你的板子的协议」变成一等公民，模型可以直接说「发 ping_req 然后等 ack」而不是拼字节。
+- 聚合类型：>4 字节变量按字 dump（watch 工具注明非原子读）；结构体/数组/枚举展开再往后（DWARF 类型解析）。
+- 扩展点：符号层接口固定为 `lookup(name) -> (addr, size)` / `find(pattern)`，换数据源不改工具层。
+
+**过渡期替代**：本轮用 `read_memory` 按地址 + 宽度直接读，配合 `flash_info` 确认布局——足够完成烧录与裸地址验证。
+
+---
+
+## 8. 非目标（NON-GOALS）
+
+- 本轮不做断点/观察点/执行控制（halt/resume/step/reset）。代价：`read_memory` 若在目标运行时读失败，需要在客户端侧另想办法停下目标（见 Q9）。
+- 不做通用逻辑分析仪/示波器驱动（那是另一条产品线）。
+- 不做 GUI 调试器本体。
+- 不替代 OpenOCD / probe-rs / J-Link 官方工具；Ocdup 只是它们的 MCP 门面。
+- 不封装编译工具链（make/cmake 由客户端已有的 shell 工具执行；Ocdup 只消费构建产物）。
+- 不做多目标并发调试（单连接模型，见 C6）。
+
+---
+
+## 9. 约束与不变量（CONSTRAINTS）
+
+| # | 约束 | 性质 | 状态 |
+|---|---|---|---|
+| C1 | 控制通道请求串行化，响应与异步日志可区分 | 不变量 | ✅ 单测覆盖 |
+| C2 | 变更类工具权限检查前置到第一行 | 不变量 | ✅ 烧录路径已覆盖 |
+| C3 | 拦截报错必须带解除指引 | 不变量 | ✅ 单测 + e2e 覆盖 |
+| C4 | 芯片/探针/路径零硬编码，全部外置 | 不变量 | ✅ |
+| C5 | 退出即回收自有子进程，不动外部实例 | 不变量 | ✅ 已实现，待真机复验 |
+| C6 | 单连接、单目标模型；多客户端并发共享同一后端状态（可接受，需文档明示） | 边界 | ✅ 文档明示 |
+| C7 | 第三方二进制不进产物，下载必须校验 SHA-256 | 固定策略 | ⏸（下载式 provisioning 后置） |
+| C8 | 仅监听 localhost，无认证（stdio 场景不暴露网络面） | 固定策略 | ✅ `bindto` + 默认 host |
+| C9 | 语言已定 **C# / .NET 8**，接口按官方 MCP SDK 实现 | 已决 | ✅ |
+
+---
+
+## 10. 技术选型
+
+| 决策点 | 结论 | 理由 |
+|---|---|---|
+| 语言/框架 | **C# / .NET 8 + 官方 MCP SDK**（`ModelContextProtocol` 2.2.0、`Microsoft.Extensions.Hosting` 8.0.1） | 与 acccom（C#）同运行时、后期可合并部署 |
+| 传输 | stdio（本地）；预留 Streamable HTTP | 远程/云端场景再开 HTTP |
+| 分发形态 | 独立 MCP server（任何客户端可用） | 可开源、可分发、与 acccom 对等；DSH 插件形态留后期做深度集成 |
+| 配置格式 | JSON（`ocd.json`） | 与参考实现一致，错误信息更简单 |
+| ELF/SVD 解析 | 后置（届时自研解析器） | 本轮不涉符号层，避免过早引入依赖 |
+| 测试框架 | xUnit + `Microsoft.NET.Test.Sdk`（用假 `TcpListener` 做控制通道） | 无需硬件即可回归权限与协议层 |
+
+---
+
+## 11. 项目结构（当前实际形态）
+
+```
+Ocdup/
+├── docs/design-plan.md              ← 本文档
+├── src/Ocdup/                       # MCP 服务器（.NET 8 控制台，stdio）
+│   ├── Program.cs                   # Host 构建 + MCP 服务器/工具注册
+│   ├── Backend/TclRpcClient.cs      # 控制通道客户端（6666 · 0x1a 分帧 · capture{…} · 串行化）
+│   ├── Backend/BackendSession.cs    # 会话：确保后端在跑 + 复用/丢弃控制通道
+│   ├── Backend/Tcl.cs               # TCL 字面量引用（大括号 / 转义引号）
+│   ├── Launcher/OpenOcdLauncher.cs  # 子进程生命周期/端口探测/输出抽干/退出回收
+│   ├── Config/OcdConfig.cs          # 分层配置合并 + 来源追踪 + 路径解析
+│   ├── Config/ConfigStore.cs        # 配置单一入口（可 Reload）
+│   ├── Config/PermissionGate.cs     # 权限闸（前置检查 + BLOCKED 文案）
+│   ├── Tools/BackendTools.cs        # connect / status
+│   ├── Tools/ConfigTools.cs         # show_config
+│   ├── Tools/FlashTools.cs          # flash_info / flash_write
+│   ├── Tools/MemoryTools.cs         # read_memory
+│   ├── Tools/Parsing.cs             # 地址解析/渲染
+│   └── Ocdup.csproj
+├── tests/Ocdup.Tests/               # 假 socket 分帧/串行/超时 + 权限矩阵 + 配置加载
+├── tools/e2e_fake_backend.py        # 端到端：假 TCL-RPC 后端 + 真实 MCP 会话（无硬件回归）
+├── ocd.json.example
+├── README.md
+├── .gitignore
+└── Ocdup.sln
+```
+
+后置目录（到时再加）：`Backend/Symbols/`（L1/L2）、`Provision/OpenOcdProvisioner.cs`（下载 + SHA-256）。
+
+---
+
+## 12. 实施计划
+
+### 阶段一（本轮）：烧录 + 读内存
+
+| 里程碑 | 内容 | 完成判据（验收） | 状态 |
+|---|---|---|---|
+| S1 骨架 | 项目结构、MCP stdio 跑通、工具注册 | 客户端能列出工具 | ✅ |
+| S2 控制层 | `TclRpcClient`（分帧/串行/超时）+ `OpenOcdLauncher`（拉起/探测/抽干/回收）+ `BackendSession` | 假 socket 单测通过；connect/status 可用 | ✅ |
+| S3 烧录与读内存 | `flash_info` / `flash_write` / `read_memory` + 权限闸（含路径白名单与大小上限） | 权限矩阵单测全绿；假后端 e2e 跑通完整链路 | ✅ |
+| S4 真机联调 | AT-Link + 目标板：连接 → 烧录 → 校验 → 复位运行 → 按地址读回 | 记入测试日志：芯片、探针、ocd.json、OpenOCD 版本 | ⏳ 待硬件 |
+| S5 打包与注册 | `dotnet publish` 产物 + 各客户端注册矩阵 + README | 换一台机器 10 分钟内跑通 | ⏳ |
+
+### 后置里程碑（本轮不做）
+
+| 里程碑 | 内容 |
+|---|---|
+| M-exec | halt/resume/step/reset 执行控制（`read_memory` 在运行态读失败时需要） |
+| M-bp | 断点/观察点/条件断点（服务器侧驱动，见决策 2） |
+| M-sym | 符号层 L1（ELF）/ L2（SVD）+ 按名读写 |
+| M-perm | `set_permissions` + `OCD_READONLY` 环境变量 + `run_command` 逃生舱 |
+| M-prov | provisioning：缓存目录 + 下载 + SHA-256 校验 + `install_openocd` |
+| M-l3 | L3 协议字典（帧名/模板/期望响应） |
+| M-serial | 与 acccom 的串口协同（烧录后自动验证协议帧） |
+| M-watch | `watch_variables` 定时采样（独立 CLI 形态） |
+
+---
+
+## 13. 测试方案
+
+| 层 | 方法 | 现状 |
+|---|---|---|
+| 单元 | xUnit + **假 `TcpListener`**（脚本化响应） | 39 个用例：控制通道（capture 包装 / `0x1a` 分帧 / 跨 TCP 分段组装 / 并发串行化 / 读超时 / 连接失败）、权限矩阵、配置加载（嵌套块 / 顶层平铺 / 来源追踪 / 坏输入降级 / 路径基准）、TCL 引用、命令行构造、地址解析 |
+| 端到端 | `tools/e2e_fake_backend.py`：Python 假 TCL-RPC 后端 + 真实 MCP stdio 会话（无需硬件） | 已验证：6 个工具注册、connect / status / flash_info / read_memory / flash_write 全链路、三层权限拦截文案、`reload` 生效、无 openocd 与坏二进制时的诊断输出 |
+| 集成 | 真实探针 + 开发板（S4） | 待硬件；每次记入测试日志（芯片、探针、ocd.json、OpenOCD 版本） |
+| CI | tag 与版本号一致性 → build → test → 发布 | 待建（S5） |
+
+回归重点：**权限矩阵逐格断言** 与 **错误文案可操作性**（C2/C3）——它们最容易被后续改动悄悄破坏。
+
+---
+
+## 14. 风险与缓解
+
+| 风险 | 影响 | 缓解 |
+|---|---|---|
+| 真机联调环境不可得（S4 卡壳） | 硬件问题暴露晚 | 假后端 e2e 已覆盖协议与权限层；真机联调排到固定时段一次完成 |
+| `read_memory` 在目标运行时读失败（缺 halt） | 「按地址读回」在部分芯片/场景不可用 | 本轮先只做读取路径；真机一复现就补 M-exec（halt/resume） |
+| `program` 命令语义随 OpenOCD 版本变化 | 烧录行为不一致 | 命令行固定形态 + S4 记录版本；必要时改用 `flash write_image` + `verify_image` 组合 |
+| OpenOCD 发布包 scripts 布局差异 | 找不到 `-s` 目录 | 已实现三种候选路径（share/openocd/scripts、xpack、bin/scripts）+ `OCD_SCRIPTS` 覆盖 |
+| 第三方二进制供应链（下载式 provisioning） | 安全 | 后置时严格执行 C7：版本钉死 + SHA-256 校验 + 官方 Release 源 |
+| 多客户端并发把后端状态搞乱（C6） | 难复现的 bug | 文档明示单目标模型；`status` 工具暴露当前状态便于定位 |
+| 大固件烧录超过命令超时 | 误报失败 | `command_timeout_seconds` 可配置（默认 60s），失败文案提示该设置 |
+
+---
+
+## 15. 分发与发布
+
+1. **单机一键**（S5）：`dotnet publish -c Release` → 把产物注册到各客户端（Claude Code / DSH 的 cordis.patch.yml `mcp-client` 条目 / Cursor 等）；DSH 侧注册片段与现有 acccom 条目同款格式。
+2. **依赖前置**：目标机器需有 OpenOCD（xPack 或发行版），用 `OCD_BIN`/`OCD_SCRIPTS` 或 PATH 提供；S4 完成后在 README 写清各探针的 scripts 名。
+3. **NuGet / MCP Registry**：稳定后再考虑（与 C7 的「二进制不进产物」策略一致）。
+4. **DSH 深度集成（后期）**：如需侧栏面板/设置卡，再以 cordis 插件形态包一层（参考 dsh-serial-panel 的结构）。
+
+---
+
+## 16. 开放问题（OPEN QUESTIONS）
+
+| # | 问题 | 阻塞 | 状态 |
+|---|---|---|---|
+| Q1 | 语言选型 | — | ✅ 关闭：C# / .NET 8 |
+| Q2 | 探针与目标芯片 | S4 真机联调 | 🔶 半关闭：AT-Link（CMSIS-DAP）+ ST-Link / J-Link / DAPLink 已定；**目标芯片型号待定**（AT32 需确认 OpenOCD 版本与 target 脚本名） |
+| Q3 | 后端：OpenOCD vs probe-rs | 后期里程碑 | ✅ 阶段一采用 OpenOCD（AT32 生态成熟） |
+| Q4 | 是否随包分发 Windows 版 OpenOCD（git/zip 形态）还是纯下载 | 不阻塞，影响 M-prov | ⏳ 待定 |
+| Q5 | L3 协议字典覆盖哪些协议（私有帧？Modbus？CAN？） | M-l3 | ⏳ 待定 |
+| Q6 | 与 acccom 的分工边界：Ocdup 只发「去烧录/去验证」指令，帧交互仍走 acccom？ | M-serial | ⏳ 待定 |
+| Q7 | 相对路径基准 = ocd.json 所在目录 | — | ✅ 关闭并已实现 |
+| Q8 | 单目标（C6）是否满足？多探针场景是否需要多连接 | M-serial 等 | ⏳ 待定 |
+| **Q9** | `read_memory` 是否需要先 halt？（真机复现即补 M-exec） | S4 | ⏳ 待真机 |
+| **Q10** | 目标芯片实际可用的 OpenOCD 版本与 scripts 目录名（`target/at32f435xx.cfg` 是否可用，或需 Artery 版 OpenOCD） | S4 | ⏳ 待硬件 |
+| **Q11** | 镜像路径是否也接受相对 CWD（当前只认 ocd.json 目录） | 不阻塞 | ⏳ 可后置 |
+
+---
+
+## 17. 交付结论与下一步（HANDOFF）
+
+**当前状态（v0.3）**：阶段一的控制层、烧录、读内存已实现，并通过 39 个单元测试 + 假后端端到端验证；关键路径剩下 **S4 真机联调** 与 **S5 打包注册**。
+
+**建议的下一步顺序**：
+
+1. 拿到目标板 + AT-Link，按 `ocd.json.example` 配好真实配置，跑 S4：`connect` → `flash_info` → `flash_write`（校验 + 复位）→ `read_memory` 复核关键地址；
+2. 若 `read_memory` 在运行态读失败，立即补 M-exec（halt/resume）——这是「读指定地址」能否稳定落地的分水岭；
+3. S5 做打包与客户端注册，把「换一台机器 10 分钟跑通」当作完成判据；
+4. 之后才轮到断点/观察点（M-bp）与符号层（M-sym）——它们建立在同一个控制层之上，成本会显著低于本轮。
+
+本文档随项目演进维护；每关闭一个重要开放问题就相应升级文档状态。
+
+
+
+
+
+

@@ -1,0 +1,6 @@
+bin/
+obj/
+*.user
+ocd.json
+%SystemDrive%/
+TestResults/
