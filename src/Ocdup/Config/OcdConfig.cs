@@ -30,11 +30,11 @@ public sealed class OcdConfig
 
     // --- 项目设置（snake_case，与设计文档 7.2 节的 ocd.json 一致） ---
     public string? InterfaceCfg { get; private set; }
+    public string? TargetCfg { get; private set; }
+    public string? Transport { get; private set; }
 
     /// <summary>interface_cfg = "auto":连接阶段按 USB 设备自动识别探针并选择接口脚本。</summary>
     public bool IsInterfaceAuto => string.Equals(InterfaceCfg, "auto", StringComparison.OrdinalIgnoreCase);
-    public string? TargetCfg { get; private set; }
-    public string? Transport { get; private set; }
 
     // --- 控制通道 ---
     public string Host { get; private set; } = DefaultHost;

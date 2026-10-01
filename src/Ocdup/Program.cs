@@ -1,3 +1,4 @@
+using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -11,9 +12,15 @@ builder.Logging.ClearProviders();
 builder.Services
     .AddMcpServer(options =>
     {
-        options.ServerInfo = new Implementation { Name = "ocdup", Version = "0.1.0" };
+        options.ServerInfo = new Implementation { Name = "ocdup", Version = VersionText() };
     })
     .WithStdioServerTransport()
     .WithToolsFromAssembly();
 
 await builder.Build().RunAsync();
+
+static string VersionText()
+{
+    var v = Assembly.GetExecutingAssembly().GetName().Version;
+    return v is null ? "0.0.0" : $"{v.Major}.{v.Minor}.{v.Build}";
+}

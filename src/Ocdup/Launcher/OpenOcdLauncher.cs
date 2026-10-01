@@ -188,7 +188,8 @@ public sealed class OpenOcdLauncher : IDisposable
                     "Plug one in, or set interface_cfg explicitly in ocd.json (e.g. \"interface/cmsis-dap.cfg\"). See show_config.");
             var chosen = probes[0];
             interfaceCfg = chosen.Config;
-            probeNote = $"probe auto-detected: {chosen.Kind} -> {chosen.Config}";
+            // 把「凭哪一行认出来的」也带上：多探针/误判时这是第一手排障信息。
+            probeNote = $"probe auto-detected: {chosen.Kind} -> {chosen.Config} (evidence: {chosen.Evidence})";
         }
         else
         {
@@ -235,7 +236,7 @@ public sealed class OpenOcdLauncher : IDisposable
             ct.ThrowIfCancellationRequested();
 
             if (process.HasExited)
-                return new LaunchOutcome(false, BuildFailureMessage(binary, $"the process exited with code {process.ExitCode}"));
+                return new LaunchOutcome(false, BuildFailureMessage(binary, $"the process exited with code {process.ExitCode}", probeNote));
 
             if (await ProbePortAsync(cfg.Host, cfg.Port, 250, ct).ConfigureAwait(false))
                 return new LaunchOutcome(true,
@@ -248,7 +249,7 @@ public sealed class OpenOcdLauncher : IDisposable
         // 超时：回收自己刚启动的进程，别留一个半死的实例占着探针。
         Stop();
         return new LaunchOutcome(false, BuildFailureMessage(binary,
-            $"the command port {cfg.Host}:{cfg.Port} did not come up within {StartupTimeout.TotalSeconds:0}s"));
+            $"the command port {cfg.Host}:{cfg.Port} did not come up within {StartupTimeout.TotalSeconds:0}s", probeNote));
     }
 
     /// <summary>回收自己启动的进程（只动自己的，不碰外部实例）。</summary>
@@ -299,10 +300,16 @@ public sealed class OpenOcdLauncher : IDisposable
         }
     }
 
-    private string BuildFailureMessage(string binary, string reason)
+    private string BuildFailureMessage(string binary, string reason, string probeNote = "")
     {
         var sb = new StringBuilder();
         sb.Append($"ERROR: {binary} did not become ready: {reason}.");
+        if (probeNote.Length > 0)
+        {
+            // auto 模式下必须让用户看到「这次选了哪个接口脚本」，否则启动失败根本无从排障。
+            sb.AppendLine();
+            sb.Append(probeNote);
+        }
 
         var recent = RecentOutput();
         if (recent.Length > 0)

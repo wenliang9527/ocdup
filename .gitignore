@@ -2,5 +2,6 @@ bin/
 obj/
 *.user
 ocd.json
+dumps/
 %SystemDrive%/
 TestResults/

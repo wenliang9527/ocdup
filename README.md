@@ -3,7 +3,7 @@
 PC 侧的 OpenOCD 门面（MCP 服务器）：让 MCP 客户端（DSH / Claude Code / Cursor…）用自然语言完成
 **连接探针 → 烧录固件 → 按地址读回数据**。
 
-设计文档：[docs/design-plan.md](docs/design-plan.md)（v0.3，范围收敛为「下载 + 读指定地址」）。
+设计文档：[docs/design-plan.md](docs/design-plan.md)（v0.3.2，范围收敛为「下载 + 读指定地址」）。
 
 ## 当前能力（阶段一）
 
@@ -15,6 +15,7 @@ PC 侧的 OpenOCD 门面（MCP 服务器）：让 MCP 客户端（DSH / Claude C
 | `flash_info` | 列出 flash banks（驱动、基址、大小） | 只读 |
 | `flash_write` | **下载**：烧录镜像（写 + 可选校验 + 可选复位运行） | read_only / allow_flash / 白名单 / 上限 |
 | `read_memory` | **读指定地址**：按 8/16/32 位宽度读回 | 只读 + 体积上限 |
+| `dump_memory` | **大块读落盘**：整片 flash / RAM 快照存成文件，返回 sha256 + 前 64 字节 | 只读 |
 
 断点 / 观察点 / 执行控制（halt、resume）/ 符号层（按名读变量）/ L3 协议字典为后续阶段。
 
@@ -63,6 +64,7 @@ PC 侧的 OpenOCD 门面（MCP 服务器）：让 MCP 客户端（DSH / Claude C
    flash_info
    flash_write file=build/fw.bin address=0x08000000     # .elf/.hex 不需要 address
    read_memory address=0x20000000 count=16 width=32
+   dump_memory file=dumps/flash.bin address=0x08000000 length=1048576
    ```
 
 ## 开发

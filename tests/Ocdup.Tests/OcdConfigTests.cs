@@ -140,6 +140,29 @@ public sealed class OcdConfigTests : IDisposable
     }
 
     [Fact]
+    public void JsoncComments_AreAccepted()
+    {
+        // OcdConfig 用 JsonCommentHandling.Skip 解析：ocd.json 里可以直接写 // 与 /* */ 注释，
+        // 不必用 "//key": "value" 这种伪注释键（伪键虽然也被忽略，但语义上更脏、且可能被误当成配置项）。
+        var path = WriteConfig("""
+        {
+          // 探针与目标
+          "interface_cfg": "auto",
+          "target_cfg": "target/at32f403axx.cfg",
+          /* 权限：个人开发机放开烧录，只留体积上限 */
+          "permissions": { "read_only": false, "flash_max_bytes": 1048576 }
+        }
+        """);
+
+        var cfg = OcdConfig.LoadFrom(path);
+
+        Assert.True(cfg.IsInterfaceAuto);
+        Assert.Equal("target/at32f403axx.cfg", cfg.TargetCfg);
+        Assert.Equal(1048576, cfg.FlashMaxBytes);
+        Assert.False(cfg.Sources.ContainsKey("ocd_json_error"));
+    }
+
+    [Fact]
     public void UnknownKeys_AreIgnored()
     {
         var path = WriteConfig("""{ "//": "comment", "not_a_setting": 1, "permissions": { "allow_flash": true } }""");

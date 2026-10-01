@@ -27,7 +27,7 @@ public static class ProbeDetector
          new Regex(@"VID_0D28&PID_0204|VID_C251&PID_00[0-9A-F]{2}", RegexOptions.IgnoreCase | RegexOptions.Compiled),
          "CMSIS-DAP/DAPLink", "interface/cmsis-dap.cfg"),
         (new Regex(@"st-?link", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-         new Regex(@"VID_0483&PID_374[8BEF]|VID_0483&PID_3752", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+         new Regex(@"VID_0483&PID_374[478ABDEF]|VID_0483&PID_375[2-5]", RegexOptions.IgnoreCase | RegexOptions.Compiled),
          "ST-Link", "interface/stlink.cfg"),
         (new Regex(@"j-?link", RegexOptions.IgnoreCase | RegexOptions.Compiled),
          new Regex(@"VID_1366", RegexOptions.IgnoreCase | RegexOptions.Compiled),
@@ -55,8 +55,38 @@ public static class ProbeDetector
         return found.OrderBy(f => f.Priority).Select(f => f.Match).ToList();
     }
 
-    /// <summary>枚举当前 USB 设备并识别探针;系统调用失败一律静默降级为「未找到」。</summary>
+    private static readonly SemaphoreSlim DetectGate = new(1, 1);
+    private static IReadOnlyList<ProbeMatch>? _cached;
+    private static DateTimeOffset _cachedAt;
+    private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// 枚举当前 USB 设备并识别探针。带 60s 进程内缓存(PnP 枚举实测 3s+),
+    /// 但只缓存非空结果:空结果不缓存,保证「刚插上探针就 connect」能被 auto 发现。
+    /// 系统调用失败一律静默降级为「未找到」。
+    /// </summary>
     public static async Task<IReadOnlyList<ProbeMatch>> DetectAsync(CancellationToken ct = default)
+    {
+        await DetectGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_cached is not null && DateTimeOffset.UtcNow - _cachedAt < CacheTtl)
+                return _cached;
+            var probes = await DetectCoreAsync(ct).ConfigureAwait(false);
+            if (probes.Count > 0)
+            {
+                _cached = probes;
+                _cachedAt = DateTimeOffset.UtcNow;
+            }
+            return probes;
+        }
+        finally
+        {
+            DetectGate.Release();
+        }
+    }
+
+    private static async Task<IReadOnlyList<ProbeMatch>> DetectCoreAsync(CancellationToken ct = default)
     {
         var powershell = Path.Combine(
             Environment.SystemDirectory ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32"),

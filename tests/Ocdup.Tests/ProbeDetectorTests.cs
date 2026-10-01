@@ -46,9 +46,14 @@ public sealed class ProbeDetectorTests
     }
 
     [Theory]
-    [InlineData("USB 串行设备 (COM3)|USB\\VID_1A86&PID_7523\\...", "")]
-    [InlineData("Generic USB Hub|USB\\VID_0424&PID_2514\\...", "")]
-    public void Unrelated_Devices_Are_Ignored(string line, string _)
+    [InlineData("USB 串行设备 (COM3)|USB\\VID_1A86&PID_7523\\...")]
+    [InlineData("Generic USB Hub|USB\\VID_0424&PID_2514\\...")]
+    // 以下取自真机 Get-PnpDevice 输出：名字里含 dap / adapter / debug 字样，但都不是调试探针
+    [InlineData("Microsoft Wi-Fi Direct Virtual Adapter #2|{5D624F94-8850-40C3-A3FA-A4FD2080BAF3}\\VWIFIMP_WFD\\4&352A6737&0&12")]
+    [InlineData("Microsoft Kernel Debug Network Adapter|ROOT\\KDNIC\\0000")]
+    [InlineData("Microsoft AC Adapter|ACPI\\ACPI0003\\2&DABA3FF&1")]
+    [InlineData("USB Composite Device|USB\\VID_0424&PID_2740\\...")]
+    public void Unrelated_Devices_Are_Ignored(string line)
     {
         Assert.Empty(ProbeDetector.Parse(new[] { line }));
     }
@@ -57,6 +62,28 @@ public sealed class ProbeDetectorTests
     public void Empty_And_Null_Lines_Are_Tolerated()
     {
         Assert.Empty(ProbeDetector.Parse(new string?[] { null, "", "   " }));
+    }
+
+    [Fact]
+    public void RealWorld_MultiInterface_DapLink_Is_Recognized_As_CmsisDap()
+    {
+        // 真机样本：AT-Link 的 CMSIS-DAP v2 固件会把一个物理探针枚举成 5 台设备，
+        // VID/PID 是 DAPLink 的 0D28:0204（不是 Artery 原厂的 2E3C），所以只会命中 CMSIS-DAP 规则。
+        // 注意：这类多接口设备真正能用起来需要显式指定接口脚本
+        //（atopenocd 的 interface/atlink_dap_v2.cfg 里就有 cmsis_dap_usb interface 3），
+        // 通用 interface/cmsis-dap.cfg 不带这个设置——auto 只负责「认出是什么」，脚本细化由 ocd.json 显式配置。
+        var probes = ProbeDetector.Parse(new[]
+        {
+            "USB Composite Device|USB\\VID_0D28&PID_0204\\00000080066EFF48",
+            "USB 串行设备 (COM4)|USB\\VID_0D28&PID_0204&MI_00\\7&1E04DCD9&1&0000",
+            "USB Input Device|USB\\VID_0D28&PID_0204&MI_02\\7&1E04DCD9&1&0002",
+            "WebUSB: CMSIS-DAP|USB\\VID_0D28&PID_0204&MI_03\\7&1E04DCD9&1&0003",
+            "CMSIS-DAP v2|USB\\VID_0D28&PID_0204&MI_04\\7&1E04DCD9&1&0004",
+        });
+
+        var probe = Assert.Single(probes);
+        Assert.Equal("CMSIS-DAP/DAPLink", probe.Kind);
+        Assert.Equal("interface/cmsis-dap.cfg", probe.Config);
     }
 
     [Fact]

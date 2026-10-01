@@ -12,6 +12,7 @@
 """
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -44,6 +45,15 @@ def handle_command(cmd):
                 "** Verified OK **")
     if c.startswith("reset"):
         return ""
+    if c.startswith("dump_image"):
+        m = re.match(r"dump_image \{(.*)\} (0x[0-9a-fA-F]+) (\d+)$", c)
+        if m:
+            path, addr, length = m.group(1), int(m.group(2), 16), int(m.group(3))
+            data = bytes(((addr + i) & 0xFF) for i in range(min(length, 1024 * 1024)))
+            with open(path, "wb") as f:
+                f.write(data)
+            return ""
+        return "Error: fake backend could not parse dump_image"
     if c.startswith("mdw"):
         parts = c.split()
         addr = int(parts[1], 16)
