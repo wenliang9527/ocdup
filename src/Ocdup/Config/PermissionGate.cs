@@ -64,6 +64,24 @@ public static class PermissionGate
                "Read in smaller chunks, or raise \"memory_read_max_bytes\" in ocd.json (0 = unlimited). See show_config.";
     }
 
+    /// <summary>
+    /// dump_memory 落盘闸：目标侧是读，PC 侧是写——后端会按给定路径建/覆盖文件，
+    /// 长度直接来自模型参数。按「写入面」设防：路径白名单 + 体积上限（0 = 不限）。
+    /// 不挂 read_only 总闸：dump 正是只读分析 flash 的手段，拦它就自相矛盾了。
+    /// </summary>
+    public static string? CheckDumpWrite(OcdConfig cfg, string resolvedPath, long lengthBytes)
+    {
+        if (cfg.DumpMaxBytes > 0 && lengthBytes > cfg.DumpMaxBytes)
+            return $"BLOCKED: the dump would write {lengthBytes} bytes, above the dump_max_bytes limit of {cfg.DumpMaxBytes}. " +
+                   "Dump in smaller ranges, or raise \"dump_max_bytes\" in ocd.json (0 = unlimited). See show_config.";
+
+        if (cfg.DumpAllowedPaths.Count > 0 && !IsInsideAny(cfg, resolvedPath, cfg.DumpAllowedPaths))
+            return $"BLOCKED: '{resolvedPath}' is outside dump_allowed_paths ({string.Join(", ", cfg.DumpAllowedPaths)}). " +
+                   "Dump into one of those directories, or extend \"dump_allowed_paths\" in ocd.json. See show_config.";
+
+        return null;
+    }
+
     private static bool IsInsideAny(OcdConfig cfg, string path, IEnumerable<string> roots)
     {
         var target = Path.GetFullPath(path);

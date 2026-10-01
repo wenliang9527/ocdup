@@ -9,6 +9,7 @@
   6. read_memory 超出 memory_read_max_bytes 被拦截
   7. show_config(reload=true) 能重读 ocd.json
   8. 无 openocd 可执行文件 / 后端进程起不来时，connect 给出可操作报错
+  9. dump_memory 落盘闸：白名单内放行落盘，白名单外 / 超 dump_max_bytes 被拦截
 """
 import json
 import os
@@ -233,6 +234,12 @@ def main():
         print(mcp.call("dump_memory", {"file": "dumps/flash-head.bin", "address": "0x08000000", "length": 4096}))
         dumped = os.path.join(work, "dumps", "flash-head.bin")
         print("  file on disk:", os.path.exists(dumped), os.path.getsize(dumped) if os.path.exists(dumped) else "-")
+
+        banner("dump_memory elsewhere/evil.bin (outside dump_allowed_paths)")
+        print(mcp.call("dump_memory", {"file": "elsewhere/evil.bin", "address": "0x08000000", "length": 4096}))
+
+        banner("dump_memory length=99999999 (over dump_max_bytes)")
+        print(mcp.call("dump_memory", {"file": "dumps/too-big.bin", "address": "0x08000000", "length": 99999999}))
 
         banner("flash_write build/fw.bin @0x08000000 (allowed)")
         print(mcp.call("flash_write", {"file": "build/fw.bin", "address": "0x08000000"}))

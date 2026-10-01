@@ -121,4 +121,49 @@ public sealed class PermissionGateTests : IDisposable
         Assert.NotNull(blocked);
         Assert.Contains("allow_memory_write", blocked);
     }
+
+    // ── dump_memory 落盘闸:目标侧是读、PC 侧是写,按写入面设防(路径白名单 + 体积上限)──
+
+    [Fact]
+    public void Dump_Defaults_AllowOnlyDumpsDirNextToOcdJson()
+    {
+        var cfg = Load("{}");
+
+        // 默认值本身:白名单 = ocd.json 同级的 dumps/,上限 64 MB。
+        Assert.Equal(new[] { "dumps/" }, cfg.DumpAllowedPaths);
+        Assert.Equal(OcdConfig.DefaultDumpMaxBytes, cfg.DumpMaxBytes);
+
+        var inside = Path.Combine(_dir, "dumps", "flash-head.bin");
+        Assert.Null(PermissionGate.CheckDumpWrite(cfg, inside, 4096));
+
+        var outside = Path.Combine(_dir, "elsewhere", "evil.bin");
+        var blocked = PermissionGate.CheckDumpWrite(cfg, outside, 4096);
+        Assert.NotNull(blocked);
+        Assert.StartsWith("BLOCKED:", blocked);
+        Assert.Contains("dump_allowed_paths", blocked);
+        Assert.Contains("show_config", blocked);
+    }
+
+    [Fact]
+    public void Dump_OversizeRequest_IsBlocked_AndZeroMeansUnlimited()
+    {
+        var cfg = Load("""{ "dump_max_bytes": 100 }""");
+        var inside = Path.Combine(_dir, "dumps", "flash-head.bin");
+
+        var blocked = PermissionGate.CheckDumpWrite(cfg, inside, 101);
+        Assert.NotNull(blocked);
+        Assert.Contains("dump_max_bytes", blocked);
+        Assert.Null(PermissionGate.CheckDumpWrite(cfg, inside, 100)); // 恰好等于上限:放行
+
+        Assert.Null(PermissionGate.CheckDumpWrite(Load("""{ "dump_max_bytes": 0 }"""), inside, long.MaxValue / 2));
+    }
+
+    [Fact]
+    public void Dump_EmptyAllowlist_IsUnrestricted()
+    {
+        // 显式 [] = 不限路径(与 flash_allowed_paths 的空 = 不限约定一致)。
+        var cfg = Load("""{ "dump_allowed_paths": [] }""");
+
+        Assert.Null(PermissionGate.CheckDumpWrite(cfg, Path.Combine(_dir, "anywhere", "x.bin"), 10));
+    }
 }

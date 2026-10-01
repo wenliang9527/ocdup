@@ -55,9 +55,11 @@ public static class MemoryTools
     [McpServerTool(Name = "dump_memory")]
     [Description(
         "Dump a block of target memory/flash into a file on this PC (backend command 'dump_image'). " +
-        "Use this instead of read_memory for large ranges - a whole flash bank or a big RAM snapshot - " +
+        "Use this instead of read_memory for large ranges - a whole flash bank or big RAM snapshot - " +
         "because read_memory is capped by memory_read_max_bytes and floods the conversation with text. " +
-        "Read-only. Returns the output path, byte count, a sha256 prefix and the first 64 bytes as hex words.")]
+        "Read-only on the target, but it writes one file on this PC: gated by dump_allowed_paths (default 'dumps/' next to ocd.json) " +
+        "and dump_max_bytes (default 64 MB, 0 = unlimited). " +
+        "Returns the output path, byte count, a sha256 prefix and the first 64 bytes as hex words.")]
     public static async Task<string> DumpMemory(
         [Description("Output file path; relative paths resolve against the ocd.json directory. Parent directories are created.")] string file,
         [Description("Start address, hex string like '0x08000000'.")] string address,
@@ -74,6 +76,10 @@ public static class MemoryTools
         string resolved;
         try { resolved = cfg.ResolvePath(file); }
         catch (Exception ex) { return $"ERROR: '{file}' is not a usable path: {ex.Message}"; }
+
+        // 落盘闸前置:路径白名单 + 体积上限。必须在建目录/写文件之前拦(不变量 C2)。
+        if (PermissionGate.CheckDumpWrite(cfg, resolved, length) is { } blocked)
+            return blocked;
 
         var dir = Path.GetDirectoryName(resolved);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);

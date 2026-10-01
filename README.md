@@ -3,7 +3,7 @@
 PC 侧的 OpenOCD 门面（MCP 服务器）：让 MCP 客户端（DSH / Claude Code / Cursor…）用自然语言完成
 **连接探针 → 烧录固件 → 按地址读回数据**。
 
-设计文档：[docs/design-plan.md](docs/design-plan.md)（v0.3.2，范围收敛为「下载 + 读指定地址」）。
+设计文档：[docs/design-plan.md](docs/design-plan.md)（v0.3.3，范围收敛为「下载 + 读指定地址」）。
 
 ## 当前能力（阶段一）
 
@@ -15,7 +15,7 @@ PC 侧的 OpenOCD 门面（MCP 服务器）：让 MCP 客户端（DSH / Claude C
 | `flash_info` | 列出 flash banks（驱动、基址、大小） | 只读 |
 | `flash_write` | **下载**：烧录镜像（写 + 可选校验 + 可选复位运行） | read_only / allow_flash / 白名单 / 上限 |
 | `read_memory` | **读指定地址**：按 8/16/32 位宽度读回 | 只读 + 体积上限 |
-| `dump_memory` | **大块读落盘**：整片 flash / RAM 快照存成文件，返回 sha256 + 前 64 字节 | 只读 |
+| `dump_memory` | **大块读落盘**：整片 flash / RAM 快照存成文件，返回 sha256 + 前 64 字节 | 目标侧只读；PC 侧写入面：dump_allowed_paths 白名单（默认 `dumps/`）+ dump_max_bytes 上限（默认 64 MB，0=不限） |
 
 断点 / 观察点 / 执行控制（halt、resume）/ 符号层（按名读变量）/ L3 协议字典为后续阶段。
 
@@ -80,8 +80,8 @@ PC 侧的 OpenOCD 门面（MCP 服务器）：让 MCP 客户端（DSH / Claude C
 
    > 卸载：删除该 insert 块并重启 DSH。
    > 6666 端口同一时间只能有一个 OpenOCD 后端；外部已开着 openocd 时 Ocdup 直接复用。
-   > 发布命令：`dotnet publish src/Ocdup/Ocdup.csproj -c Release -o publish`，
-   > 之后**完全退出并重启 DSH** 才会加载新版本。
+   > 发布/升级顺序（实测，DSH 会自动重新拉起死掉的 ocdup，就地覆盖必被锁）：
+   > **完全退出 DSH → `dotnet publish src/Ocdup/Ocdup.csproj -c Release -o publish` → 再启动 DSH**。
 
 4. 典型流程：
 
@@ -96,7 +96,7 @@ PC 侧的 OpenOCD 门面（MCP 服务器）：让 MCP 客户端（DSH / Claude C
 ## 开发
 
 ```bash
-dotnet test Ocdup.sln                     # 60 个单测，不需要硬件
+dotnet test Ocdup.sln                     # 63 个单测，不需要硬件
 python tools/e2e_fake_backend.py          # 端到端：假 TCL-RPC 后端 + 真实 MCP 会话
 ```
 
@@ -105,14 +105,15 @@ python tools/e2e_fake_backend.py          # 端到端：假 TCL-RPC 后端 + 真
   可用 `OCDUP_DLL=<path>` 指向任意构建产物（如 `publish/ocdup.dll`）。
 - 若 DSH 正在运行 ocdup，它会锁住 `bin/Debug` 下的 exe，此时改用 Release 通道：
   `dotnet test Ocdup.sln -c Release`。
-- 权限收紧：把 `read_only`、`allow_flash`、`flash_allowed_paths`、`flash_max_bytes` 按需写进
-  `ocd.json`（见 `ocd.json.example`），随时用 `show_config` 核对生效值与来源。
+- 权限收紧：把 `read_only`、`allow_flash`、`flash_allowed_paths`、`flash_max_bytes`、
+  `dump_allowed_paths`、`dump_max_bytes` 按需写进 `ocd.json`，
+  随时用 `show_config` 核对生效值与来源。
 
 ## 状态与下一步
 
 | 里程碑 | 状态 |
 |---|---|
-| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 60 个单测 + 假后端 e2e 覆盖 |
+| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 63 个单测 + 假后端 e2e 覆盖 |
 | S4 真机联调 | ✅ AT32F403AVGT7 + CMSIS-DAP v2（DAPLink `0D28:0204`）+ atopenocd：`connect` → `flash_info` → `flash_write`（擦 25 扇区、写 + Verified OK、reset run）→ `read_memory` 运行态读回向量表 |
 | S5 打包与客户端注册 | 🟡 已注册进 DSH（desktop + web 两个 profile）；建议把 `command` 切到 `publish/ocdup.exe`，见上 |
 
