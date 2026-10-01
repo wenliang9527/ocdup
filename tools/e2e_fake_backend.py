@@ -229,6 +229,11 @@ def main():
         banner("read_memory 0x20000000 x8 (32-bit)")
         print(mcp.call("read_memory", {"address": "0x20000000", "count": 8}))
 
+        banner("dump_memory 0x08000000 x4096 -> dumps/flash-head.bin")
+        print(mcp.call("dump_memory", {"file": "dumps/flash-head.bin", "address": "0x08000000", "length": 4096}))
+        dumped = os.path.join(work, "dumps", "flash-head.bin")
+        print("  file on disk:", os.path.exists(dumped), os.path.getsize(dumped) if os.path.exists(dumped) else "-")
+
         banner("flash_write build/fw.bin @0x08000000 (allowed)")
         print(mcp.call("flash_write", {"file": "build/fw.bin", "address": "0x08000000"}))
 

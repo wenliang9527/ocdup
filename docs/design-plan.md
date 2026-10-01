@@ -189,9 +189,10 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 
 - 连接阶段枚举 USB 设备（Windows 走 `Get-PnpDevice -PresentOnly`），按签名表 **AT-Link → CMSIS-DAP/DAPLink → ST-Link → J-Link** 选接口脚本（同种探针去重；结果按表优先级排序，与枚举顺序无关）。
 - 识别不到就返回可操作报错：提示插上探针或显式指定 `interface_cfg`，不静默乱猜。
-- 识别结果通过 `connect` / `status` 输出里的 `backend: probe auto-detected: AT-Link -> interface/atlink_dap_v2.cfg (evidence: …)` 行回报（`BackendSession.LastBackendNote`），**不写回配置**；启动失败时的诊断里也会带这一行——否则"它到底选了哪个脚本"无从得知。
+- 识别结果通过 `connect` / `status` 输出里的 `backend: probe auto-detected: CMSIS-DAP/DAPLink -> interface/cmsis-dap.cfg (evidence: <设备行>)` 行回报（`BackendSession.LastBackendNote`），**不写回配置**；启动失败时的诊断里也会带这一行——否则"它到底选了哪个脚本"无从得知。
 - 解析逻辑（`ProbeDetector.Parse`，纯函数）与系统调用（`DetectAsync`）分离，前者可无硬件单测；探测失败/超时（10s）一律降级为「未找到」，不阻断烧录流程。
 - **已知边界 1（脚本选择，A/B 实测定论）**：本机这根探针为 DAPLink 公版固件（`0D28:0204`），一个物理设备枚举成 5 个 `MI_` 接口。同机对照实验：`interface/cmsis-dap.cfg`（auto 的选择）→ OpenOCD 自报 `Using CMSIS-DAPv2 interface with VID:PID=0x0d28:0x0204`，examine 成功（**S4 烧录就是用它完成的**）；`interface/atlink_dap_v2.cfg`（钉死 `usb_bulk + interface 3`）→ `unable to find a matching CMSIS-DAP device`（exit 1）。**结论：多接口 DAPLink 探针就用 auto 的 `cmsis-dap.cfg`，不要换供应商脚本**；`atlink_dap_v2.cfg` 留给原生 AT-Link（VID 2E3C）设备。
+  **可复用原则：让 OpenOCD 自选接口，胜过在脚本里钉死接口号**——`cmsis_dap_usb interface 3` 是硬编码的 bInterfaceNumber，换 USB 口、重插或固件改版后都可能失配，而通用脚本（不带该参数）由驱动自行匹配 VID/PID 与接口。选脚本时优先选「不钉死接口」的那份。
 - **已知边界 2（枚举开销）**：`Get-PnpDevice` 在 189 台设备的机器上实测约 **3.1–3.4s**（瓶颈在 PnP 枚举本身）。已加 **60s 进程内缓存**（`ProbeDetector.DetectAsync`），且只缓存非空结果——空结果不缓存，保证「刚插上探针就 connect」能被 auto 发现。
 - 已知边界 3（驱动）：J-Link 在 Windows 上若被 SEGGER 驱动独占，OpenOCD 会报 `LIBUSB_ERROR_NOT_FOUND`，失败诊断里已附「换 AT-Link/CMSIS-DAP 或用 Zadig 切 WinUSB」的说明。
 
@@ -462,7 +463,7 @@ Ocdup/
 | Q7 | 相对路径基准 = ocd.json 所在目录 | — | ✅ 关闭并已实现 |
 | Q8 | 单目标（C6）是否满足？多探针场景是否需要多连接 | M-serial 等 | ⏳ 待定 |
 | **Q9** | `read_memory` 是否需要先 halt？ | S4 | ✅ 真机验证：运行态直读 flash（0x08000000 向量表）成功，无需 halt；RAM 变量的「一致性快照」场景留待 M-exec |
-| **Q10** | 目标芯片实际可用的 OpenOCD 版本与 scripts 目录名 | — | ✅ 关闭：Artery 定制版 atopenocd（`D:\ARMGCCTool\atopenocd`，0.11.0+dev 2024-08-05）+ `interface/atlink_dap_v2.cfg` + `target/at32f403axx.cfg` 配置链干跑通过；非 AT 芯片走主线版（EIDE xPack 或 `openocd-20240916.7z` 解压）换 `OCD_BIN`/`OCD_SCRIPTS` 即可 |
+| **Q10** | 目标芯片实际可用的 OpenOCD 版本与 scripts 目录名 | — | ✅ 关闭：Artery 定制版 atopenocd（`D:\ARMGCCTool\atopenocd`，0.11.0+dev 2024-08-05）+ `interface_cfg: "auto"`（本机探针 0D28:0204 解析为 `interface/cmsis-dap.cfg`）+ `target/at32f403axx.cfg`，实机烧录通过；**注意 `atlink_dap_v2.cfg` 在本机这根公版 DAPLink 探针上会 `unable to find a matching CMSIS-DAP device`（见 4.5 已知边界 1）**；非 AT 芯片走主线版（EIDE xPack 或 `openocd-20240916.7z` 解压）换 `OCD_BIN`/`OCD_SCRIPTS` 即可 |
 | **Q11** | 镜像路径是否也接受相对 CWD（当前只认 ocd.json 目录） | 不阻塞 | ⏳ 可后置 |
 
 ---
