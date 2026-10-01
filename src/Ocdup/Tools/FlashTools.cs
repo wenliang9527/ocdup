@@ -18,7 +18,7 @@ public static class FlashTools
         var cfg = ConfigStore.Instance.Current;
         try
         {
-            var banks = (await BackendSession.Instance.ExecuteAsync(cfg, "flash banks", startIfNeeded: true, ct)).Trim();
+            var banks = (await BackendSession.Instance.ExecuteAsync(cfg, "flash banks", startIfNeeded: true, ct, op: "flash_info")).Trim();
             return banks.Length == 0
                 ? "ERROR: the backend reported no flash banks. Check target_cfg in ocd.json (see show_config)."
                 : $"flash banks:\n{banks}";
@@ -83,7 +83,7 @@ public static class FlashTools
         string output;
         try
         {
-            output = (await BackendSession.Instance.ExecuteAsync(cfg, command.ToString(), startIfNeeded: true, ct)).Trim();
+            output = (await BackendSession.Instance.ExecuteAsync(cfg, command.ToString(), startIfNeeded: true, ct, op: "flash_write")).Trim();
         }
         catch (BackendException ex)
         {
@@ -105,7 +105,7 @@ public static class FlashTools
         {
             try
             {
-                var resetOutput = (await BackendSession.Instance.ExecuteAsync(cfg, "reset run", startIfNeeded: false, ct)).Trim();
+                var resetOutput = (await BackendSession.Instance.ExecuteAsync(cfg, "reset run", startIfNeeded: false, ct, op: "flash_write")).Trim();
                 sb.AppendLine(resetOutput.Length == 0 ? "reset run: done" : $"reset run: {resetOutput}");
             }
             catch (BackendException ex)

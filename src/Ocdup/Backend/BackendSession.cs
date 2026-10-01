@@ -22,6 +22,7 @@ public sealed class BackendSession
 
     private readonly SemaphoreSlim _connectGate = new(1, 1);
     private readonly OpenOcdLauncher _launcher = new();
+    private readonly TrafficLog _traffic = TrafficLog.Shared;
     private TclRpcClient? _client;
 
     /// <summary>
@@ -38,16 +39,21 @@ public sealed class BackendSession
 
     /// <summary>
     /// 执行一条 TCL 命令。startIfNeeded=false 时不会拉起后端（status 这类只读探测用）。
+    /// op 是发起调用的工具名，只用于流量镜像（mcp-traffic.jsonl 的 tool 字段）。
     /// </summary>
-    public async Task<string> ExecuteAsync(OcdConfig cfg, string command, bool startIfNeeded, CancellationToken ct = default)
+    public async Task<string> ExecuteAsync(OcdConfig cfg, string command, bool startIfNeeded, CancellationToken ct = default, string op = "tcl")
     {
         var client = await AcquireAsync(cfg, startIfNeeded, ct).ConfigureAwait(false);
+        _traffic.Record(op, "cmd", command, $"{cfg.Host}:{cfg.Port}");
         try
         {
-            return await client.CommandAsync(command, ct).ConfigureAwait(false);
+            var output = await client.CommandAsync(command, ct).ConfigureAwait(false);
+            _traffic.Record(op, "rsp", output, $"{cfg.Host}:{cfg.Port}");
+            return output;
         }
         catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException or TimeoutException)
         {
+            _traffic.Record(op, "err", $"control channel failed: {ex.Message}", $"{cfg.Host}:{cfg.Port}");
             Invalidate(); // 连接已坏，下次调用重新建立
             throw new BackendException(
                 $"ERROR: the control channel failed while running '{command}': {ex.Message}. " +
@@ -66,10 +72,14 @@ public sealed class BackendSession
             if (!await OpenOcdLauncher.ProbePortAsync(cfg.Host, cfg.Port, 300, ct).ConfigureAwait(false))
             {
                 if (!startIfNeeded)
-                    throw new BackendException(
-                        $"ERROR: nothing is listening on {cfg.Host}:{cfg.Port}. Call connect to start the backend, or fix the port in ocd.json. See show_config.");
+                {
+                    var nothing = $"ERROR: nothing is listening on {cfg.Host}:{cfg.Port}. Call connect to start the backend, or fix the port in ocd.json. See show_config.";
+                    _traffic.Record("backend", "SYS", nothing, $"{cfg.Host}:{cfg.Port}");
+                    throw new BackendException(nothing);
+                }
 
                 var outcome = await _launcher.EnsureStartedAsync(cfg, ct).ConfigureAwait(false);
+                _traffic.Record("backend", "SYS", outcome.Message, $"{cfg.Host}:{cfg.Port}");
                 if (!outcome.Ok)
                     throw new BackendException(outcome.Message);
                 LastBackendNote = outcome.Message;
@@ -77,6 +87,7 @@ public sealed class BackendSession
             else
             {
                 LastBackendNote = $"using the OpenOCD listener already present on {cfg.Host}:{cfg.Port}";
+                _traffic.Record("backend", "SYS", LastBackendNote, $"{cfg.Host}:{cfg.Port}");
             }
 
             TclRpcClient connected;
@@ -92,9 +103,11 @@ public sealed class BackendSession
             }
             catch (Exception ex)
             {
-                throw new BackendException(
+                var message =
                     $"ERROR: cannot open the OpenOCD TCL-RPC channel on {cfg.Host}:{cfg.Port}: {ex.Message}. " +
-                    "Check the probe wiring and interface_cfg/target_cfg in ocd.json, then retry or call connect.", ex);
+                    "Check the probe wiring and interface_cfg/target_cfg in ocd.json, then retry or call connect.";
+                _traffic.Record("backend", "SYS", message, $"{cfg.Host}:{cfg.Port}");
+                throw new BackendException(message, ex);
             }
 
             Volatile.Write(ref _client, connected);
@@ -108,4 +121,7 @@ public sealed class BackendSession
 
     /// <summary>丢弃当前连接（后端可能已被外部重启或半死）。</summary>
     public void Invalidate() => Interlocked.Exchange(ref _client, null)?.Dispose();
+
+    /// <summary>自己拉起的 openocd 的近期输出（backend_log 工具的数据源）。</summary>
+    public string RecentBackendOutput(int maxLines) => _launcher.RecentOutput(maxLines);
 }

@@ -42,7 +42,7 @@ public static class MemoryTools
 
         try
         {
-            var output = (await BackendSession.Instance.ExecuteAsync(cfg, command, startIfNeeded: true, ct)).Trim();
+            var output = (await BackendSession.Instance.ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: "read_memory")).Trim();
             return $"read {count} x {width}-bit from {Parsing.Hex(start)} ({totalBytes} bytes):\n" +
                    (output.Length == 0 ? "(the backend produced no output)" : output);
         }
@@ -88,7 +88,7 @@ public static class MemoryTools
         string output;
         try
         {
-            output = (await BackendSession.Instance.ExecuteAsync(cfg, command, startIfNeeded: true, ct)).Trim();
+            output = (await BackendSession.Instance.ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: "dump_memory")).Trim();
         }
         catch (BackendException ex)
         {

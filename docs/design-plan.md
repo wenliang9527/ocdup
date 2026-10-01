@@ -2,7 +2,7 @@
 
 | 项目 | 内容 |
 |---|---|
-| 文档版本 | v0.3.3 |
+| 文档版本 | v0.3.4 |
 | 日期 | 2026-09-30 |
 | 状态 | **阶段一进行中**：控制层 + 烧录 + 读内存已实现并验证；断点/观察点/执行控制/符号层/L3 明确后置 |
 | 读者 | 项目负责人（硬件/嵌入式）、后续实现者（Agent 或工程师） |
@@ -14,6 +14,7 @@
 
 | 版本 | 变更 |
 |---|---|
+| v0.3.4 | **流量镜像 + backend_log 工具**（侧边栏面板的数据层前奏）：新增 `Backend/TrafficLog`——每次工具调用发出的 TCL 命令/响应（`ExecuteAsync` 单点镜像，`op` 参数标注发起工具）、后端生命周期事件（拉起/复用/失败诊断）追加到 `%LOCALAPPDATA%\Ocdup\mcp-traffic.jsonl`，字段与 acccom 的 mcp-traffic.jsonl 同一套（id/tool/timestamp/direction/rawHex/text/portTag），DSH 插件可复用 dsh-serial-panel 的尾随逻辑；ocdup 是低频命令-响应，不需要 acccom 版的批量刷盘/内存环（逐条落盘 + 2 MB 轮转）。新增 `backend_log` 工具——launcher 的 200 行滚动缓冲（原仅启动失败诊断用）暴露成只读工具，TCL-RPC 响应里看不到的 `Info:`/`Error:` 异步日志（target reset 等）从此可查。测试 70/70，e2e 补 backend_log 用例 |
 | v0.3.3 | **dump_memory 落盘安全闸**：dump 是「目标侧读、PC 侧写」，此前无任何闸——模型可让 openocd 往任意路径写/覆盖文件，`length` 无上限可请求写满磁盘（提示注入的风险面）。新增 `dump_allowed_paths`（默认 `["dumps/"]`；显式 `[]` = 不限，与 `flash_allowed_paths` 的空值约定一致）与 `dump_max_bytes`（默认 64 MB，0=不限），`PermissionGate.CheckDumpWrite` 复用现有 BLOCKED 文案模式（拦截必带解除指引）；不挂 `read_only` 总闸——dump 正是只读分析 flash 的手段。权限表与 show_config 同步展示；测试 63/63，e2e 补「白名单外 / 超 dump_max_bytes」两用例 |
 | v0.3.2 | **新增 dump_memory 工具**（后端 dump_image：大块读直接落盘，返回路径/字节数/sha256 前缀/前 64 字节 hex 字，绕开 read_memory 的 4KB 文本上限）；探针识别加 60s 进程内缓存（只缓存非空结果，插上即用）+ VID/PID 双通道匹配、ST-Link PID 白名单扩展（V3/V3E）；ServerInfo 版本改随程序集（csproj Version 属性）；ocd.json 改真 JSONC 注释；**A/B 实测定论：多接口 DAPLink 探针（0D28:0204）必须走 cmsis-dap.cfg（auto 默认），atlink_dap_v2.cfg 反而找不到设备**；测试 60/60 |
 | v0.3.1 | **多烧录器兼容**：`interface_cfg` 支持 `"auto"`——连接时经 USB 枚举自动识别探针（AT-Link / CMSIS-DAP / ST-Link / J-Link，按此优先级）并选择接口脚本；gdb/telnet 服务改为 `disabled` 真正关闭（原 `0` 实为随机端口，已实测）；J-Link on Windows 的 SEGGER 驱动冲突写入启动失败诊断；版本命令 `ocd_version` 修正为 `version`（真机报 `invalid command name`）；识别结果经 `connect`/`status` 的 `backend:` 行回报（`BackendSession.LastBackendNote`）；修正探针探测未抽干 stderr 的隐患；文档补齐命令行形态、命令名核对表、项目结构与测试数 |
@@ -181,6 +182,7 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 - **重复启动防护**：先探测端口；已在运行（无论是谁启动的）就不重复拉起。
 - **启动失败诊断**：进程提前退出或超时，回报**近期输出**（rolling buffer 200 行）+ 一句「下一步怎么做」。
 - **退出**：`AppDomain.ProcessExit` 钩子 + `Dispose` 回收自己启动的进程（`Kill(entireProcessTree: true)`）；超时也回收，不留半死实例占着探针（C5）。
+- **输出缓冲可读**（v0.3.4）：抽干的 stdout/stderr 除启动失败诊断外，还经 `RecentOutput(maxLines)`（纯函数 `TailLines` 可单测）暴露给 `backend_log` 工具——TCL-RPC 是请求/响应通道，target reset/halt 这类异步日志只在进程输出里。
 - 命令行固定形态：`-s <scripts>` `-c bindto <host>` `-f <interface_cfg>` `[-c "transport select <t>"]` `[-f <target_cfg>]` `-c gdb_port disabled` `-c telnet_port disabled` `-c tcl_port <port>`——用 `disabled` **真正关闭** gdb/telnet 服务，TCL-RPC 是唯一对外端口；`bindto` 保证只监听 localhost（C8）。
 
 > **端口语义实测**（atopenocd 0.11.0+dev-snapshot 2024-08-05，本机复验）：

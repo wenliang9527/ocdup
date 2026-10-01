@@ -17,7 +17,8 @@ public readonly record struct LaunchOutcome(bool Ok, string Message);
 /// </summary>
 public sealed class OpenOcdLauncher : IDisposable
 {
-    private const int MaxBufferLines = 200;
+    /// <summary>输出缓冲上限（行）。公开供 backend_log 工具对齐上限。</summary>
+    public const int MaxBufferLines = 200;
     private static readonly TimeSpan StartupTimeout = TimeSpan.FromSeconds(15);
 
     private readonly object _sync = new();
@@ -300,6 +301,35 @@ public sealed class OpenOcdLauncher : IDisposable
         }
     }
 
+    /// <summary>
+    /// 取 lines 的最后 maxLines 行，"\n" 连接。纯函数，公开以便单测。
+    /// </summary>
+    public static string TailLines(IReadOnlyList<string> lines, int maxLines)
+    {
+        if (maxLines < 1) maxLines = 1;
+        var start = Math.Max(0, lines.Count - maxLines);
+        var sb = new StringBuilder();
+        for (var i = start; i < lines.Count; i++)
+        {
+            if (sb.Length > 0) sb.Append('\n');
+            sb.Append(lines[i]);
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// 自己启动的 openocd 的近期输出（旧行先丢）。backend_log 工具与启动失败诊断共用。
+    /// </summary>
+    public string RecentOutput(int maxLines = MaxBufferLines)
+    {
+        List<string> snapshot;
+        lock (_sync)
+        {
+            snapshot = _output.ToList();
+        }
+        return TailLines(snapshot, maxLines);
+    }
+
     private string BuildFailureMessage(string binary, string reason, string probeNote = "")
     {
         var sb = new StringBuilder();
@@ -311,7 +341,7 @@ public sealed class OpenOcdLauncher : IDisposable
             sb.Append(probeNote);
         }
 
-        var recent = RecentOutput();
+        var recent = RecentOutput(MaxBufferLines);
         if (recent.Length > 0)
         {
             sb.AppendLine();
@@ -330,14 +360,6 @@ public sealed class OpenOcdLauncher : IDisposable
                       "(SEGGER tools will not see the probe until you switch the driver back).");
         }
         return sb.ToString();
-    }
-
-    private string RecentOutput()
-    {
-        lock (_sync)
-        {
-            return _output.Count == 0 ? "" : string.Join("\n", _output);
-        }
     }
 
     private void OnProcessExit(object? sender, EventArgs e) => Stop();

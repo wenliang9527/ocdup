@@ -10,6 +10,7 @@
   7. show_config(reload=true) 能重读 ocd.json
   8. 无 openocd 可执行文件 / 后端进程起不来时，connect 给出可操作报错
   9. dump_memory 落盘闸：白名单内放行落盘，白名单外 / 超 dump_max_bytes 被拦截
+  10. backend_log：非 ocdup 启动的后端如实说明「无捕获输出」
 """
 import json
 import os
@@ -223,6 +224,9 @@ def main():
 
         banner("connect")
         print(mcp.call("connect"))
+
+        banner("backend_log (fake backend was started outside ocdup -> no captured output)")
+        print(mcp.call("backend_log"))
 
         banner("flash_info")
         print(mcp.call("flash_info"))

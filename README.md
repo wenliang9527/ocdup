@@ -1,9 +1,9 @@
 # Ocdup
 
-PC 侧的 OpenOCD 门面（MCP 服务器）：让 MCP 客户端（DSH / Claude Code / Cursor…）用自然语言完成
+PC 侧的 OpenOCD 门面（MCP 服务器）：让 MCP 客户端（DSH / ZCode / Claude Code / Cursor…）用自然语言完成
 **连接探针 → 烧录固件 → 按地址读回数据**。
 
-设计文档：[docs/design-plan.md](docs/design-plan.md)（v0.3.3，范围收敛为「下载 + 读指定地址」）。
+设计文档：[docs/design-plan.md](docs/design-plan.md)（v0.3.4，范围收敛为「下载 + 读指定地址」）。
 
 ## 当前能力（阶段一）
 
@@ -16,6 +16,7 @@ PC 侧的 OpenOCD 门面（MCP 服务器）：让 MCP 客户端（DSH / Claude C
 | `flash_write` | **下载**：烧录镜像（写 + 可选校验 + 可选复位运行） | read_only / allow_flash / 白名单 / 上限 |
 | `read_memory` | **读指定地址**：按 8/16/32 位宽度读回 | 只读 + 体积上限 |
 | `dump_memory` | **大块读落盘**：整片 flash / RAM 快照存成文件，返回 sha256 + 前 64 字节 | 目标侧只读；PC 侧写入面：dump_allowed_paths 白名单（默认 `dumps/`）+ dump_max_bytes 上限（默认 64 MB，0=不限） |
+| `backend_log` | 读 ocdup 自己拉起的 openocd 的近期 stdout/stderr（200 行滚动缓冲；TCL-RPC 响应里看不到的 `Info:`/`Error:` 异步日志从这里出） | 只读 |
 
 断点 / 观察点 / 执行控制（halt、resume）/ 符号层（按名读变量）/ L3 协议字典为后续阶段。
 
@@ -83,6 +84,30 @@ PC 侧的 OpenOCD 门面（MCP 服务器）：让 MCP 客户端（DSH / Claude C
    > 发布/升级顺序（实测，DSH 会自动重新拉起死掉的 ocdup，就地覆盖必被锁）：
    > **完全退出 DSH → `dotnet publish src/Ocdup/Ocdup.csproj -c Release -o publish` → 再启动 DSH**。
 
+   **在 ZCode 中注册**（本机已配置，2026-10）：编辑 `~/.zcode/cli/config.json`，
+   在 `mcp.servers` 里加入下面的条目（同样指 `publish/ocdup.exe`，理由同上）；
+   完全退出并重启 ZCode 后，工具以 `mcp__ocdup__<tool>` 出现在所有会话：
+
+   ```json
+   "ocdup": {
+     "enabled": true,
+     "command": "D:\\WORK_VSCODE\\Vibe-coding\\Ocdup\\publish\\ocdup.exe",
+     "args": [],
+     "env": {
+       "OCD_CONFIG": "D:\\WORK_VSCODE\\Vibe-coding\\Ocdup\\ocd.json",
+       "OCD_BIN": "D:\\ARMGCCTool\\atopenocd\\bin\\openocd.exe",
+       "OCD_SCRIPTS": "D:\\ARMGCCTool\\atopenocd\\scripts"
+     },
+     "type": "stdio"
+   }
+   ```
+
+   > 卸载：删除该条目并重启 ZCode。
+   > 仓库还带 ZCode 插件 `plugins/ocdup-zcode`（ocdup-flash skill +
+   > `/ocdup-status`、`/ocdup-flash` 命令，纯知识层、不含 MCP server）：在
+   > ZCode 里把本地插件市场 `plugins/` 目录加进来并安装即可，安装与维护说明见
+   > [plugins/ocdup-zcode/README.md](plugins/ocdup-zcode/README.md)。
+
 4. 典型流程：
 
    ```
@@ -96,9 +121,14 @@ PC 侧的 OpenOCD 门面（MCP 服务器）：让 MCP 客户端（DSH / Claude C
 ## 开发
 
 ```bash
-dotnet test Ocdup.sln                     # 63 个单测，不需要硬件
+dotnet test Ocdup.sln                     # 70 个单测，不需要硬件
 python tools/e2e_fake_backend.py          # 端到端：假 TCL-RPC 后端 + 真实 MCP 会话
 ```
+
+- **流量镜像**：每次工具调用发出的 TCL 命令/响应、后端生命周期事件都会追加到
+  `%LOCALAPPDATA%\Ocdup\mcp-traffic.jsonl`（字段与 acccom 的 mcp-traffic.jsonl 一致，
+  超 2 MB 轮转成 `.1`）。不接 UI 就能排障（直接 grep），将来接侧边栏面板可复用
+  dsh-serial-panel 的尾随逻辑。
 
 - `tools/e2e_fake_backend.py` 会启动一个假的 TCL-RPC 后端（模拟 6666 端口）与真实的 MCP stdio 会话，
   覆盖工具注册、烧录/读内存/落盘链路、权限拦截文案、后端启动失败诊断——**没有硬件也能回归**。
@@ -113,8 +143,8 @@ python tools/e2e_fake_backend.py          # 端到端：假 TCL-RPC 后端 + 真
 
 | 里程碑 | 状态 |
 |---|---|
-| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 63 个单测 + 假后端 e2e 覆盖 |
+| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 70 个单测 + 假后端 e2e 覆盖 |
 | S4 真机联调 | ✅ AT32F403AVGT7 + CMSIS-DAP v2（DAPLink `0D28:0204`）+ atopenocd：`connect` → `flash_info` → `flash_write`（擦 25 扇区、写 + Verified OK、reset run）→ `read_memory` 运行态读回向量表 |
-| S5 打包与客户端注册 | 🟡 已注册进 DSH（desktop + web 两个 profile）；建议把 `command` 切到 `publish/ocdup.exe`，见上 |
+| S5 打包与客户端注册 | 🟡 已注册进 DSH（desktop + web 两个 profile）与 ZCode（`mcp.servers` 条目 + `ocdup-zcode` 插件，均指 `publish/ocdup.exe`）；见上 |
 
 后续里程碑（执行控制、断点/观察点、符号层、L3 协议字典等）见设计文档第 12 节。

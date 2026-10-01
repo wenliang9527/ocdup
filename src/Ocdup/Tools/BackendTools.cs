@@ -3,6 +3,7 @@ using System.Text;
 using ModelContextProtocol.Server;
 using Ocdup.Backend;
 using Ocdup.Config;
+using Ocdup.Launcher;
 
 namespace Ocdup.Tools;
 
@@ -22,8 +23,8 @@ public static class BackendTools
 
         try
         {
-            var version = (await BackendSession.Instance.ExecuteAsync(cfg, "version", startIfNeeded: false, ct)).Trim();
-            var targets = (await BackendSession.Instance.ExecuteAsync(cfg, "targets", startIfNeeded: false, ct)).Trim();
+            var version = (await BackendSession.Instance.ExecuteAsync(cfg, "version", startIfNeeded: false, ct, op: "status")).Trim();
+            var targets = (await BackendSession.Instance.ExecuteAsync(cfg, "targets", startIfNeeded: false, ct, op: "status")).Trim();
 
             var sb = new StringBuilder();
             sb.AppendLine($"OpenOCD: running on {cfg.Host}:{cfg.Port}");
@@ -48,8 +49,8 @@ public static class BackendTools
 
         try
         {
-            var version = (await BackendSession.Instance.ExecuteAsync(cfg, "version", startIfNeeded: true, ct)).Trim();
-            var targets = (await BackendSession.Instance.ExecuteAsync(cfg, "targets", startIfNeeded: false, ct)).Trim();
+            var version = (await BackendSession.Instance.ExecuteAsync(cfg, "version", startIfNeeded: true, ct, op: "connect")).Trim();
+            var targets = (await BackendSession.Instance.ExecuteAsync(cfg, "targets", startIfNeeded: false, ct, op: "connect")).Trim();
 
             var sb = new StringBuilder();
             sb.AppendLine($"connected to OpenOCD on {cfg.Host}:{cfg.Port}");
@@ -64,5 +65,21 @@ public static class BackendTools
         {
             return ex.Message;
         }
+    }
+
+    [McpServerTool(Name = "backend_log")]
+    [Description(
+        "Return recent stdout/stderr lines (Info:/Error: logs) of the OpenOCD process that ocdup itself started - a rolling 200-line buffer. " +
+        "Use it to diagnose flash/read failures and target events that never reach the TCL-RPC response text. Read-only. " +
+        "Returns an explanation instead of log lines when the listener on the command port was started outside ocdup (its output is not captured).")]
+    public static Task<string> BackendLog(int lines = 40, CancellationToken ct = default)
+    {
+        var capped = Math.Clamp(lines, 1, OpenOcdLauncher.MaxBufferLines);
+        var recent = BackendSession.Instance.RecentBackendOutput(capped);
+        return Task.FromResult(recent.Length == 0
+            ? "no captured backend output: ocdup has not started an OpenOCD process in this session. " +
+              "An already-running listener's output goes to its own console, not here. " +
+              "Call connect first so ocdup can start (and capture) the backend."
+            : $"last {capped} openocd output line(s):\n{recent}");
     }
 }
