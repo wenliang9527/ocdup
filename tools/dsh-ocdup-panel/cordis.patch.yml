@@ -1,0 +1,5 @@
+# dsh-ocdup-panel 持久化补丁层(bundle layer)
+# 把 dsh-ocdup-panel 的 loader 条目插入 profile 的 loader 树
+- insert:
+    - id: dsh-ocdup-panel
+      name: dsh-ocdup-panel

@@ -1,0 +1,29 @@
+{
+  "name": "dsh-ocdup-panel",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ocdup 调试面板 DSH 插件：侧边栏入口 + 右侧停靠栏，尾随 ocdup MCP 的 mcp-traffic.jsonl 实时显示 AI 的 OpenOCD 命令/响应/后端事件",
+  "main": "./index.js",
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

@@ -127,8 +127,12 @@ python tools/e2e_fake_backend.py          # 端到端：假 TCL-RPC 后端 + 真
 
 - **流量镜像**：每次工具调用发出的 TCL 命令/响应、后端生命周期事件都会追加到
   `%LOCALAPPDATA%\Ocdup\mcp-traffic.jsonl`（字段与 acccom 的 mcp-traffic.jsonl 一致，
-  超 2 MB 轮转成 `.1`）。不接 UI 就能排障（直接 grep），将来接侧边栏面板可复用
-  dsh-serial-panel 的尾随逻辑。
+  超 2 MB 轮转成 `.1`）。不接 UI 就能排障（直接 grep）；**DSH 侧边栏面板已就位**：
+  [tools/dsh-ocdup-panel/](tools/dsh-ocdup-panel/)（`deploy.cmd web` 部署 + 重启 DSH，
+  右侧停靠栏实时显示命令/响应/后端事件，四色方向、目标过滤、正则搜索、导出 JSONL）。
+
+- **面板插件**：`tools/dsh-ocdup-panel/` 是唯一真源，零依赖行为测试
+  `node test.js core|window|api|client`（69 项断言）；改代码只改真源目录再 `deploy.cmd`。
 
 - `tools/e2e_fake_backend.py` 会启动一个假的 TCL-RPC 后端（模拟 6666 端口）与真实的 MCP stdio 会话，
   覆盖工具注册、烧录/读内存/落盘链路、权限拦截文案、后端启动失败诊断——**没有硬件也能回归**。
