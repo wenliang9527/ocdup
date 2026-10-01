@@ -2,7 +2,7 @@
 
 | 项目 | 内容 |
 |---|---|
-| 文档版本 | v0.3.1 |
+| 文档版本 | v0.3.2 |
 | 日期 | 2026-09-30 |
 | 状态 | **阶段一进行中**：控制层 + 烧录 + 读内存已实现并验证；断点/观察点/执行控制/符号层/L3 明确后置 |
 | 读者 | 项目负责人（硬件/嵌入式）、后续实现者（Agent 或工程师） |
@@ -14,6 +14,7 @@
 
 | 版本 | 变更 |
 |---|---|
+| v0.3.2 | **新增 dump_memory 工具**（后端 dump_image：大块读直接落盘，返回路径/字节数/sha256 前缀/前 64 字节 hex 字，绕开 read_memory 的 4KB 文本上限）；探针识别加 60s 进程内缓存（只缓存非空结果，插上即用）+ VID/PID 双通道匹配、ST-Link PID 白名单扩展（V3/V3E）；ServerInfo 版本改随程序集（csproj Version 属性）；ocd.json 改真 JSONC 注释；**A/B 实测定论：多接口 DAPLink 探针（0D28:0204）必须走 cmsis-dap.cfg（auto 默认），atlink_dap_v2.cfg 反而找不到设备**；测试 60/60 |
 | v0.3.1 | **多烧录器兼容**：`interface_cfg` 支持 `"auto"`——连接时经 USB 枚举自动识别探针（AT-Link / CMSIS-DAP / ST-Link / J-Link，按此优先级）并选择接口脚本；gdb/telnet 服务改为 `disabled` 真正关闭（原 `0` 实为随机端口，已实测）；J-Link on Windows 的 SEGGER 驱动冲突写入启动失败诊断；版本命令 `ocd_version` 修正为 `version`（真机报 `invalid command name`）；识别结果经 `connect`/`status` 的 `backend:` 行回报（`BackendSession.LastBackendNote`）；修正探针探测未抽干 stderr 的隐患；文档补齐命令行形态、命令名核对表、项目结构与测试数 |
 | v0.3 | **范围收敛为「下载 + 读指定地址」**：断点/观察点/执行控制/条件断点/符号层（ELF/SVD）/L3 协议字典/串口协同/watch 全部后置（见第 12 节）；实现层落地 TclRpcClient、OpenOcdLauncher、BackendSession、PermissionGate、ConfigStore 与 6 个工具；配置文件新增 `command_timeout_seconds` / `memory_read_max_bytes`，权限项支持 `permissions` 嵌套块；来源追踪改为按「JSON 属性是否存在」判定；清除 v0.2 残留的 Python 表述 |
 | v0.2 | Q1 定案：C# / .NET 8；探针画像：AT-Link（主力，CMSIS-DAP）+ ST-Link / J-Link / DAPLink；新增「阶段一：烧录闭环先行」（见第 12 节）；第 11 节项目结构改为 C# 形态 |
@@ -28,7 +29,7 @@
 **本轮（v0.3）范围**——只做两件事，做到真机可用：
 
 1. **下载**：`flash_write` 把构建产物烧进目标 flash（写 + 可选校验 + 可选复位运行）；`flash_info` 报告 flash 布局。
-2. **读指定地址的数据**：`read_memory` 按地址与宽度读回目标内存。
+2. **读指定地址的数据**：`read_memory` 按地址与宽度读回目标内存；大块读取（整片 flash / RAM 快照）用 `dump_memory` 直接落盘，绕开文本上限。
 
 支撑这两件事的是**控制层**（TclRpcClient / OpenOcdLauncher / BackendSession）与**权限闸**（PermissionGate）——它们是后续所有能力的地基，本轮必须打牢。
 
@@ -67,7 +68,7 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 ├────────────────────────────────────────────────────────┤
 │  工具层  Tools/*.cs：每个 [McpServerTool] = 一个能力      │
 │          已实现：connect / status / show_config /         │
-│                  flash_info / flash_write / read_memory   │
+│           flash_info / flash_write / read_memory / dump_memory │
 ├──────────────┬────────────────┬────────────────────────┤
 │ 控制层        │ 权限层          │ 配置层                  │
 │ BackendSession│ PermissionGate │ ConfigStore             │
@@ -188,9 +189,11 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 
 - 连接阶段枚举 USB 设备（Windows 走 `Get-PnpDevice -PresentOnly`），按签名表 **AT-Link → CMSIS-DAP/DAPLink → ST-Link → J-Link** 选接口脚本（同种探针去重；结果按表优先级排序，与枚举顺序无关）。
 - 识别不到就返回可操作报错：提示插上探针或显式指定 `interface_cfg`，不静默乱猜。
-- 识别结果通过 `connect` / `status` 输出里的 `backend: probe auto-detected: AT-Link -> interface/atlink_dap_v2.cfg` 行回报（`BackendSession.LastBackendNote`），**不写回配置**。
+- 识别结果通过 `connect` / `status` 输出里的 `backend: probe auto-detected: AT-Link -> interface/atlink_dap_v2.cfg (evidence: …)` 行回报（`BackendSession.LastBackendNote`），**不写回配置**；启动失败时的诊断里也会带这一行——否则"它到底选了哪个脚本"无从得知。
 - 解析逻辑（`ProbeDetector.Parse`，纯函数）与系统调用（`DetectAsync`）分离，前者可无硬件单测；探测失败/超时（10s）一律降级为「未找到」，不阻断烧录流程。
-- 已知边界：匹配依据是设备显示名；J-Link 在 Windows 上若被 SEGGER 驱动独占，OpenOCD 会报 `LIBUSB_ERROR_NOT_FOUND`，失败诊断里已附「换 AT-Link/CMSIS-DAP 或用 Zadig 切 WinUSB」的说明。
+- **已知边界 1（脚本选择，A/B 实测定论）**：本机这根探针为 DAPLink 公版固件（`0D28:0204`），一个物理设备枚举成 5 个 `MI_` 接口。同机对照实验：`interface/cmsis-dap.cfg`（auto 的选择）→ OpenOCD 自报 `Using CMSIS-DAPv2 interface with VID:PID=0x0d28:0x0204`，examine 成功（**S4 烧录就是用它完成的**）；`interface/atlink_dap_v2.cfg`（钉死 `usb_bulk + interface 3`）→ `unable to find a matching CMSIS-DAP device`（exit 1）。**结论：多接口 DAPLink 探针就用 auto 的 `cmsis-dap.cfg`，不要换供应商脚本**；`atlink_dap_v2.cfg` 留给原生 AT-Link（VID 2E3C）设备。
+- **已知边界 2（枚举开销）**：`Get-PnpDevice` 在 189 台设备的机器上实测约 **3.1–3.4s**（瓶颈在 PnP 枚举本身）。已加 **60s 进程内缓存**（`ProbeDetector.DetectAsync`），且只缓存非空结果——空结果不缓存，保证「刚插上探针就 connect」能被 auto 发现。
+- 已知边界 3（驱动）：J-Link 在 Windows 上若被 SEGGER 驱动独占，OpenOCD 会报 `LIBUSB_ERROR_NOT_FOUND`，失败诊断里已附「换 AT-Link/CMSIS-DAP 或用 Zadig 切 WinUSB」的说明。
 
 ### 4.6 自 provisioning
 
@@ -212,6 +215,7 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 | **本轮** | `flash_info` | 列出 flash banks（驱动、基址、大小） | 只读 | ✅ |
 | **本轮** | `flash_write` | **下载**：烧录镜像（写 + 可选校验 + 可选复位运行） | read_only / allow_flash / 白名单 / 上限 | ✅ |
 | **本轮** | `read_memory` | **读指定地址**：按宽度读回目标内存 | 只读 + 体积上限 | ✅ |
+| **本轮** | `dump_memory` | **大块读落盘**：`dump_image` 到文件（整片 flash / RAM 快照），返回路径 + 字节数 + sha256 + 前 64 字节 | 只读 | ✅ |
 | P1 | `halt` / `resume` / `step` / `reset` | 执行控制 | 变更目标状态 | ⏸ |
 | P1 | `write_memory` / `write_register` | 存储器与寄存器写 | `allow_memory_write` | ⏸ |
 | P1 | `add_breakpoint` / `remove_breakpoint` / `list_breakpoints` | 断点管理 | — | ⏸ |
@@ -233,6 +237,7 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 
 - `flash_write`：默认 `verify=true`、`reset=true`。命令序列为 `program <file> [verify] [<address>]`，成功后若 `reset=true` 再执行 `reset run`。若后端输出含 `Error:`/`failed`（保守判定），跳过 `reset run` 并提示失败可能；`.bin` 必须显式给 `address`（`.elf`/`.hex` 自带地址）。
 - `read_memory`：`mdb`/`mdh`/`mdw` 对应 `width=8/16/32`；返回 `read N x W-bit from 0xADDR (B bytes):` + 后端原始数据行。
+- `dump_memory`：`dump_image {file} {addr} {length}`，输出文件父目录自动创建；返回 dumped 路径/字节数/sha256 前缀/前 64 字节 hex 字；请求字节数与实际不符或后端报错时附 NOTE。
 - `status`：只用 300ms 端口探测 + 已连通的 TCL-RPC 查询，**不启动**任何进程。
 
 ---
@@ -366,7 +371,7 @@ Ocdup/
 │   ├── Tools/BackendTools.cs        # connect / status
 │   ├── Tools/ConfigTools.cs         # show_config
 │   ├── Tools/FlashTools.cs          # flash_info / flash_write
-│   ├── Tools/MemoryTools.cs         # read_memory
+│   ├── Tools/MemoryTools.cs         # read_memory / dump_memory
 │   ├── Tools/Parsing.cs             # 地址解析/渲染
 │   └── Ocdup.csproj
 ├── tests/Ocdup.Tests/               # 假 socket 分帧/串行/超时 + 权限矩阵 + 配置加载 + 探针识别
@@ -464,7 +469,7 @@ Ocdup/
 
 ## 17. 交付结论与下一步（HANDOFF）
 
-**当前状态（v0.3.1）**：**S4 真机联调已通过** ✅（AT32F403AVGT7 + CMSIS-DAP v2 探针 + atopenocd：connect → flash_info → flash_write S300plus.hex 139077 字节，擦 25 扇区、写+校验 Verified OK、reset run、运行态读回向量表 0x08000000 = `20019d28 080002ad …`）。49 个单元测试全绿；剩余 **S5 打包注册**。
+**当前状态（v0.3.2）**：**S4 真机联调已通过** ✅（AT32F403AVGT7 + CMSIS-DAP v2 探针 + atopenocd：connect → flash_info → flash_write S300plus.hex 139077 字节，擦 25 扇区、写+校验 Verified OK、reset run、运行态读回向量表 0x08000000 = `20019d28 080002ad …`）。49 个单元测试全绿；剩余 **S5 打包注册**。
 
 **建议的下一步顺序**：
 
