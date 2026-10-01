@@ -32,7 +32,7 @@ public static class BackendTools
             if (BackendSession.Instance.LastBackendNote is { Length: > 0 } note)
                 sb.AppendLine($"backend: {note}");
             sb.AppendLine("targets:");
-            sb.Append(targets.Length == 0 ? "(none - is target_cfg set in ocd.json?)" : targets);
+            sb.Append(FormatTargets(targets));
             return sb.ToString();
         }
         catch (BackendException ex)
@@ -40,6 +40,12 @@ public static class BackendTools
             return $"OpenOCD: {cfg.Host}:{cfg.Port} has a listener, but the TCL-RPC channel failed: {ex.Message}";
         }
     }
+
+    /// <summary>targets 输出优先用一行式摘要（省 token）；解析失败回退原始表格。</summary>
+    private static string FormatTargets(string rawTargets) =>
+        rawTargets.Length == 0
+            ? "(none - is target_cfg set in ocd.json?)"
+            : Parsing.TrySummarizeTargets(rawTargets) ?? rawTargets;
 
     [McpServerTool(Name = "connect")]
     [Description("Connect to the OpenOCD backend on the configured command port, starting openocd from ocd.json (interface_cfg/target_cfg) when nothing is listening yet. Returns the OpenOCD version and the target state. Call this before flash_write/read_memory in a fresh session.")]
@@ -58,7 +64,7 @@ public static class BackendTools
             if (BackendSession.Instance.LastBackendNote is { Length: > 0 } note)
                 sb.AppendLine($"backend: {note}");
             sb.AppendLine("targets:");
-            sb.Append(targets.Length == 0 ? "(none - is target_cfg set in ocd.json?)" : targets);
+            sb.Append(FormatTargets(targets));
             return sb.ToString();
         }
         catch (BackendException ex)

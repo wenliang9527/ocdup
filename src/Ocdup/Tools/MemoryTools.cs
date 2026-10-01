@@ -15,13 +15,15 @@ public static class MemoryTools
     [McpServerTool(Name = "read_memory")]
     [Description(
         "Read target memory at an address. Parameters: address (hex string like '0x20000000'), count (how many units to read, default 16), " +
-        "width (unit size in bits: 8, 16 or 32, default 32). Returns the '<addr>: <values>' lines reported by the backend. " +
+        "width (unit size in bits: 8, 16 or 32, default 32), format ('text' = the backend's '<addr>: <values>' lines, default; " +
+        "'json' = structured {address,width,count,bytes,values:[hex strings]} parsed from the same text - an unparseable output returns an ERROR with the raw text). " +
         "Read-only. If the read fails while the CPU is running, halt it from the client first - halt/resume are not part of this stage. " +
         "For large ranges (whole flash bank, big RAM snapshot) use dump_memory instead - this tool is capped by memory_read_max_bytes.")]
     public static async Task<string> ReadMemory(
         [Description("Start address, hex string like '0x20000000'.")] string address,
         [Description("Number of units to read (default 16). The total size is capped by memory_read_max_bytes.")] int count = 16,
         [Description("Unit width in bits: 8, 16 or 32 (default 32).")] int width = 32,
+        [Description("Output format: 'text' (backend lines, default) or 'json' (structured values).")] string format = "text",
         CancellationToken ct = default)
     {
         var cfg = ConfigStore.Instance.Current;
@@ -32,6 +34,9 @@ public static class MemoryTools
             return "ERROR: count must be a positive integer.";
         if (width is not (8 or 16 or 32))
             return "ERROR: width must be 8, 16 or 32.";
+        var json = string.Equals(format, "json", StringComparison.OrdinalIgnoreCase);
+        if (!json && !string.Equals(format, "text", StringComparison.OrdinalIgnoreCase))
+            return $"ERROR: format '{format}' is not supported. Use 'text' or 'json'.";
 
         var totalBytes = (long)count * width / 8;
         if (PermissionGate.CheckReadLimit(cfg, totalBytes, "read_memory") is { } blocked)
@@ -43,8 +48,29 @@ public static class MemoryTools
         try
         {
             var output = (await BackendSession.Instance.ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: "read_memory")).Trim();
-            return $"read {count} x {width}-bit from {Parsing.Hex(start)} ({totalBytes} bytes):\n" +
-                   (output.Length == 0 ? "(the backend produced no output)" : output);
+            if (output.Length == 0)
+                return $"ERROR: the backend produced no output for '{command}'.";
+
+            if (json)
+            {
+                if (!Parsing.TryParseMemoryOutput(output, width, count, out var values))
+                    return $"ERROR: could not parse the backend output as {count} x {width}-bit values. Raw output:\n{output}";
+                var sb = new StringBuilder(count * 14 + 96);
+                sb.Append("{\"address\":\"").Append(Parsing.Hex(start))
+                  .Append("\",\"width\":").Append(width)
+                  .Append(",\"count\":").Append(count)
+                  .Append(",\"bytes\":").Append(totalBytes)
+                  .Append(",\"values\":[");
+                for (var i = 0; i < values.Length; i++)
+                {
+                    if (i > 0) sb.Append(',');
+                    sb.Append('"').Append(Parsing.HexValue(values[i], width)).Append('"');
+                }
+                sb.Append("]}");
+                return sb.ToString();
+            }
+
+            return $"read {count} x {width}-bit from {Parsing.Hex(start)} ({totalBytes} bytes):\n" + output;
         }
         catch (BackendException ex)
         {

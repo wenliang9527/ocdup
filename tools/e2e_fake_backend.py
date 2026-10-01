@@ -56,6 +56,13 @@ def handle_command(cmd):
                 f.write(data)
             return ""
         return "Error: fake backend could not parse dump_image"
+    if c.startswith("verify_image"):
+        m = re.match(r"verify_image \{(.+?)\}( 0x[0-9a-fA-F]+)?$", c)
+        if m:
+            path = m.group(1)
+            size = os.path.getsize(path) if os.path.exists(path) else 4096
+            return "verified %d bytes in 0.01s" % size
+        return "Error: fake backend could not parse verify_image"
     if c.startswith("mdw"):
         parts = c.split()
         addr = int(parts[1], 16)
@@ -233,6 +240,12 @@ def main():
 
         banner("read_memory 0x20000000 x8 (32-bit)")
         print(mcp.call("read_memory", {"address": "0x20000000", "count": 8}))
+
+        banner("read_memory format=json (structured values)")
+        print(mcp.call("read_memory", {"address": "0x20000000", "count": 8, "format": "json"}))
+
+        banner("verify_image build/fw.bin @0x08000000 (read-only compare)")
+        print(mcp.call("verify_image", {"file": "build/fw.bin", "address": "0x08000000"}))
 
         banner("dump_memory 0x08000000 x4096 -> dumps/flash-head.bin")
         print(mcp.call("dump_memory", {"file": "dumps/flash-head.bin", "address": "0x08000000", "length": 4096}))

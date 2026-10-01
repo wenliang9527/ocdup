@@ -117,6 +117,81 @@ public static class FlashTools
         return sb.ToString();
     }
 
+    [McpServerTool(Name = "verify_image")]
+    [Description(
+        "Compare an image file against the target flash WITHOUT writing anything (backend command 'verify_image'). " +
+        "Use it to answer 'what firmware is actually on the board' - e.g. re-verify a previously flashed build. " +
+        "Parameters: file (.elf/.hex/.bin; relative paths resolve against the ocd.json directory), " +
+        "address (required for raw .bin, hex string like '0x08000000'; ignored for .elf/.hex). " +
+        "Read-only: no permission gate applies and no file is written on this PC.")]
+    public static async Task<string> VerifyImage(
+        [Description("Path to the image to verify against target flash (.elf/.hex/.bin).")] string file,
+        [Description("Offset for raw .bin images, hex string like '0x08000000'. Ignored for .elf/.hex.")] string? address = null,
+        CancellationToken ct = default)
+    {
+        var cfg = ConfigStore.Instance.Current;
+
+        string resolved;
+        try
+        {
+            resolved = cfg.ResolvePath(file);
+        }
+        catch (Exception ex)
+        {
+            return $"ERROR: '{file}' is not a usable path: {ex.Message}";
+        }
+
+        if (!File.Exists(resolved))
+            return $"ERROR: '{resolved}' does not exist. Pass the path of the built image (.elf/.hex/.bin); " +
+                   "relative paths are resolved against the ocd.json directory (see show_config for its location).";
+
+        var image = new FileInfo(resolved);
+        long? loadAddress = null;
+        if (!string.IsNullOrWhiteSpace(address))
+        {
+            if (!Parsing.TryParseHex(address, out var parsed))
+                return $"ERROR: address '{address}' is not a hex value. Use a hex string like '0x08000000'.";
+            loadAddress = parsed;
+        }
+        else if (resolved.EndsWith(".bin", StringComparison.OrdinalIgnoreCase))
+        {
+            return "ERROR: a raw .bin image needs an explicit offset, e.g. verify_image(file=\"build/fw.bin\", address=\"0x08000000\"). " +
+                   "An .elf/.hex image carries its own addresses and needs no address argument.";
+        }
+
+        var command = new StringBuilder("verify_image ").Append(Tcl.Quote(resolved));
+        if (loadAddress is { } addr) command.Append(' ').Append(Parsing.Hex(addr));
+
+        string output;
+        try
+        {
+            output = (await BackendSession.Instance.ExecuteAsync(cfg, command.ToString(), startIfNeeded: true, ct, op: "verify_image")).Trim();
+        }
+        catch (BackendException ex)
+        {
+            return ex.Message;
+        }
+
+        return InterpretVerifyOutput(output) is { } problem
+            ? $"VERIFY FAILED: {resolved} ({image.Length} bytes) does not match the target flash.\n" +
+              $"problem: {problem}\nbackend output:\n{output}"
+            : $"verified: {resolved} ({image.Length} bytes) matches the target flash.\nbackend: " +
+              (output.Length == 0 ? "(no output)" : output);
+    }
+
+    /// <summary>
+    /// 判定 verify_image 的后端输出（纯函数，便于单测）：返回 null = 校验通过；
+    /// 返回字符串 = 失败/存疑的原因。成功形态是 "verified N bytes in Ts"；
+    /// 任何 Error:/failed/mismatch/No source/空输出 都判不通过（保守：宁误报失败）。
+    /// </summary>
+    public static string? InterpretVerifyOutput(string output)
+    {
+        if (output.Length == 0) return "the backend produced no output";
+        if (output.Contains("verified", StringComparison.OrdinalIgnoreCase) && !LooksLikeFailure(output))
+            return null;
+        return LooksLikeFailure(output) ? "the backend reported an error" : "no 'verified N bytes' confirmation in the output";
+    }
+
     /// <summary>保守判断：OpenOCD 失败时会输出 Error:/failed 文本，命中就不做后续动作。</summary>
     private static bool LooksLikeFailure(string output) =>
         output.Contains("Error:", StringComparison.OrdinalIgnoreCase) ||

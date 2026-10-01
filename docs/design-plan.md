@@ -2,7 +2,7 @@
 
 | 项目 | 内容 |
 |---|---|
-| 文档版本 | v0.3.4 |
+| 文档版本 | v0.3.5 |
 | 日期 | 2026-09-30 |
 | 状态 | **阶段一进行中**：控制层 + 烧录 + 读内存已实现并验证；断点/观察点/执行控制/符号层/L3 明确后置 |
 | 读者 | 项目负责人（硬件/嵌入式）、后续实现者（Agent 或工程师） |
@@ -14,6 +14,7 @@
 
 | 版本 | 变更 |
 |---|---|
+| v0.3.5 | **读路径体验升级**（高频路径直接受益）：① `read_memory` 新增 `format=json`——`Parsing.TryParseMemoryOutput` 解析 mdw/mdh/mdb 文本为结构化 `{address,width,count,bytes,values:[hex]}`，免得模型自己解析 OpenOCD 文本；解析失败带原文返回（运行态读错误不被吞）；② `status`/`connect` 的 `targets` 表格解析成一行式摘要（`TrySummarizeTargets`，`0* name (type, endian) state`），失败回退原文；③ 新增 `verify_image` 工具（后端 `verify_image` 命令）——镜像与目标 flash 比对、**不写任何东西**，回答「板子里到底是谁」；判定 `InterpretVerifyOutput` 保守策略（无 `verified N bytes` 确认即判存疑）。工具数 9；测试 89/89，e2e 补 format=json 与 verify_image 用例 |
 | v0.3.4 | **流量镜像 + backend_log 工具**（侧边栏面板的数据层前奏）：新增 `Backend/TrafficLog`——每次工具调用发出的 TCL 命令/响应（`ExecuteAsync` 单点镜像，`op` 参数标注发起工具）、后端生命周期事件（拉起/复用/失败诊断）追加到 `%LOCALAPPDATA%\Ocdup\mcp-traffic.jsonl`，字段与 acccom 的 mcp-traffic.jsonl 同一套（id/tool/timestamp/direction/rawHex/text/portTag），DSH 插件可复用 dsh-serial-panel 的尾随逻辑；ocdup 是低频命令-响应，不需要 acccom 版的批量刷盘/内存环（逐条落盘 + 2 MB 轮转）。新增 `backend_log` 工具——launcher 的 200 行滚动缓冲（原仅启动失败诊断用）暴露成只读工具，TCL-RPC 响应里看不到的 `Info:`/`Error:` 异步日志（target reset 等）从此可查。测试 70/70，e2e 补 backend_log 用例 |
 | v0.3.3 | **dump_memory 落盘安全闸**：dump 是「目标侧读、PC 侧写」，此前无任何闸——模型可让 openocd 往任意路径写/覆盖文件，`length` 无上限可请求写满磁盘（提示注入的风险面）。新增 `dump_allowed_paths`（默认 `["dumps/"]`；显式 `[]` = 不限，与 `flash_allowed_paths` 的空值约定一致）与 `dump_max_bytes`（默认 64 MB，0=不限），`PermissionGate.CheckDumpWrite` 复用现有 BLOCKED 文案模式（拦截必带解除指引）；不挂 `read_only` 总闸——dump 正是只读分析 flash 的手段。权限表与 show_config 同步展示；测试 63/63，e2e 补「白名单外 / 超 dump_max_bytes」两用例 |
 | v0.3.2 | **新增 dump_memory 工具**（后端 dump_image：大块读直接落盘，返回路径/字节数/sha256 前缀/前 64 字节 hex 字，绕开 read_memory 的 4KB 文本上限）；探针识别加 60s 进程内缓存（只缓存非空结果，插上即用）+ VID/PID 双通道匹配、ST-Link PID 白名单扩展（V3/V3E）；ServerInfo 版本改随程序集（csproj Version 属性）；ocd.json 改真 JSONC 注释；**A/B 实测定论：多接口 DAPLink 探针（0D28:0204）必须走 cmsis-dap.cfg（auto 默认），atlink_dap_v2.cfg 反而找不到设备**；测试 60/60 |

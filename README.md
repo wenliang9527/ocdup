@@ -3,7 +3,7 @@
 PC 侧的 OpenOCD 门面（MCP 服务器）：让 MCP 客户端（DSH / ZCode / Claude Code / Cursor…）用自然语言完成
 **连接探针 → 烧录固件 → 按地址读回数据**。
 
-设计文档：[docs/design-plan.md](docs/design-plan.md)（v0.3.4，范围收敛为「下载 + 读指定地址」）。
+设计文档：[docs/design-plan.md](docs/design-plan.md)（v0.3.5，范围收敛为「下载 + 读指定地址」）。
 
 ## 当前能力（阶段一）
 
@@ -14,8 +14,9 @@ PC 侧的 OpenOCD 门面（MCP 服务器）：让 MCP 客户端（DSH / ZCode / 
 | `show_config` | 有效设置与每项来源（`reload=true` 重读 ocd.json） | — |
 | `flash_info` | 列出 flash banks（驱动、基址、大小） | 只读 |
 | `flash_write` | **下载**：烧录镜像（写 + 可选校验 + 可选复位运行） | read_only / allow_flash / 白名单 / 上限 |
-| `read_memory` | **读指定地址**：按 8/16/32 位宽度读回 | 只读 + 体积上限 |
+| `read_memory` | **读指定地址**：按 8/16/32 位宽度读回；`format=json` 返回结构化值（免解析 OpenOCD 文本） | 只读 + 体积上限 |
 | `dump_memory` | **大块读落盘**：整片 flash / RAM 快照存成文件，返回 sha256 + 前 64 字节 | 目标侧只读；PC 侧写入面：dump_allowed_paths 白名单（默认 `dumps/`）+ dump_max_bytes 上限（默认 64 MB，0=不限） |
+| `verify_image` | **烧后独立校验**：镜像与目标 flash 比对，不写任何东西（回答"板子里到底是谁"） | 只读 |
 | `backend_log` | 读 ocdup 自己拉起的 openocd 的近期 stdout/stderr（200 行滚动缓冲；TCL-RPC 响应里看不到的 `Info:`/`Error:` 异步日志从这里出） | 只读 |
 
 断点 / 观察点 / 执行控制（halt、resume）/ 符号层（按名读变量）/ L3 协议字典为后续阶段。
@@ -121,7 +122,7 @@ PC 侧的 OpenOCD 门面（MCP 服务器）：让 MCP 客户端（DSH / ZCode / 
 ## 开发
 
 ```bash
-dotnet test Ocdup.sln                     # 70 个单测，不需要硬件
+dotnet test Ocdup.sln                     # 89 个单测，不需要硬件
 python tools/e2e_fake_backend.py          # 端到端：假 TCL-RPC 后端 + 真实 MCP 会话
 ```
 
@@ -147,7 +148,7 @@ python tools/e2e_fake_backend.py          # 端到端：假 TCL-RPC 后端 + 真
 
 | 里程碑 | 状态 |
 |---|---|
-| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 70 个单测 + 假后端 e2e 覆盖 |
+| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 89 个单测 + 假后端 e2e 覆盖 |
 | S4 真机联调 | ✅ AT32F403AVGT7 + CMSIS-DAP v2（DAPLink `0D28:0204`）+ atopenocd：`connect` → `flash_info` → `flash_write`（擦 25 扇区、写 + Verified OK、reset run）→ `read_memory` 运行态读回向量表 |
 | S5 打包与客户端注册 | 🟡 已注册进 DSH（desktop + web 两个 profile）与 ZCode（`mcp.servers` 条目 + `ocdup-zcode` 插件，均指 `publish/ocdup.exe`）；见上 |
 
