@@ -22,7 +22,13 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-op-'))
 const logFile = process.env.DSH_OCDUP_PANEL_LOG
 
 if (!logFile && mode !== 'client') { console.error('DSH_OCDUP_PANEL_LOG must be set'); process.exit(1) }
-if (logFile) fs.mkdirSync(path.dirname(logFile), { recursive: true })
+if (logFile) {
+  fs.mkdirSync(path.dirname(logFile), { recursive: true })
+  // 清掉上次运行残留:否则 apply 时会先读入旧内容、offset 停在旧文件末尾,
+  // 随后 writeFileSync 的新内容只被"增量"读到一半(T1 丢行的根因)。
+  fs.rmSync(logFile, { force: true })
+  fs.rmSync(logFile + '.1', { force: true })
+}
 
 const line = (id, dir, text, tag, ts, tool) => JSON.stringify({
   id, tool: tool || 'read_memory', timestamp: ts || '2026-10-01T10:00:00.123+08:00',
@@ -126,6 +132,20 @@ const ok = (cond, label, extra) => {
     r = await call('/api/ocdup-log', { method: 'GET', url: '/?since=0' })
     ok(r.ok && r.entries.length === 1 && r.entries[0].text === 'after-bad', 'T7 坏行跳过,后续行照常解析', r.entries)
     ok(r.stats.badLines === 1, 'T7 坏行计数入 stats', r.stats.badLines)
+
+    // T7b log 方向归一化(openocd 异步日志镜像,面板 v1.1.0)
+    // 注意:先走 clear 截断(生产中唯一的全量重写路径),否则大文件全量重写
+    // 会被当作增量、从旧 offset 中段读入(真实运行中不存在这种写入形态)。
+    await call('/api/ocdup-log/clear', { method: 'POST', url: '/' })
+    await sleep(500)
+    fs.writeFileSync(logFile, [
+      line(200, 'cmd', 'mww 0x20000000 1'),
+      line(201, 'log', 'Info : flash erase sectors 0 3'),
+    ].join('\n') + '\n')
+    await sleep(600)
+    r = await call('/api/ocdup-log', { method: 'GET', url: '/?since=0' })
+    ok(r.entries.length === 2 && r.entries[1].dir === 'log', 'T7b log 方向归一化为小写', r.entries.map((e) => e.dir))
+    ok(r.stats.log === 1 && r.stats.cmd === 1, 'T7b log 计数入 stats', { log: r.stats.log, cmd: r.stats.cmd })
   }
 
   if (mode === 'window') {

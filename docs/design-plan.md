@@ -2,7 +2,7 @@
 
 | 项目 | 内容 |
 |---|---|
-| 文档版本 | v0.3.6 |
+| 文档版本 | v0.3.7 |
 | 日期 | 2026-09-30 |
 | 状态 | **阶段一进行中**：控制层 + 烧录 + 读内存已实现并验证；断点/观察点/执行控制/符号层/L3 明确后置 |
 | 读者 | 项目负责人（硬件/嵌入式）、后续实现者（Agent 或工程师） |
@@ -14,6 +14,7 @@
 
 | 版本 | 变更 |
 |---|---|
+| v0.3.7 | **openocd 异步日志镜像 + 面板 v1.1**：`OpenOcdLauncher.PumpAsync` 把抽干的 stdout/stderr 逐行 `Record("backend","log",…)` 进流量 JSONL——烧录进度（逐扇区 erase/write）、`Info:`/`Error:`、target 事件从此在侧边栏面板实时可见（此前只在 `backend_log` 工具与启动失败诊断里）。面板（v1.1.0）：direction 新增 `log`（石板灰），过滤下拉与 stats 同步；行为测试 71 项断言全过 |
 | v0.3.6 | **补全「闸就位、工具缺位」三件套**（能力矩阵闭环）：`write_memory`（mww/mwh/mwb 一条命令写多值，单次 ≤256 值，`CheckMemoryWrite` 前置）；`flash_erase_sector`（`flash erase_sector bank first last`，last 支持 -1=到 bank 末尾，`CheckFlashErase`——**默认关闭**，破坏性操作显式开启）；`run_command` 原始 TCL 逃生舱（单行命令，`CheckRawCommand`）。工具数 12；权限闸逻辑沿用既有单测，e2e 补「放行写内存 / 默认拦截擦除 / 逃生舱透传 / read_only 全拦」四条链路 |
 | v0.3.5 | **读路径体验升级**（高频路径直接受益）：① `read_memory` 新增 `format=json`——`Parsing.TryParseMemoryOutput` 解析 mdw/mdh/mdb 文本为结构化 `{address,width,count,bytes,values:[hex]}`，免得模型自己解析 OpenOCD 文本；解析失败带原文返回（运行态读错误不被吞）；② `status`/`connect` 的 `targets` 表格解析成一行式摘要（`TrySummarizeTargets`，`0* name (type, endian) state`），失败回退原文；③ 新增 `verify_image` 工具（后端 `verify_image` 命令）——镜像与目标 flash 比对、**不写任何东西**，回答「板子里到底是谁」；判定 `InterpretVerifyOutput` 保守策略（无 `verified N bytes` 确认即判存疑）。工具数 9；测试 89/89，e2e 补 format=json 与 verify_image 用例 |
 | v0.3.4 | **流量镜像 + backend_log 工具**（侧边栏面板的数据层前奏）：新增 `Backend/TrafficLog`——每次工具调用发出的 TCL 命令/响应（`ExecuteAsync` 单点镜像，`op` 参数标注发起工具）、后端生命周期事件（拉起/复用/失败诊断）追加到 `%LOCALAPPDATA%\Ocdup\mcp-traffic.jsonl`，字段与 acccom 的 mcp-traffic.jsonl 同一套（id/tool/timestamp/direction/rawHex/text/portTag），DSH 插件可复用 dsh-serial-panel 的尾随逻辑；ocdup 是低频命令-响应，不需要 acccom 版的批量刷盘/内存环（逐条落盘 + 2 MB 轮转）。新增 `backend_log` 工具——launcher 的 200 行滚动缓冲（原仅启动失败诊断用）暴露成只读工具，TCL-RPC 响应里看不到的 `Info:`/`Error:` 异步日志（target reset 等）从此可查。测试 70/70，e2e 补 backend_log 用例 |

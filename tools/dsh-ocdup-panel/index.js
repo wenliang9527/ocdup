@@ -1,6 +1,9 @@
 'use strict'
 // ============================================================
-//  dsh-ocdup-panel — Host 半区(永久 cordis 插件)  v1.0.0
+//  dsh-ocdup-panel — Host 半区(永久 cordis 插件)  v1.1.0
+//
+//  v1.1.0:direction 新增 log(openocd 异步 stdout/stderr 镜像,ocdup 侧
+//  OpenOcdLauncher.PumpAsync 逐行 Record 进 JSONL);stats 相应加 log 计数。
 //
 //  职责:
 //   1. 尾随 %LOCALAPPDATA%\Ocdup\mcp-traffic.jsonl —— ocdup MCP 服务器的
@@ -108,7 +111,7 @@ module.exports = {
     let seq = 0             // 单调递增序号(不随 clear/轮转重置,客户端 since 依赖它)
     let prevTsMs = null     // 上一条记录的毫秒时间戳(Δt 用;坏时间戳不更新基准)
     const entries = []      // { seq, id, tool, dir, text, tag, ts, len, dtMs },seq 递增
-    const stats = { cmd: 0, rsp: 0, sys: 0, err: 0, bytes: 0, lastAt: null, exists: false, badLines: 0, logSize: 0, logMtimeMs: null, rotated: false }
+    const stats = { cmd: 0, rsp: 0, sys: 0, err: 0, log: 0, bytes: 0, lastAt: null, exists: false, badLines: 0, logSize: 0, logMtimeMs: null, rotated: false }
 
     const reset = () => {
       offset = 0
@@ -116,7 +119,7 @@ module.exports = {
       firstRead = true
       prevTsMs = null
       entries.length = 0
-      stats.cmd = 0; stats.rsp = 0; stats.sys = 0; stats.err = 0; stats.bytes = 0
+      stats.cmd = 0; stats.rsp = 0; stats.sys = 0; stats.err = 0; stats.log = 0; stats.bytes = 0
       stats.lastAt = null
       stats.badLines = 0
     }
@@ -141,10 +144,12 @@ module.exports = {
         let rec
         try { rec = JSON.parse(s) } catch (e) { stats.badLines += 1; continue } // 坏行跳过,不致命
         seq += 1
-        // direction 归一化小写:写入端 cmd/rsp 小写、SYS 大写,统一后客户端只处理一套
-        const dir = String(rec.direction || '').toLowerCase() === 'cmd' ? 'cmd'
-          : String(rec.direction || '').toLowerCase() === 'rsp' ? 'rsp'
-          : String(rec.direction || '').toLowerCase() === 'err' ? 'err'
+        // direction 归一化小写:cmd/rsp/log 小写、SYS 大写,统一后客户端只处理一套
+        const low = String(rec.direction || '').toLowerCase()
+        const dir = low === 'cmd' ? 'cmd'
+          : low === 'rsp' ? 'rsp'
+          : low === 'err' ? 'err'
+          : low === 'log' ? 'log'
           : 'sys'
         const len = payloadLen(rec)
         // Δt 相对上一条有效时间戳;乱序(多进程追加)钳到 0,坏时间戳记 null
@@ -215,7 +220,7 @@ module.exports = {
     const timer = setInterval(tail, POLL_MS)
 
     const view = () => ({
-      cmd: stats.cmd, rsp: stats.rsp, sys: stats.sys, err: stats.err,
+      cmd: stats.cmd, rsp: stats.rsp, sys: stats.sys, err: stats.err, log: stats.log,
       bytes: stats.bytes,
       lastAt: stats.lastAt, exists: stats.exists,
       kept: entries.length, lastSeq: seq, logPath: file,

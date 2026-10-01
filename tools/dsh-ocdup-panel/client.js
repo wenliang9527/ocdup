@@ -1,6 +1,9 @@
 'use strict'
 // ============================================================
-//  dsh-ocdup-panel — Client 半区(浏览器面板,永久 cordis 插件)  v1.0.0
+//  dsh-ocdup-panel — Client 半区(浏览器面板,永久 cordis 插件)  v1.1.0
+//
+//  v1.1.0:新增 log 方向(石板灰,openocd 异步日志镜像);方向过滤下拉与
+//  stats 行同步。机制与 v1.0.0 相同。
 //
 //  - sidebar.panellist 注册全局面板图标(id=ocdup-log)
 //  - sidebarRightTabs/main 以插件 id 注册面板本体(dsh-serial-panel 同款双分支)
@@ -45,8 +48,8 @@ window.__ModuleLoader__.load({
     const shortTime = (ts) => (typeof ts === 'string' && ts.length >= 23 ? ts.slice(11, 23) : ts || '')
     const fmtBytes = (n) => (n >= 1024 ? (n / 1024).toFixed(1) + 'K' : String(n | 0))
 
-    const DIR_COLOR = { cmd: '#d97706', rsp: '#059669', sys: '#2563eb', err: '#ef4444' }
-    const DIR_LABEL = { cmd: 'cmd', rsp: 'rsp', sys: 'SYS', err: 'err' }
+    const DIR_COLOR = { cmd: '#d97706', rsp: '#059669', sys: '#2563eb', err: '#ef4444', log: '#64748b' }
+    const DIR_LABEL = { cmd: 'cmd', rsp: 'rsp', sys: 'SYS', err: 'err', log: 'log' }
     const MARK_STYLE = { background: 'rgba(245, 158, 11, 0.35)', color: 'inherit', borderRadius: 2, padding: '0 1px' }
 
     // ---- 流量徽章共享态:图标轮询推进 lastSeq,面板可见时标记已读 ----
@@ -205,7 +208,7 @@ window.__ModuleLoader__.load({
     }
 
     // stats 浅比较:Host 每轮都回一个全新对象,不比较就会每轮触发重渲染
-    const STATS_KEYS = ['cmd', 'rsp', 'sys', 'err', 'bytes', 'lastAt', 'exists', 'kept', 'lastSeq',
+    const STATS_KEYS = ['cmd', 'rsp', 'sys', 'err', 'log', 'bytes', 'lastAt', 'exists', 'kept', 'lastSeq',
       'badLines', 'logSize', 'logMtimeMs', 'rotated']
     const sameStats = (a, b) => {
       if (!a || !b) return false
@@ -503,6 +506,7 @@ window.__ModuleLoader__.load({
         h('span', { className: 'op-stats', style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary, #666)', fontVariantNumeric: 'tabular-nums' } },
           'cmd ' + ((stats && stats.cmd) || 0) + ' · rsp ' + ((stats && stats.rsp) || 0)
           + ' · SYS ' + ((stats && stats.sys) || 0)
+          + ((stats && stats.log) ? ' · log ' + stats.log : '')
           + (stats && stats.err ? ' · err ' + stats.err : '')),
         btn(paused ? '▶ 继续' : '⏸ 暂停', () => setPaused(!paused), paused, '暂停后数据在 Host 侧继续累积,恢复后拉齐'),
         btn(follow && autoSuspended ? '跟随·挂起' : '跟随', () => setFollow(!follow), effectiveFollow,
@@ -515,6 +519,7 @@ window.__ModuleLoader__.load({
           h('option', { value: 'cmd' }, 'cmd'),
           h('option', { value: 'rsp' }, 'rsp'),
           h('option', { value: 'sys' }, 'SYS'),
+          h('option', { value: 'log' }, 'log'),
           h('option', { value: 'err' }, 'err'),
         ),
         h('select', {

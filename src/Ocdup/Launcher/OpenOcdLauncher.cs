@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net.Sockets;
 using System.Text;
+using Ocdup.Backend;
 using Ocdup.Config;
 
 namespace Ocdup.Launcher;
@@ -293,6 +294,9 @@ public sealed class OpenOcdLauncher : IDisposable
                     _output.Enqueue(line);
                     while (_output.Count > MaxBufferLines) _output.Dequeue();
                 }
+                // 异步日志(Info:/Error:/target 事件)同步镜像进流量 JSONL:面板实时可见,
+                // TCL-RPC 响应里永远看不到这些行。Record 自身吞错,不影响抽干循环。
+                TrafficLog.Shared.Record("backend", "log", line);
             }
         }
         catch
