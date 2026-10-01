@@ -78,6 +78,60 @@ public static class MemoryTools
         }
     }
 
+    [McpServerTool(Name = "write_memory")]
+    [Description(
+        "Write values to target memory or memory-mapped registers in ONE backend command. Parameters: address (hex string like '0x40010800'), " +
+        "values (one or more hex values, e.g. [\"0x11111111\"] or [\"0x01\",\"0x02\"]), width (8/16/32 bits, default 32). " +
+        "Destructive: gated by read_only and allow_memory_write - a BLOCKED answer means the settings forbid it (see show_config). " +
+        "Max 256 values per call; for firmware images use flash_write instead.")]
+    public static async Task<string> WriteMemory(
+        [Description("Start address, hex string like '0x40010800'.")] string address,
+        [Description("Hex values to write, in order.")] string[] values,
+        [Description("Unit width in bits: 8, 16 or 32 (default 32).")] int width = 32,
+        CancellationToken ct = default)
+    {
+        var cfg = ConfigStore.Instance.Current;
+
+        // C2:权限检查前置到第一步,再谈参数。
+        if (PermissionGate.CheckMemoryWrite(cfg, "memory write") is { } blocked)
+            return blocked;
+
+        if (!Parsing.TryParseHex(address, out var start))
+            return $"ERROR: address '{address}' is not a hex value. Use a hex string like '0x40010800'.";
+        if (values is null || values.Length == 0)
+            return "ERROR: values must contain at least one hex value.";
+        if (values.Length > 256)
+            return "ERROR: too many values (max 256 per call). For firmware images use flash_write instead.";
+        if (width is not (8 or 16 or 32))
+            return "ERROR: width must be 8, 16 or 32.";
+
+        var parsed = new long[values.Length];
+        for (var i = 0; i < values.Length; i++)
+        {
+            if (!Parsing.TryParseHex(values[i], out var v))
+                return $"ERROR: values[{i}] '{values[i]}' is not a hex value. Use forms like '0x1F' or '1F'.";
+            parsed[i] = v;
+        }
+
+        var writer = width switch { 8 => "mwb", 16 => "mwh", _ => "mww" };
+        var sb = new StringBuilder(writer.Length + 16 + values.Length * 12);
+        sb.Append(writer).Append(' ').Append(Parsing.Hex(start));
+        foreach (var v in parsed)
+            sb.Append(' ').Append(Parsing.HexValue(v, width));
+        var command = sb.ToString();
+
+        try
+        {
+            var output = (await BackendSession.Instance.ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: "write_memory")).Trim();
+            return $"wrote {parsed.Length} x {width}-bit to {Parsing.Hex(start)} ({parsed.Length * width / 8} bytes):\n" +
+                   (output.Length == 0 ? "(no output - write completed silently)" : output);
+        }
+        catch (BackendException ex)
+        {
+            return ex.Message;
+        }
+    }
+
     [McpServerTool(Name = "dump_memory")]
     [Description(
         "Dump a block of target memory/flash into a file on this PC (backend command 'dump_image'). " +

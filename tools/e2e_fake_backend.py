@@ -63,6 +63,10 @@ def handle_command(cmd):
             size = os.path.getsize(path) if os.path.exists(path) else 4096
             return "verified %d bytes in 0.01s" % size
         return "Error: fake backend could not parse verify_image"
+    if c.startswith("mww") or c.startswith("mwh") or c.startswith("mwb"):
+        return ""
+    if c.startswith("flash erase_sector"):
+        return "erased sectors 0..last on bank 0"
     if c.startswith("mdw"):
         parts = c.split()
         addr = int(parts[1], 16)
@@ -264,6 +268,15 @@ def main():
         banner("flash_write elsewhere/there.bin (outside flash_allowed_paths)")
         print(mcp.call("flash_write", {"file": "elsewhere/there.bin", "address": "0x08000000"}))
 
+        banner("write_memory 0x20000000 (allow_memory_write defaults to true)")
+        print(mcp.call("write_memory", {"address": "0x20000000", "values": ["0x11111111", "0x22222222"]}))
+
+        banner("flash_erase_sector (allow_flash_erase defaults to false -> BLOCKED)")
+        print(mcp.call("flash_erase_sector", {}))
+
+        banner("run_command (escape hatch, echo passthrough)")
+        print(mcp.call("run_command", {"command": "mdb 0x40010800 4"}))
+
         banner("read_memory count=4000 (over memory_read_max_bytes)")
         print(mcp.call("read_memory", {"address": "0x20000000", "count": 4000}))
 
@@ -274,6 +287,7 @@ def main():
         write_config(work, read_only=True)
         print(mcp.call("show_config", {"reload": True}))
         print(mcp.call("flash_write", {"file": "build/fw.bin", "address": "0x08000000"}))
+        print(mcp.call("write_memory", {"address": "0x20000000", "values": ["0x1"]}))
 
         banner("backend commands observed")
         for c in backend.commands:

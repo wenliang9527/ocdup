@@ -88,4 +88,34 @@ public static class BackendTools
               "Call connect first so ocdup can start (and capture) the backend."
             : $"last {capped} openocd output line(s):\n{recent}");
     }
+
+    [McpServerTool(Name = "run_command")]
+    [Description(
+        "Raw TCL escape hatch: run an arbitrary OpenOCD/TCL command through the control channel and return its captured output. " +
+        "For anything the dedicated tools don't cover (odd adapter commands, one-off introspection). " +
+        "Single-line command only. Gated by read_only and allow_raw_command - a BLOCKED answer means the settings forbid it (see show_config).")]
+    public static async Task<string> RunCommand(
+        [Description("The OpenOCD/TCL command to run, e.g. 'mdb 0x40010800 4' or 'ap0 32 0x00000000'.")] string command,
+        CancellationToken ct = default)
+    {
+        var cfg = ConfigStore.Instance.Current;
+
+        if (PermissionGate.CheckRawCommand(cfg) is { } blocked)
+            return blocked;
+
+        if (string.IsNullOrWhiteSpace(command))
+            return "ERROR: command must not be empty.";
+        if (command.IndexOf('\n') >= 0 || command.IndexOf('\r') >= 0)
+            return "ERROR: single-line command only (strip newlines; run each statement separately).";
+
+        try
+        {
+            var output = (await BackendSession.Instance.ExecuteAsync(cfg, command.Trim(), startIfNeeded: true, ct, op: "run_command")).Trim();
+            return $"ran: {command.Trim()}\n" + (output.Length == 0 ? "(no output)" : output);
+        }
+        catch (BackendException ex)
+        {
+            return ex.Message;
+        }
+    }
 }

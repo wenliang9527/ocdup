@@ -3,7 +3,7 @@
 PC 侧的 OpenOCD 门面（MCP 服务器）：让 MCP 客户端（DSH / ZCode / Claude Code / Cursor…）用自然语言完成
 **连接探针 → 烧录固件 → 按地址读回数据**。
 
-设计文档：[docs/design-plan.md](docs/design-plan.md)（v0.3.5，范围收敛为「下载 + 读指定地址」）。
+设计文档：[docs/design-plan.md](docs/design-plan.md)（v0.3.6，范围收敛为「下载 + 读指定地址」）。
 
 ## 当前能力（阶段一）
 
@@ -17,6 +17,9 @@ PC 侧的 OpenOCD 门面（MCP 服务器）：让 MCP 客户端（DSH / ZCode / 
 | `read_memory` | **读指定地址**：按 8/16/32 位宽度读回；`format=json` 返回结构化值（免解析 OpenOCD 文本） | 只读 + 体积上限 |
 | `dump_memory` | **大块读落盘**：整片 flash / RAM 快照存成文件，返回 sha256 + 前 64 字节 | 目标侧只读；PC 侧写入面：dump_allowed_paths 白名单（默认 `dumps/`）+ dump_max_bytes 上限（默认 64 MB，0=不限） |
 | `verify_image` | **烧后独立校验**：镜像与目标 flash 比对，不写任何东西（回答"板子里到底是谁"） | 只读 |
+| `write_memory` | 写内存/寄存器（一条命令写多个值） | read_only / allow_memory_write |
+| `flash_erase_sector` | 擦除 flash 扇区（破坏性，默认关闭） | read_only / **allow_flash_erase（默认 false）** |
+| `run_command` | 原始 TCL 逃生舱（单行命令，兜底专用工具没覆盖的操作） | read_only / allow_raw_command |
 | `backend_log` | 读 ocdup 自己拉起的 openocd 的近期 stdout/stderr（200 行滚动缓冲；TCL-RPC 响应里看不到的 `Info:`/`Error:` 异步日志从这里出） | 只读 |
 
 断点 / 观察点 / 执行控制（halt、resume）/ 符号层（按名读变量）/ L3 协议字典为后续阶段。

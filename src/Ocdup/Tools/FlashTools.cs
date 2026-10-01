@@ -192,6 +192,41 @@ public static class FlashTools
         return LooksLikeFailure(output) ? "the backend reported an error" : "no 'verified N bytes' confirmation in the output";
     }
 
+    [McpServerTool(Name = "flash_erase_sector")]
+    [Description(
+        "Erase flash sectors without writing anything. DESTRUCTIVE and OFF by default: gated by read_only and allow_flash_erase " +
+        "(default false - set \"allow_flash_erase\": true in the ocd.json permissions block). " +
+        "Parameters: bank (index from flash_info, default 0), first/last (inclusive sector numbers; last may be -1 meaning 'to the end of the bank').")]
+    public static async Task<string> FlashEraseSector(
+        [Description("Flash bank index from flash_info (default 0).")] int bank = 0,
+        [Description("First sector to erase (inclusive, default 0).")] int first = 0,
+        [Description("Last sector to erase (inclusive; -1 = to the end of the bank, default -1).")] int last = -1,
+        CancellationToken ct = default)
+    {
+        var cfg = ConfigStore.Instance.Current;
+
+        if (PermissionGate.CheckFlashErase(cfg) is { } blocked)
+            return blocked;
+
+        if (bank < 0) return "ERROR: bank must be >= 0 (see flash_info for the bank list).";
+        if (first < 0) return "ERROR: first must be >= 0.";
+        if (last != -1 && last < first) return "ERROR: last must be >= first, or -1 for 'to the end of the bank'.";
+
+        var lastText = last == -1 ? "last" : last.ToString();
+        var command = $"flash erase_sector {bank} {first} {lastText}";
+
+        try
+        {
+            var output = (await BackendSession.Instance.ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: "flash_erase_sector")).Trim();
+            return $"erase issued: bank {bank}, sectors {first}..{lastText}.\n" +
+                   (output.Length == 0 ? "(no output - check flash_info / verify_image afterwards)" : output);
+        }
+        catch (BackendException ex)
+        {
+            return ex.Message;
+        }
+    }
+
     /// <summary>保守判断：OpenOCD 失败时会输出 Error:/failed 文本，命中就不做后续动作。</summary>
     private static bool LooksLikeFailure(string output) =>
         output.Contains("Error:", StringComparison.OrdinalIgnoreCase) ||
