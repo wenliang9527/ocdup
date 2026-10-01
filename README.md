@@ -139,6 +139,8 @@ python tools/e2e_fake_backend.py          # 端到端：假 TCL-RPC 后端 + 真
 
 - **面板插件**：`tools/dsh-ocdup-panel/` 是唯一真源，零依赖行为测试
   `node test.js core|window|api|client`（71 项断言）；改代码只改真源目录再 `deploy.cmd`。
+- **发布**：根目录 `publish.cmd`（单测 Release → publish → 提示重启 DSH；检测到 ocdup.exe
+  在跑会拒绝执行）。CI：`.github/workflows/ci.yml`（build + 单测 + e2e，仓库镜像到 GitHub 即生效）。
 
 - `tools/e2e_fake_backend.py` 会启动一个假的 TCL-RPC 后端（模拟 6666 端口）与真实的 MCP stdio 会话，
   覆盖工具注册、烧录/读内存/落盘链路、权限拦截文案、后端启动失败诊断——**没有硬件也能回归**。

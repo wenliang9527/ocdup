@@ -14,6 +14,7 @@
 
 | 版本 | 变更 |
 |---|---|
+| v0.3.9 | **工程化 S5 收尾**：根目录 `publish.cmd`（单测 Release → publish → 提示重启 DSH；检测到 ocdup.exe 运行即拒绝，防文件锁）；CI workflow（build + 单测 + e2e，windows-latest）。DSH 注册侧的发布顺序（退出 DSH → publish → 启动）已写入 README 与脚本头部 |
 | v0.3.8 | **执行控制 M-exec**（后置里程碑首个落地）：`ExecTools`——`halt [timeoutMs]` / `resume [address]` / `reset run|halt|init`。新权限开关 `allow_exec`（默认 true：读失败→halt→resume 是常规调试路径；`read_only` 总闸照常全拦）。`read_memory` 描述同步改为「失败先 halt，完事 resume」。M-bp（断点）、M-sym（符号层）仍后置；halt/resume 的真机行为待下次 S4 联调记录。工具数 15；测试 90/90，e2e 补「halt→read→resume→reset run」与 read_only 拦截 |
 | v0.3.7 | **openocd 异步日志镜像 + 面板 v1.1**：`OpenOcdLauncher.PumpAsync` 把抽干的 stdout/stderr 逐行 `Record("backend","log",…)` 进流量 JSONL——烧录进度（逐扇区 erase/write）、`Info:`/`Error:`、target 事件从此在侧边栏面板实时可见（此前只在 `backend_log` 工具与启动失败诊断里）。面板（v1.1.0）：direction 新增 `log`（石板灰），过滤下拉与 stats 同步；行为测试 71 项断言全过 |
 | v0.3.6 | **补全「闸就位、工具缺位」三件套**（能力矩阵闭环）：`write_memory`（mww/mwh/mwb 一条命令写多值，单次 ≤256 值，`CheckMemoryWrite` 前置）；`flash_erase_sector`（`flash erase_sector bank first last`，last 支持 -1=到 bank 末尾，`CheckFlashErase`——**默认关闭**，破坏性操作显式开启）；`run_command` 原始 TCL 逃生舱（单行命令，`CheckRawCommand`）。工具数 12；权限闸逻辑沿用既有单测，e2e 补「放行写内存 / 默认拦截擦除 / 逃生舱透传 / read_only 全拦」四条链路 |

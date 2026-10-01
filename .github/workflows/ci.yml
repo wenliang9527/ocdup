@@ -1,0 +1,25 @@
+name: ci
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build (Debug, feeds the e2e fake-backend path)
+        run: dotnet build Ocdup.sln --nologo
+
+      - name: Unit tests
+        run: dotnet test Ocdup.sln --no-build --nologo -v q
+
+      - name: End-to-end (fake TCL-RPC backend + real MCP stdio session)
+        run: python tools/e2e_fake_backend.py
