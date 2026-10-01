@@ -2,7 +2,7 @@
 
 | 项目 | 内容 |
 |---|---|
-| 文档版本 | v0.3.7 |
+| 文档版本 | v0.3.8 |
 | 日期 | 2026-09-30 |
 | 状态 | **阶段一进行中**：控制层 + 烧录 + 读内存已实现并验证；断点/观察点/执行控制/符号层/L3 明确后置 |
 | 读者 | 项目负责人（硬件/嵌入式）、后续实现者（Agent 或工程师） |
@@ -14,6 +14,7 @@
 
 | 版本 | 变更 |
 |---|---|
+| v0.3.8 | **执行控制 M-exec**（后置里程碑首个落地）：`ExecTools`——`halt [timeoutMs]` / `resume [address]` / `reset run|halt|init`。新权限开关 `allow_exec`（默认 true：读失败→halt→resume 是常规调试路径；`read_only` 总闸照常全拦）。`read_memory` 描述同步改为「失败先 halt，完事 resume」。M-bp（断点）、M-sym（符号层）仍后置；halt/resume 的真机行为待下次 S4 联调记录。工具数 15；测试 90/90，e2e 补「halt→read→resume→reset run」与 read_only 拦截 |
 | v0.3.7 | **openocd 异步日志镜像 + 面板 v1.1**：`OpenOcdLauncher.PumpAsync` 把抽干的 stdout/stderr 逐行 `Record("backend","log",…)` 进流量 JSONL——烧录进度（逐扇区 erase/write）、`Info:`/`Error:`、target 事件从此在侧边栏面板实时可见（此前只在 `backend_log` 工具与启动失败诊断里）。面板（v1.1.0）：direction 新增 `log`（石板灰），过滤下拉与 stats 同步；行为测试 71 项断言全过 |
 | v0.3.6 | **补全「闸就位、工具缺位」三件套**（能力矩阵闭环）：`write_memory`（mww/mwh/mwb 一条命令写多值，单次 ≤256 值，`CheckMemoryWrite` 前置）；`flash_erase_sector`（`flash erase_sector bank first last`，last 支持 -1=到 bank 末尾，`CheckFlashErase`——**默认关闭**，破坏性操作显式开启）；`run_command` 原始 TCL 逃生舱（单行命令，`CheckRawCommand`）。工具数 12；权限闸逻辑沿用既有单测，e2e 补「放行写内存 / 默认拦截擦除 / 逃生舱透传 / read_only 全拦」四条链路 |
 | v0.3.5 | **读路径体验升级**（高频路径直接受益）：① `read_memory` 新增 `format=json`——`Parsing.TryParseMemoryOutput` 解析 mdw/mdh/mdb 文本为结构化 `{address,width,count,bytes,values:[hex]}`，免得模型自己解析 OpenOCD 文本；解析失败带原文返回（运行态读错误不被吞）；② `status`/`connect` 的 `targets` 表格解析成一行式摘要（`TrySummarizeTargets`，`0* name (type, endian) state`），失败回退原文；③ 新增 `verify_image` 工具（后端 `verify_image` 命令）——镜像与目标 flash 比对、**不写任何东西**，回答「板子里到底是谁」；判定 `InterpretVerifyOutput` 保守策略（无 `verified N bytes` 确认即判存疑）。工具数 9；测试 89/89，e2e 补 format=json 与 verify_image 用例 |

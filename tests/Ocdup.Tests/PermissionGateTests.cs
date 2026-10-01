@@ -122,6 +122,22 @@ public sealed class PermissionGateTests : IDisposable
         Assert.Contains("allow_memory_write", blocked);
     }
 
+    [Fact]
+    public void ExecControl_OwnSwitch_AndTotalGate()
+    {
+        // 默认允许(读内存失败→halt→resume 是常规调试路径,不该每次手动开闸)
+        Assert.Null(PermissionGate.CheckExec(Load("{}"), "halt"));
+
+        var blocked = PermissionGate.CheckExec(Load("""{ "allow_exec": false }"""), "halt");
+        Assert.NotNull(blocked);
+        Assert.Contains("allow_exec", blocked);
+        Assert.Contains("show_config", blocked);
+
+        var readOnly = PermissionGate.CheckExec(Load("""{ "read_only": true }"""), "reset");
+        Assert.NotNull(readOnly);
+        Assert.Contains("read_only", readOnly);
+    }
+
     // ── dump_memory 落盘闸:目标侧是读、PC 侧是写,按写入面设防(路径白名单 + 体积上限)──
 
     [Fact]

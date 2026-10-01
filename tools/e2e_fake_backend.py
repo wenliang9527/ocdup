@@ -47,6 +47,10 @@ def handle_command(cmd):
                 "** Verified OK **")
     if c.startswith("reset"):
         return ""
+    if c == "halt" or c.startswith("halt "):
+        return "halted"
+    if c.startswith("resume"):
+        return ""
     if c.startswith("dump_image"):
         m = re.match(r"dump_image \{(.*)\} (0x[0-9a-fA-F]+) (\d+)$", c)
         if m:
@@ -277,6 +281,12 @@ def main():
         banner("run_command (escape hatch, echo passthrough)")
         print(mcp.call("run_command", {"command": "mdb 0x40010800 4"}))
 
+        banner("halt -> read -> resume (exec control, allow_exec defaults to true)")
+        print(mcp.call("halt", {}))
+        print(mcp.call("read_memory", {"address": "0x20000000", "count": 2}))
+        print(mcp.call("resume", {}))
+        print(mcp.call("reset", {"mode": "run"}))
+
         banner("read_memory count=4000 (over memory_read_max_bytes)")
         print(mcp.call("read_memory", {"address": "0x20000000", "count": 4000}))
 
@@ -288,6 +298,7 @@ def main():
         print(mcp.call("show_config", {"reload": True}))
         print(mcp.call("flash_write", {"file": "build/fw.bin", "address": "0x08000000"}))
         print(mcp.call("write_memory", {"address": "0x20000000", "values": ["0x1"]}))
+        print(mcp.call("halt", {}))
 
         banner("backend commands observed")
         for c in backend.commands:

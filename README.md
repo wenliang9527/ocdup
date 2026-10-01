@@ -20,9 +20,10 @@ PC 侧的 OpenOCD 门面（MCP 服务器）：让 MCP 客户端（DSH / ZCode / 
 | `write_memory` | 写内存/寄存器（一条命令写多个值） | read_only / allow_memory_write |
 | `flash_erase_sector` | 擦除 flash 扇区（破坏性，默认关闭） | read_only / **allow_flash_erase（默认 false）** |
 | `run_command` | 原始 TCL 逃生舱（单行命令，兜底专用工具没覆盖的操作） | read_only / allow_raw_command |
+| `halt` / `resume` / `reset` | 执行控制：halt 后读写才可靠；reset run 重启固件 | read_only / **allow_exec（默认 true）** |
 | `backend_log` | 读 ocdup 自己拉起的 openocd 的近期 stdout/stderr（200 行滚动缓冲；TCL-RPC 响应里看不到的 `Info:`/`Error:` 异步日志从这里出） | 只读 |
 
-断点 / 观察点 / 执行控制（halt、resume）/ 符号层（按名读变量）/ L3 协议字典为后续阶段。
+断点 / 观察点 / 符号层（按名读变量）/ L3 协议字典为后续阶段。
 
 ## 前置条件
 
@@ -125,7 +126,7 @@ PC 侧的 OpenOCD 门面（MCP 服务器）：让 MCP 客户端（DSH / ZCode / 
 ## 开发
 
 ```bash
-dotnet test Ocdup.sln                     # 89 个单测，不需要硬件
+dotnet test Ocdup.sln                     # 90 个单测，不需要硬件
 python tools/e2e_fake_backend.py          # 端到端：假 TCL-RPC 后端 + 真实 MCP 会话
 ```
 
@@ -152,7 +153,7 @@ python tools/e2e_fake_backend.py          # 端到端：假 TCL-RPC 后端 + 真
 
 | 里程碑 | 状态 |
 |---|---|
-| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 89 个单测 + 假后端 e2e 覆盖 |
+| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 90 个单测 + 假后端 e2e 覆盖 |
 | S4 真机联调 | ✅ AT32F403AVGT7 + CMSIS-DAP v2（DAPLink `0D28:0204`）+ atopenocd：`connect` → `flash_info` → `flash_write`（擦 25 扇区、写 + Verified OK、reset run）→ `read_memory` 运行态读回向量表 |
 | S5 打包与客户端注册 | 🟡 已注册进 DSH（desktop + web 两个 profile）与 ZCode（`mcp.servers` 条目 + `ocdup-zcode` 插件，均指 `publish/ocdup.exe`）；见上 |
 

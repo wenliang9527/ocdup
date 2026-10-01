@@ -49,6 +49,9 @@ public sealed class OcdConfig
     public bool AllowMemoryWrite { get; private set; } = true;
     public bool AllowFlash { get; private set; } = true;
     public bool AllowFlashErase { get; private set; }
+
+    /// <summary>执行控制(halt/resume/reset):改变目标执行状态,与写操作同级设防。默认允许。</summary>
+    public bool AllowExec { get; private set; } = true;
     public bool AllowRawCommand { get; private set; } = true;
     public List<string> FlashAllowedPaths { get; private set; } = new();
     public long FlashMaxBytes { get; private set; }
@@ -77,7 +80,7 @@ public sealed class OcdConfig
     private static readonly string[] TrackedKeys =
     {
         "interface_cfg", "target_cfg", "transport", "host", "port", "command_timeout_seconds",
-        "read_only", "allow_memory_write", "allow_flash", "allow_flash_erase", "allow_raw_command",
+        "read_only", "allow_memory_write", "allow_flash", "allow_flash_erase", "allow_raw_command", "allow_exec",
         "flash_allowed_paths", "flash_max_bytes", "memory_read_max_bytes",
         "dump_allowed_paths", "dump_max_bytes",
     };
@@ -162,6 +165,7 @@ public sealed class OcdConfig
         TakeBool(obj, "allow_memory_write", source, v => AllowMemoryWrite = v);
         TakeBool(obj, "allow_flash", source, v => AllowFlash = v);
         TakeBool(obj, "allow_flash_erase", source, v => AllowFlashErase = v);
+        TakeBool(obj, "allow_exec", source, v => AllowExec = v);
         TakeBool(obj, "allow_raw_command", source, v => AllowRawCommand = v);
 
         TakeStringArray(obj, "flash_allowed_paths", source, v => FlashAllowedPaths = v);
@@ -293,6 +297,7 @@ public sealed class OcdConfig
             $"  allow_flash           = {AllowFlash}   [src: {Src("allow_flash")}]",
             $"  allow_flash_erase     = {AllowFlashErase}   [src: {Src("allow_flash_erase")}]",
             $"  allow_raw_command     = {AllowRawCommand}   [src: {Src("allow_raw_command")}]",
+            $"  allow_exec            = {AllowExec}   [src: {Src("allow_exec")}]",
             $"  flash_allowed_paths   = {(FlashAllowedPaths.Count == 0 ? "(unrestricted)" : string.Join(", ", FlashAllowedPaths))}   [src: {Src("flash_allowed_paths")}]",
             $"  flash_max_bytes       = {(FlashMaxBytes == 0 ? "(unlimited)" : FlashMaxBytes.ToString())}   [src: {Src("flash_max_bytes")}]",
             $"  memory_read_max_bytes = {(MemoryReadMaxBytes == 0 ? "(unlimited)" : MemoryReadMaxBytes.ToString())}   [src: {Src("memory_read_max_bytes")}]",

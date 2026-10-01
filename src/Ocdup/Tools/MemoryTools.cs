@@ -17,7 +17,7 @@ public static class MemoryTools
         "Read target memory at an address. Parameters: address (hex string like '0x20000000'), count (how many units to read, default 16), " +
         "width (unit size in bits: 8, 16 or 32, default 32), format ('text' = the backend's '<addr>: <values>' lines, default; " +
         "'json' = structured {address,width,count,bytes,values:[hex strings]} parsed from the same text - an unparseable output returns an ERROR with the raw text). " +
-        "Read-only. If the read fails while the CPU is running, halt it from the client first - halt/resume are not part of this stage. " +
+        "Read-only. If the read fails while the CPU is running, call halt first and resume afterwards (both gated by allow_exec). " +
         "For large ranges (whole flash bank, big RAM snapshot) use dump_memory instead - this tool is capped by memory_read_max_bytes.")]
     public static async Task<string> ReadMemory(
         [Description("Start address, hex string like '0x20000000'.")] string address,

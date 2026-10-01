@@ -56,6 +56,16 @@ public static class PermissionGate
             ? null
             : Blocked("run_command", "allow_raw_command", "set \"allow_raw_command\": true in the ocd.json permissions block"));
 
+    /// <summary>
+    /// 执行控制（halt/resume/reset，M-exec）：不写内存，但改变目标执行状态——
+    /// 对在跑的固件是可感知干预，与写操作同级设防（read_only 总闸 + allow_exec 独立开关）。
+    /// </summary>
+    public static string? CheckExec(OcdConfig cfg, string op = "exec control") =>
+        CheckAnyWrite(cfg, op) ??
+        (cfg.AllowExec
+            ? null
+            : Blocked(op, "allow_exec", "set \"allow_exec\": true in the ocd.json permissions block"));
+
     /// <summary>读操作的体积上限：不是安全边界，而是防呆（防止一次读回上百 KB 文本淹掉上下文）。</summary>
     public static string? CheckReadLimit(OcdConfig cfg, long bytes, string op)
     {
