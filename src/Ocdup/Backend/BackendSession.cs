@@ -24,6 +24,12 @@ public sealed class BackendSession
     private readonly OpenOcdLauncher _launcher = new();
     private TclRpcClient? _client;
 
+    /// <summary>
+    /// 最近一次「确保后端可用」的说明：auto 模式识别到的探针、或发现已有监听。
+    /// 供工具层回报给模型——否则 auto 模式最关键的信息（最终用了哪个接口脚本）会丢失。
+    /// </summary>
+    public string? LastBackendNote { get; private set; }
+
     private BackendSession() { }
 
     /// <summary>当前是否有后端监听（不启动任何东西）。</summary>
@@ -66,6 +72,11 @@ public sealed class BackendSession
                 var outcome = await _launcher.EnsureStartedAsync(cfg, ct).ConfigureAwait(false);
                 if (!outcome.Ok)
                     throw new BackendException(outcome.Message);
+                LastBackendNote = outcome.Message;
+            }
+            else
+            {
+                LastBackendNote = $"using the OpenOCD listener already present on {cfg.Host}:{cfg.Port}";
             }
 
             TclRpcClient connected;

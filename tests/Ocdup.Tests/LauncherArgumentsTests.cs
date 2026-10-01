@@ -35,7 +35,7 @@ public sealed class LauncherArgumentsTests : IDisposable
         }
         """);
 
-        var args = OpenOcdLauncher.BuildArguments(cfg, @"C:\ocd\scripts");
+        var args = OpenOcdLauncher.BuildArguments(cfg, @"C:\ocd\scripts", cfg.InterfaceCfg!);
 
         Assert.Equal(new[]
         {
@@ -44,8 +44,8 @@ public sealed class LauncherArgumentsTests : IDisposable
             "-f", "interface/cmsis-dap.cfg",
             "-c", "transport select swd",
             "-f", "target/at32f435xx.cfg",
-            "-c", "gdb_port 0",
-            "-c", "telnet_port 0",
+            "-c", "gdb_port disabled",
+            "-c", "telnet_port disabled",
             "-c", "tcl_port 7777",
         }, args);
     }
@@ -55,14 +55,14 @@ public sealed class LauncherArgumentsTests : IDisposable
     {
         var cfg = Load("""{ "interface_cfg": "interface/stlink.cfg" }""");
 
-        var args = OpenOcdLauncher.BuildArguments(cfg, null);
+        var args = OpenOcdLauncher.BuildArguments(cfg, null, cfg.InterfaceCfg!);
 
         Assert.Equal(new[]
         {
             "-c", "bindto 127.0.0.1",
             "-f", "interface/stlink.cfg",
-            "-c", "gdb_port 0",
-            "-c", "telnet_port 0",
+            "-c", "gdb_port disabled",
+            "-c", "telnet_port disabled",
             "-c", "tcl_port 6666",
         }, args);
     }
@@ -72,7 +72,7 @@ public sealed class LauncherArgumentsTests : IDisposable
     {
         var cfg = Load("""{ "interface_cfg": "interface/x.cfg", "host": "127.0.0.2", "port": 1234 }""");
 
-        var args = OpenOcdLauncher.BuildArguments(cfg, null);
+        var args = OpenOcdLauncher.BuildArguments(cfg, null, cfg.InterfaceCfg!);
 
         Assert.Contains("bindto 127.0.0.2", args);
         Assert.Contains("tcl_port 1234", args);

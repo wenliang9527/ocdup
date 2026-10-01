@@ -22,12 +22,14 @@ public static class BackendTools
 
         try
         {
-            var version = (await BackendSession.Instance.ExecuteAsync(cfg, "ocd_version", startIfNeeded: false, ct)).Trim();
+            var version = (await BackendSession.Instance.ExecuteAsync(cfg, "version", startIfNeeded: false, ct)).Trim();
             var targets = (await BackendSession.Instance.ExecuteAsync(cfg, "targets", startIfNeeded: false, ct)).Trim();
 
             var sb = new StringBuilder();
             sb.AppendLine($"OpenOCD: running on {cfg.Host}:{cfg.Port}");
             sb.AppendLine($"version: {(version.Length == 0 ? "(no version reported)" : version)}");
+            if (BackendSession.Instance.LastBackendNote is { Length: > 0 } note)
+                sb.AppendLine($"backend: {note}");
             sb.AppendLine("targets:");
             sb.Append(targets.Length == 0 ? "(none - is target_cfg set in ocd.json?)" : targets);
             return sb.ToString();
@@ -46,12 +48,14 @@ public static class BackendTools
 
         try
         {
-            var version = (await BackendSession.Instance.ExecuteAsync(cfg, "ocd_version", startIfNeeded: true, ct)).Trim();
+            var version = (await BackendSession.Instance.ExecuteAsync(cfg, "version", startIfNeeded: true, ct)).Trim();
             var targets = (await BackendSession.Instance.ExecuteAsync(cfg, "targets", startIfNeeded: false, ct)).Trim();
 
             var sb = new StringBuilder();
             sb.AppendLine($"connected to OpenOCD on {cfg.Host}:{cfg.Port}");
             sb.AppendLine($"version: {(version.Length == 0 ? "(no version reported)" : version)}");
+            if (BackendSession.Instance.LastBackendNote is { Length: > 0 } note)
+                sb.AppendLine($"backend: {note}");
             sb.AppendLine("targets:");
             sb.Append(targets.Length == 0 ? "(none - is target_cfg set in ocd.json?)" : targets);
             return sb.ToString();

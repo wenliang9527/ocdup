@@ -117,10 +117,12 @@ public sealed class OpenOcdLauncher : IDisposable
 
     /// <summary>
     /// 构造 openocd 命令行参数。要点：
-    /// bindto 限定 localhost（C8）；gdb/telnet 端口置 0 禁用，只保留 TCL-RPC 端口；
-    /// transport 必须在 interface 脚本之后、target 脚本之前 select。公开以便单测。
+    /// bindto 限定 localhost（C8）；gdb/telnet 服务用 "disabled" 真正关闭（实测 0.11+ 支持；
+    /// 注意传 0 的语义是「随机端口」而不是禁用），只保留 TCL-RPC 端口；
+    /// transport 必须在 interface 脚本之后、target 脚本之前 select；
+    /// interfaceCfg 由调用方解析（auto 模式下是探针识别的结果）。公开以便单测。
     /// </summary>
-    public static List<string> BuildArguments(OcdConfig cfg, string? scriptsDir)
+    public static List<string> BuildArguments(OcdConfig cfg, string? scriptsDir, string interfaceCfg)
     {
         var args = new List<string>();
         if (scriptsDir is not null)
@@ -132,7 +134,7 @@ public sealed class OpenOcdLauncher : IDisposable
         args.Add("-c");
         args.Add($"bindto {cfg.Host}");
         args.Add("-f");
-        args.Add(cfg.InterfaceCfg!);
+        args.Add(interfaceCfg);
 
         if (!string.IsNullOrWhiteSpace(cfg.Transport))
         {
@@ -147,9 +149,9 @@ public sealed class OpenOcdLauncher : IDisposable
         }
 
         args.Add("-c");
-        args.Add("gdb_port 0");
+        args.Add("gdb_port disabled");
         args.Add("-c");
-        args.Add("telnet_port 0");
+        args.Add("telnet_port disabled");
         args.Add("-c");
         args.Add($"tcl_port {cfg.Port}");
         return args;
@@ -172,6 +174,28 @@ public sealed class OpenOcdLauncher : IDisposable
                 "ERROR: no openocd executable found. Set OCD_BIN to the openocd binary path, or install OpenOCD and put it on PATH, then retry. See show_config.");
 
         var scripts = FindScriptsDir(binary);
+
+        // interface_cfg = "auto":按 USB 设备识别探针并选接口脚本(设计目标「插什么烧录器就用什么」)
+        string interfaceCfg;
+        string probeNote;
+        if (cfg.IsInterfaceAuto)
+        {
+            var probes = await ProbeDetector.DetectAsync(ct).ConfigureAwait(false);
+            if (probes.Count == 0)
+                return new LaunchOutcome(false,
+                    "ERROR: interface_cfg is \"auto\", but no known debug probe is plugged in " +
+                    "(looked for AT-Link / CMSIS-DAP / ST-Link / J-Link on USB). " +
+                    "Plug one in, or set interface_cfg explicitly in ocd.json (e.g. \"interface/cmsis-dap.cfg\"). See show_config.");
+            var chosen = probes[0];
+            interfaceCfg = chosen.Config;
+            probeNote = $"probe auto-detected: {chosen.Kind} -> {chosen.Config}";
+        }
+        else
+        {
+            interfaceCfg = cfg.InterfaceCfg!;
+            probeNote = "";
+        }
+
         var psi = new ProcessStartInfo(binary)
         {
             UseShellExecute = false,
@@ -183,7 +207,7 @@ public sealed class OpenOcdLauncher : IDisposable
                 ? Path.GetDirectoryName(cfg.ConfigFilePath)!
                 : Directory.GetCurrentDirectory(),
         };
-        foreach (var arg in BuildArguments(cfg, scripts))
+        foreach (var arg in BuildArguments(cfg, scripts, interfaceCfg))
             psi.ArgumentList.Add(arg);
 
         Process process;
@@ -214,7 +238,9 @@ public sealed class OpenOcdLauncher : IDisposable
                 return new LaunchOutcome(false, BuildFailureMessage(binary, $"the process exited with code {process.ExitCode}"));
 
             if (await ProbePortAsync(cfg.Host, cfg.Port, 250, ct).ConfigureAwait(false))
-                return new LaunchOutcome(true, $"started {binary} (pid {process.Id}); command port {cfg.Host}:{cfg.Port} is up");
+                return new LaunchOutcome(true,
+                    $"started {binary} (pid {process.Id}); command port {cfg.Host}:{cfg.Port} is up" +
+                    (probeNote.Length > 0 ? $" ({probeNote})" : ""));
 
             await Task.Delay(200, ct).ConfigureAwait(false);
         }
@@ -286,6 +312,16 @@ public sealed class OpenOcdLauncher : IDisposable
             sb.AppendLine(recent);
         }
         sb.Append("Check interface_cfg / target_cfg (and OCD_SCRIPTS) in show_config; fix ocd.json and retry.");
+
+        if (recent.Contains("LIBUSB_ERROR", StringComparison.OrdinalIgnoreCase) ||
+            recent.Contains("No J-Link device found", StringComparison.OrdinalIgnoreCase))
+        {
+            sb.AppendLine();
+            sb.Append("NOTE: a J-Link probe is attached, but on Windows OpenOCD opens USB through libusb, " +
+                      "and the installed SEGGER driver owns the device (LIBUSB_ERROR_NOT_FOUND). " +
+                      "Options: plug an AT-Link / CMSIS-DAP probe instead, or swap the J-Link driver to WinUSB with Zadig " +
+                      "(SEGGER tools will not see the probe until you switch the driver back).");
+        }
         return sb.ToString();
     }
 

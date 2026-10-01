@@ -1,8 +1,9 @@
 {
   "//": "Ocdup 项目配置示例。复制为 ocd.json 放在项目根（或用 OCD_CONFIG 指向本文件）。",
   "//paths": "interface_cfg / target_cfg 是 OpenOCD scripts 目录下的脚本名（由 openocd -s 解析）；其余相对路径以本文件所在目录为基准。",
-  "interface_cfg": "interface/cmsis-dap.cfg",
-  "target_cfg": "target/at32f435xx.cfg",
+  "//interface": "interface_cfg 建议用 \"auto\"：连接时自动识别已插探针（AT-Link / CMSIS-DAP / ST-Link / J-Link）并选对应脚本；也可显式指定。",
+  "interface_cfg": "auto",
+  "target_cfg": "target/at32f403axx.cfg",
   "transport": "swd",
   "host": "127.0.0.1",
   "port": 6666,

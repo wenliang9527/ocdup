@@ -29,7 +29,7 @@ DLL = os.environ.get("OCDUP_DLL") or os.path.join(REPO_ROOT, "src", "Ocdup", "bi
 
 def handle_command(cmd):
     c = cmd.strip()
-    if c.startswith("ocd_version"):
+    if c.startswith("ocd_version") or c == "version":
         return "Open On-Chip Debugger 0.12.0 (fake backend for Ocdup e2e)"
     if c == "targets":
         return ("    TargetName         Type       Endian TapName            State\n"
