@@ -2,7 +2,7 @@
 
 | 项目 | 内容 |
 |---|---|
-| 文档版本 | v0.3（范围收敛版） |
+| 文档版本 | v0.3.1 |
 | 日期 | 2026-09-30 |
 | 状态 | **阶段一进行中**：控制层 + 烧录 + 读内存已实现并验证；断点/观察点/执行控制/符号层/L3 明确后置 |
 | 读者 | 项目负责人（硬件/嵌入式）、后续实现者（Agent 或工程师） |
@@ -14,6 +14,7 @@
 
 | 版本 | 变更 |
 |---|---|
+| v0.3.1 | **多烧录器兼容**：`interface_cfg` 支持 `"auto"`——连接时经 USB 枚举自动识别探针（AT-Link / CMSIS-DAP / ST-Link / J-Link，按此优先级）并选择接口脚本；gdb/telnet 服务改为 `disabled` 真正关闭（原 `0` 实为随机端口，已实测）；J-Link on Windows 的 SEGGER 驱动冲突写入启动失败诊断；版本命令 `ocd_version` 修正为 `version`（真机报 `invalid command name`）；识别结果经 `connect`/`status` 的 `backend:` 行回报（`BackendSession.LastBackendNote`）；修正探针探测未抽干 stderr 的隐患；文档补齐命令行形态、命令名核对表、项目结构与测试数 |
 | v0.3 | **范围收敛为「下载 + 读指定地址」**：断点/观察点/执行控制/条件断点/符号层（ELF/SVD）/L3 协议字典/串口协同/watch 全部后置（见第 12 节）；实现层落地 TclRpcClient、OpenOcdLauncher、BackendSession、PermissionGate、ConfigStore 与 6 个工具；配置文件新增 `command_timeout_seconds` / `memory_read_max_bytes`，权限项支持 `permissions` 嵌套块；来源追踪改为按「JSON 属性是否存在」判定；清除 v0.2 残留的 Python 表述 |
 | v0.2 | Q1 定案：C# / .NET 8；探针画像：AT-Link（主力，CMSIS-DAP）+ ST-Link / J-Link / DAPLink；新增「阶段一：烧录闭环先行」（见第 12 节）；第 11 节项目结构改为 C# 形态 |
 | v0.1 | 初稿 |
@@ -73,7 +74,8 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 │ TclRpcClient  │ read_only      │ 机器默认 → ocd.json      │
 │ (TCL-RPC 6666)│ 分能力开关      │ → 运行时 → 工具参数      │
 │ OpenOcdLauncher│ 路径白名单     │ （来源追踪）             │
-│ (子进程/端口) │ 大小上限        │                         │
+│ ProbeDetector │ 大小上限        │                         │
+│ (子进程/端口) │                │                         │
 ├──────────────┴────────────────┴────────────────────────┤
 │  被控对象  OpenOCD（TCL-RPC 6666）→ 探针 → 目标 MCU        │
 │  协同对象  acccom 串口栈（独立 MCP server，松耦合，后置）   │
@@ -113,6 +115,20 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 - `SemaphoreSlim(1,1)` 串行化命令（C1）；并发调用被排队而不是交错。
 - **连接超时与命令超时分离**：握手 5s，命令用 `command_timeout_seconds`（默认 60s）。烧录一条 `program` 可能跑几十秒，不能用握手超时去掐它。
 - 参数引用见 `Backend/Tcl.cs`：优先大括号字面量 `{…}`（TCL 对大括号内不做替换，Windows 路径的反斜杠与空格安全）；仅当值含 `{`/`}` 时退回双引号形式并转义 `\ " $ [ ]`。
+
+**控制通道命令约定**（真机核对：atopenocd 0.11.0+dev-snapshot 2024-08-05）：
+
+| 用途 | 命令 |
+|---|---|
+| 版本 | `version` |
+| 目标与状态 | `targets` |
+| flash 布局 | `flash banks` |
+| 烧录 | `program <file> [verify] [<addr>]` |
+| 复位运行 | `reset run` |
+| 读内存 | `mdw` / `mdh` / `mdb <addr> <count>` |
+
+> `version` 才是命令名：同一版本上执行 `ocd_version` 会返回 `invalid command name "ocd_version"`。
+> v0.3 从参考实现沿用了 `ocd_version`，v0.3.1 修正为 `version`——这类"命令名靠推断"的地方必须在真机上核对一次。
 
 ### 4.2 工具设计规范
 
@@ -161,7 +177,20 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 - **重复启动防护**：先探测端口；已在运行（无论是谁启动的）就不重复拉起。
 - **启动失败诊断**：进程提前退出或超时，回报**近期输出**（rolling buffer 200 行）+ 一句「下一步怎么做」。
 - **退出**：`AppDomain.ProcessExit` 钩子 + `Dispose` 回收自己启动的进程（`Kill(entireProcessTree: true)`）；超时也回收，不留半死实例占着探针（C5）。
-- 命令行固定形态：`-s <scripts>` `-c bindto <host>` `-f <interface_cfg>` `[-c "transport select <t>"]` `[-f <target_cfg>]` `-c gdb_port 0` `-c telnet_port 0` `-c tcl_port <port>`——禁用 gdb/telnet 端口避免与其它工具抢 3333/4444，TCL-RPC 是唯一对外端口；`bindto` 保证只监听 localhost（C8）。
+- 命令行固定形态：`-s <scripts>` `-c bindto <host>` `-f <interface_cfg>` `[-c "transport select <t>"]` `[-f <target_cfg>]` `-c gdb_port disabled` `-c telnet_port disabled` `-c tcl_port <port>`——用 `disabled` **真正关闭** gdb/telnet 服务，TCL-RPC 是唯一对外端口；`bindto` 保证只监听 localhost（C8）。
+
+> **端口语义实测**（atopenocd 0.11.0+dev-snapshot 2024-08-05，本机复验）：
+> `-c "telnet_port 0"` → `Info : Listening on port 53427 for telnet connections`（**0 = 随机端口，仍在监听**）；
+> `-c "telnet_port disabled"` → `Info : telnet server disabled`。
+> 所以禁用必须写 `disabled`，写 `0` 会让 OpenOCD 另开一个随机端口，容易在真机排障时被误认为"已关闭"。
+
+**探针自动识别（`interface_cfg: "auto"`）**：
+
+- 连接阶段枚举 USB 设备（Windows 走 `Get-PnpDevice -PresentOnly`），按签名表 **AT-Link → CMSIS-DAP/DAPLink → ST-Link → J-Link** 选接口脚本（同种探针去重；结果按表优先级排序，与枚举顺序无关）。
+- 识别不到就返回可操作报错：提示插上探针或显式指定 `interface_cfg`，不静默乱猜。
+- 识别结果通过 `connect` / `status` 输出里的 `backend: probe auto-detected: AT-Link -> interface/atlink_dap_v2.cfg` 行回报（`BackendSession.LastBackendNote`），**不写回配置**。
+- 解析逻辑（`ProbeDetector.Parse`，纯函数）与系统调用（`DetectAsync`）分离，前者可无硬件单测；探测失败/超时（10s）一律降级为「未找到」，不阻断烧录流程。
+- 已知边界：匹配依据是设备显示名；J-Link 在 Windows 上若被 SEGGER 驱动独占，OpenOCD 会报 `LIBUSB_ERROR_NOT_FOUND`，失败诊断里已附「换 AT-Link/CMSIS-DAP 或用 Zadig 切 WinUSB」的说明。
 
 ### 4.6 自 provisioning
 
@@ -177,7 +206,7 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 
 | 优先级 | 工具 | 用途 | 权限 | 状态 |
 |---|---|---|---|---|
-| P0 | `connect` | 连接控制通道；无监听时按配置自动拉起后端 | — | ✅ |
+| P0 | `connect` | 连接控制通道；无监听时按配置自动拉起后端（`interface_cfg: "auto"` 时自动识别探针） | — | ✅ |
 | P0 | `status` | 后端是否运行、版本、target 列表（只读探测，不启动任何东西） | 只读 | ✅ |
 | P0 | `show_config` | 查看有效设置与每项来源（`reload=true` 重读磁盘） | — | ✅ |
 | **本轮** | `flash_info` | 列出 flash banks（驱动、基址、大小） | 只读 | ✅ |
@@ -223,8 +252,8 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 
 ```json
 {
-  "interface_cfg": "interface/cmsis-dap.cfg",
-  "target_cfg": "target/at32f435xx.cfg",
+  "interface_cfg": "auto",
+  "target_cfg": "target/at32f403axx.cfg",
   "transport": "swd",
   "host": "127.0.0.1",
   "port": 6666,
@@ -242,6 +271,7 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 }
 ```
 
+- `interface_cfg` 建议用 `"auto"`：连接时按 USB 设备自动识别已插探针（AT-Link / CMSIS-DAP / ST-Link / J-Link，按此优先级）并选择接口脚本；也可显式指定（如 `interface/cmsis-dap.cfg`）。识别结果不写回配置，只在 `connect` / `status` 的 `backend:` 行回报。
 - 权限项既可写在 `permissions` 块里（规范写法），也可写在顶层（同名字段）；**同名时嵌套块优先**。
 - 未知键被忽略；类型不符或超范围的值降级为默认值，并由 `show_config` 报 `WARNING`（配置文件坏不该让服务器起不来）。
 - 相对路径基准 = 本文件所在目录；`interface_cfg`/`target_cfg` 例外（见 4.3）。
@@ -329,6 +359,7 @@ Ocdup/
 │   ├── Backend/BackendSession.cs    # 会话：确保后端在跑 + 复用/丢弃控制通道
 │   ├── Backend/Tcl.cs               # TCL 字面量引用（大括号 / 转义引号）
 │   ├── Launcher/OpenOcdLauncher.cs  # 子进程生命周期/端口探测/输出抽干/退出回收
+│   ├── Launcher/ProbeDetector.cs    # auto 模式：USB 枚举探针识别（AT-Link/CMSIS-DAP/ST-Link/J-Link）
 │   ├── Config/OcdConfig.cs          # 分层配置合并 + 来源追踪 + 路径解析
 │   ├── Config/ConfigStore.cs        # 配置单一入口（可 Reload）
 │   ├── Config/PermissionGate.cs     # 权限闸（前置检查 + BLOCKED 文案）
@@ -338,7 +369,7 @@ Ocdup/
 │   ├── Tools/MemoryTools.cs         # read_memory
 │   ├── Tools/Parsing.cs             # 地址解析/渲染
 │   └── Ocdup.csproj
-├── tests/Ocdup.Tests/               # 假 socket 分帧/串行/超时 + 权限矩阵 + 配置加载
+├── tests/Ocdup.Tests/               # 假 socket 分帧/串行/超时 + 权限矩阵 + 配置加载 + 探针识别
 ├── tools/e2e_fake_backend.py        # 端到端：假 TCL-RPC 后端 + 真实 MCP 会话（无硬件回归）
 ├── ocd.json.example
 ├── README.md
@@ -381,7 +412,7 @@ Ocdup/
 
 | 层 | 方法 | 现状 |
 |---|---|---|
-| 单元 | xUnit + **假 `TcpListener`**（脚本化响应） | 39 个用例：控制通道（capture 包装 / `0x1a` 分帧 / 跨 TCP 分段组装 / 并发串行化 / 读超时 / 连接失败）、权限矩阵、配置加载（嵌套块 / 顶层平铺 / 来源追踪 / 坏输入降级 / 路径基准）、TCL 引用、命令行构造、地址解析 |
+| 单元 | xUnit + **假 `TcpListener`**（脚本化响应） | 49 个用例：控制通道（capture 包装 / `0x1a` 分帧 / 跨 TCP 分段组装 / 并发串行化 / 读超时 / 连接失败）、权限矩阵、配置加载（嵌套块 / 顶层平铺 / 来源追踪 / 坏输入降级 / 路径基准）、探针识别（优先级 / 同种去重 / 无关设备忽略 / 空行容错）、TCL 引用、命令行构造、地址解析 |
 | 端到端 | `tools/e2e_fake_backend.py`：Python 假 TCL-RPC 后端 + 真实 MCP stdio 会话（无需硬件） | 已验证：6 个工具注册、connect / status / flash_info / read_memory / flash_write 全链路、三层权限拦截文案、`reload` 生效、无 openocd 与坏二进制时的诊断输出 |
 | 集成 | 真实探针 + 开发板（S4） | 待硬件；每次记入测试日志（芯片、探针、ocd.json、OpenOCD 版本） |
 | CI | tag 与版本号一致性 → build → test → 发布 | 待建（S5） |
@@ -418,28 +449,28 @@ Ocdup/
 | # | 问题 | 阻塞 | 状态 |
 |---|---|---|---|
 | Q1 | 语言选型 | — | ✅ 关闭：C# / .NET 8 |
-| Q2 | 探针与目标芯片 | S4 真机联调 | 🔶 半关闭：AT-Link（CMSIS-DAP）+ ST-Link / J-Link / DAPLink 已定；**目标芯片型号待定**（AT32 需确认 OpenOCD 版本与 target 脚本名） |
+| Q2 | 探针与目标芯片 | — | ✅ 关闭：探针 = AT-Link（CMSIS-DAP）；目标芯片 = **AT32F403AVGT7**（LQFP100 / 1MB flash，`target/at32f403axx.cfg`，flash 大小自动探测）；备用探针 ST-Link / J-Link / DAPLink |
 | Q3 | 后端：OpenOCD vs probe-rs | 后期里程碑 | ✅ 阶段一采用 OpenOCD（AT32 生态成熟） |
 | Q4 | 是否随包分发 Windows 版 OpenOCD（git/zip 形态）还是纯下载 | 不阻塞，影响 M-prov | ⏳ 待定 |
 | Q5 | L3 协议字典覆盖哪些协议（私有帧？Modbus？CAN？） | M-l3 | ⏳ 待定 |
 | Q6 | 与 acccom 的分工边界：Ocdup 只发「去烧录/去验证」指令，帧交互仍走 acccom？ | M-serial | ⏳ 待定 |
 | Q7 | 相对路径基准 = ocd.json 所在目录 | — | ✅ 关闭并已实现 |
 | Q8 | 单目标（C6）是否满足？多探针场景是否需要多连接 | M-serial 等 | ⏳ 待定 |
-| **Q9** | `read_memory` 是否需要先 halt？（真机复现即补 M-exec） | S4 | ⏳ 待真机 |
-| **Q10** | 目标芯片实际可用的 OpenOCD 版本与 scripts 目录名（`target/at32f435xx.cfg` 是否可用，或需 Artery 版 OpenOCD） | S4 | ⏳ 待硬件 |
+| **Q9** | `read_memory` 是否需要先 halt？ | S4 | ✅ 真机验证：运行态直读 flash（0x08000000 向量表）成功，无需 halt；RAM 变量的「一致性快照」场景留待 M-exec |
+| **Q10** | 目标芯片实际可用的 OpenOCD 版本与 scripts 目录名 | — | ✅ 关闭：Artery 定制版 atopenocd（`D:\ARMGCCTool\atopenocd`，0.11.0+dev 2024-08-05）+ `interface/atlink_dap_v2.cfg` + `target/at32f403axx.cfg` 配置链干跑通过；非 AT 芯片走主线版（EIDE xPack 或 `openocd-20240916.7z` 解压）换 `OCD_BIN`/`OCD_SCRIPTS` 即可 |
 | **Q11** | 镜像路径是否也接受相对 CWD（当前只认 ocd.json 目录） | 不阻塞 | ⏳ 可后置 |
 
 ---
 
 ## 17. 交付结论与下一步（HANDOFF）
 
-**当前状态（v0.3）**：阶段一的控制层、烧录、读内存已实现，并通过 39 个单元测试 + 假后端端到端验证；关键路径剩下 **S4 真机联调** 与 **S5 打包注册**。
+**当前状态（v0.3.1）**：**S4 真机联调已通过** ✅（AT32F403AVGT7 + CMSIS-DAP v2 探针 + atopenocd：connect → flash_info → flash_write S300plus.hex 139077 字节，擦 25 扇区、写+校验 Verified OK、reset run、运行态读回向量表 0x08000000 = `20019d28 080002ad …`）。49 个单元测试全绿；剩余 **S5 打包注册**。
 
 **建议的下一步顺序**：
 
-1. 拿到目标板 + AT-Link，按 `ocd.json.example` 配好真实配置，跑 S4：`connect` → `flash_info` → `flash_write`（校验 + 复位）→ `read_memory` 复核关键地址；
-2. 若 `read_memory` 在运行态读失败，立即补 M-exec（halt/resume）——这是「读指定地址」能否稳定落地的分水岭；
-3. S5 做打包与客户端注册，把「换一台机器 10 分钟跑通」当作完成判据；
+1. ~~跑 S4~~ ✅ 已完成（2026-10：AT32F403AVGT7 + CMSIS-DAP v2，完整闭环验收通过）；
+2. ~~运行态读失败补 M-exec~~ 运行态直读成功，halt/resume 留给 M-bp/M-exec 阶段一并做；
+3. **S5 打包与客户端注册**（当前唯一关键路径）：`dotnet publish -c Release` + 注册到 DSH/Claude Code/Cursor，判据「换一台机器 10 分钟跑通」；
 4. 之后才轮到断点/观察点（M-bp）与符号层（M-sym）——它们建立在同一个控制层之上，成本会显著低于本轮。
 
 本文档随项目演进维护；每关闭一个重要开放问题就相应升级文档状态。
