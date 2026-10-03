@@ -475,7 +475,7 @@ Ocdup/
 | Q7 | 相对路径基准 = ocd.json 所在目录 | — | ✅ 关闭并已实现 |
 | Q8 | 单目标（C6）是否满足？多探针场景是否需要多连接 | M-serial 等 | ⏳ 待定 |
 | **Q9** | `read_memory` 是否需要先 halt？ | S4 | ✅ 真机验证：运行态直读 flash（0x08000000 向量表）成功，无需 halt；RAM 变量的「一致性快照」场景留待 M-exec |
-| **Q10** | 目标芯片实际可用的 OpenOCD 版本与 scripts 目录名 | — | ✅ 关闭：Artery 定制版 atopenocd（`D:\ARMGCCTool\atopenocd`，0.11.0+dev 2024-08-05）+ `interface_cfg: "auto"`（本机探针 0D28:0204 解析为 `interface/cmsis-dap.cfg`）+ `target/at32f403axx.cfg`，实机烧录通过；**注意 `atlink_dap_v2.cfg` 在本机这根公版 DAPLink 探针上会 `unable to find a matching CMSIS-DAP device`（见 4.5 已知边界 1）**；非 AT 芯片走主线版（EIDE xPack 或 `openocd-20240916.7z` 解压）换 `OCD_BIN`/`OCD_SCRIPTS` 即可 |
+| **Q10** | 目标芯片实际可用的 OpenOCD 版本与 scripts 目录名 | — | ✅ 关闭：Artery 定制版 atopenocd（本机安装，路径不入库，0.11.0+dev 2024-08-05）+ `interface_cfg: "auto"`（本机探针 0D28:0204 解析为 `interface/cmsis-dap.cfg`）+ `target/at32f403axx.cfg`，实机烧录通过；**注意 `atlink_dap_v2.cfg` 在本机这根公版 DAPLink 探针上会 `unable to find a matching CMSIS-DAP device`（见 4.5 已知边界 1）**；非 AT 芯片走主线版（EIDE xPack 或 `openocd-20240916.7z` 解压）换 `OCD_BIN`/`OCD_SCRIPTS` 即可 |
 | **Q11** | 镜像路径是否也接受相对 CWD（当前只认 ocd.json 目录） | 不阻塞 | ⏳ 可后置 |
 
 ---

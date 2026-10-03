@@ -72,9 +72,9 @@ docstring 与 `show_config` 输出为准，不要凭记忆猜。
   `bin/Debug`**——ZCode/DSH 是常驻进程，会锁住正在运行的 exe，导致开发时
   `dotnet build` 报文件被锁定；升级顺序：退出客户端 → `dotnet publish
   src/Ocdup/Ocdup.csproj -c Release -o publish` → 再启动客户端。
-- 本机配置：AT32F403AVGT7 + CMSIS-DAP v2 探针 + atopenocd
-  （`D:\ARMGCCTool\atopenocd`），`ocd.json` 已按此配好；换板子改 `target_cfg`
-  一行。
+- 本机配置：AT32F403AVGT7 + CMSIS-DAP v2 探针 + Artery 定制版 atopenocd
+  （安装位置由 `OCD_BIN` / `OCD_SCRIPTS` 指定，`show_config` 可核对），`ocd.json`
+  已按此配好；换板子改 `target_cfg` 一行。
 
 ## 典型会话
 

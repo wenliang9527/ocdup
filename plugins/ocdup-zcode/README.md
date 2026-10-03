@@ -25,7 +25,7 @@ ZCode 本身）。装好后 ZCode 会话自动获得烧录操作的流程纪律�
 ## 安装（本地市场）
 
 1. ZCode → Settings → Plugin Management → Discover → `+` → 添加本地目录
-   `D:\WORK_VSCODE\Vibe-coding\Ocdup\plugins`（含 `marketplace.json`）
+   `<Ocdup 仓库目录>\plugins`（含 `marketplace.json`，即本仓库的 `plugins/` 目录）
 2. 安装并启用 `ocdup-zcode`（会话自动重载）
 3. 验证：新会话里输入 `/ocdup-status`；或说「帮我烧录固件」看 skill 是否触发
 

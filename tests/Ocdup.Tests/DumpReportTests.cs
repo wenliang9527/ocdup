@@ -9,9 +9,9 @@ public sealed class DumpReportTests
     public void Report_Contains_Path_Size_Hash_And_Hex_Words()
     {
         var preview = new byte[] { 0x28, 0x9D, 0x01, 0x20, 0xAD, 0x02, 0x00, 0x08 };
-        var report = MemoryTools.FormatDumpReport(0x08000000, 64, "D:\\tmp\\fw.bin", 64, "ABCD1234EFGH5678", preview);
+        var report = MemoryTools.FormatDumpReport(0x08000000, 64, "C:\\tmp\\fw.bin", 64, "ABCD1234EFGH5678", preview);
 
-        Assert.Contains("D:\\tmp\\fw.bin", report);
+        Assert.Contains("C:\\tmp\\fw.bin", report);
         Assert.Contains("64 bytes", report);
         Assert.Contains("ABCD1234EFGH5678", report);
         Assert.Contains("0x08000000: 289D0120", report);
