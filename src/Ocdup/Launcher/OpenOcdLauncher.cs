@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Text;
 using Ocdup.Backend;
 using Ocdup.Config;
@@ -25,6 +26,7 @@ public sealed class OpenOcdLauncher : IDisposable
     private readonly object _sync = new();
     private readonly Queue<string> _output = new();
     private Process? _process;
+    private IntPtr _jobHandle;
     private bool _disposed;
 
     public OpenOcdLauncher()
@@ -229,6 +231,17 @@ public sealed class OpenOcdLauncher : IDisposable
             _process = process;
             _output.Clear();
         }
+
+        // C5 兜底层：把子进程绑进 kill-on-close 的 Job。ocdup 被强杀/崩溃时 ProcessExit
+        // 钩子不会触发，作业句柄随进程消亡由内核关闭，整棵 openocd 进程树随之被收割——
+        // 不会留一个占着探针和 6666 端口的孤儿。失败降级为无作业（退回 ProcessExit 路径）。
+        if (OperatingSystem.IsWindows())
+        {
+            var job = Job.CreateAndAssign(process);
+            if (job != IntPtr.Zero)
+                lock (_sync) { _jobHandle = job; }
+        }
+
         _ = Task.Run(() => PumpAsync(process.StandardOutput));
         _ = Task.Run(() => PumpAsync(process.StandardError));
 
@@ -258,29 +271,37 @@ public sealed class OpenOcdLauncher : IDisposable
     public void Stop()
     {
         Process? process;
+        IntPtr job;
         lock (_sync)
         {
             process = _process;
             _process = null;
+            job = _jobHandle;
+            _jobHandle = IntPtr.Zero;
         }
-        if (process is null) return;
 
-        try
+        if (process is not null)
         {
-            if (!process.HasExited)
+            try
             {
-                process.Kill(entireProcessTree: true);
-                process.WaitForExit(3000);
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                    process.WaitForExit(3000);
+                }
+            }
+            catch
+            {
+                // 进程已在退出中
+            }
+            finally
+            {
+                process.Dispose();
             }
         }
-        catch
-        {
-            // 进程已在退出中
-        }
-        finally
-        {
-            process.Dispose();
-        }
+
+        // Job 句柄最后关：即便上面的 Kill 因任何原因没杀干净，KILL_ON_JOB_CLOSE 也会让内核收割整棵进程树。
+        Job.Close(job);
     }
 
     private async Task PumpAsync(StreamReader reader)
@@ -367,6 +388,94 @@ public sealed class OpenOcdLauncher : IDisposable
     }
 
     private void OnProcessExit(object? sender, EventArgs e) => Stop();
+
+    /// <summary>
+    /// Windows Job Object 封装（仅 Windows 调用）：KILL_ON_JOB_CLOSE——
+    /// 句柄关闭（含创建它的 ocdup 进程消亡）时内核自动终止作业内全部进程。
+    /// </summary>
+    private static class Job
+    {
+        private const int JobObjectExtendedLimitInformationClass = 9;
+        private const uint LimitFlagsKillOnJobClose = 0x2000;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct IO_COUNTERS
+        {
+            public ulong ReadOperationCount;
+            public ulong WriteOperationCount;
+            public ulong OtherOperationCount;
+            public ulong ReadTransferCount;
+            public ulong WriteTransferCount;
+            public ulong OtherTransferCount;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct JOBOBJECT_BASIC_LIMIT_INFORMATION
+        {
+            public long PerProcessUserTimeLimit;
+            public long PerJobUserTimeLimit;
+            public uint LimitFlags;
+            public UIntPtr MinimumWorkingSetSize;
+            public UIntPtr MaximumWorkingSetSize;
+            public uint ActiveProcessLimit;
+            public UIntPtr Affinity;
+            public uint PriorityClass;
+            public uint SchedulingClass;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+        {
+            public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+            public IO_COUNTERS IoInfo;
+            public UIntPtr ProcessMemoryLimit;
+            public UIntPtr JobMemoryLimit;
+            public UIntPtr PeakProcessMemoryUsed;
+            public UIntPtr PeakJobMemoryUsed;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr CreateJobObjectW(IntPtr lpJobAttributes, string? lpName);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetInformationJobObject(
+            IntPtr hJob, int jobObjectInfoClass, ref JOBOBJECT_EXTENDED_LIMIT_INFORMATION lpJobObjectInfo, int cbJobObjectInfoLength);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool AssignProcessToJobObject(IntPtr hJob, IntPtr hProcess);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CloseHandle(IntPtr hObject);
+
+        /// <summary>创建 kill-on-close 作业并把进程放进去；任何一步失败返回 IntPtr.Zero（主流程不受影响）。</summary>
+        internal static IntPtr CreateAndAssign(Process process)
+        {
+            var handle = IntPtr.Zero;
+            try
+            {
+                handle = CreateJobObjectW(IntPtr.Zero, null);
+                if (handle == IntPtr.Zero) return IntPtr.Zero;
+
+                var info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+                info.BasicLimitInformation.LimitFlags = LimitFlagsKillOnJobClose;
+                if (!SetInformationJobObject(handle, JobObjectExtendedLimitInformationClass, ref info, Marshal.SizeOf<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>()))
+                    return IntPtr.Zero;
+                if (!AssignProcessToJobObject(handle, process.Handle))
+                    return IntPtr.Zero;
+                return handle;
+            }
+            catch
+            {
+                Close(handle);
+                return IntPtr.Zero;
+            }
+        }
+
+        internal static void Close(IntPtr handle)
+        {
+            if (handle != IntPtr.Zero) CloseHandle(handle);
+        }
+    }
 
     public void Dispose()
     {

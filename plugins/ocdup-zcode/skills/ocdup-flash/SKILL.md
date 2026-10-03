@@ -1,6 +1,6 @@
 ---
 name: ocdup-flash
-description: Use when flashing firmware or reading target memory through the Ocdup toolchain — Ocdup MCP tools (connect/status/show_config/flash_info/flash_write/read_memory/dump_memory) wrapping OpenOCD. Covers the standard flash workflow (connect → flash_info → flash_write → read-back), address/width conventions, permission-gate discipline (BLOCKED → show_config), probe auto-detection boundaries, and port discipline (6666 single backend, shared by DSH and ZCode). 触发词：烧录、刷机、固件、下载程序、烧写、读 flash、读内存、dump、向量表、探针、OpenOCD、DAPLink、AT-Link、ST-Link、J-Link、AT32。
+description: Use when flashing firmware or reading target memory through the Ocdup toolchain — Ocdup MCP tools (connect/status/show_config/backend_log/flash_info/flash_write/verify_image/flash_erase_sector/read_memory/write_memory/dump_memory/halt/resume/reset/run_command) wrapping OpenOCD. Covers the standard flash workflow (connect → flash_info → flash_write → read-back), exec control for reliable reads (halt → operate → resume), address/width conventions, permission-gate discipline (BLOCKED → show_config), probe auto-detection boundaries, and port discipline (6666 single backend, shared by DSH and ZCode). 触发词：烧录、刷机、固件、下载程序、烧写、读 flash、读内存、dump、向量表、卡死、挂起、复位、halt、探针、OpenOCD、DAPLink、AT-Link、ST-Link、J-Link、AT32。
 ---
 
 # Ocdup 烧录工具链（AI 操作手册）

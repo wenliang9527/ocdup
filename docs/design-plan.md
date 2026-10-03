@@ -2,9 +2,9 @@
 
 | 项目 | 内容 |
 |---|---|
-| 文档版本 | v0.3.8 |
-| 日期 | 2026-09-30 |
-| 状态 | **阶段一进行中**：控制层 + 烧录 + 读内存已实现并验证；断点/观察点/执行控制/符号层/L3 明确后置 |
+| 文档版本 | v0.3.10 |
+| 日期 | 2026-10-03 |
+| 状态 | **阶段一完成**：控制层 + 烧录 + 读内存 + 执行控制 + 逃生舱均已实现并验证（15 个工具，S4 真机通过）；断点/观察点/符号层/L3 后置 |
 | 读者 | 项目负责人（硬件/嵌入式）、后续实现者（Agent 或工程师） |
 | 上游参考 | [microhenrio/openocd-mcp](https://github.com/microhenrio/openocd-mcp) v0.4.5 架构（已逐文件审查） |
 
@@ -14,6 +14,7 @@
 
 | 版本 | 变更 |
 |---|---|
+| v0.3.10 | **健壮性修复 + 文档全面对齐**：① `dump_memory` 执行前先删除已存在的目标文件——此前 dump_image 失败但路径上有旧 dump 时，会把旧文件的字节数/sha256/预览当本次结果返回（陈旧数据误导验证）；② 自拉 openocd 绑进 Windows Job Object（KILL_ON_JOB_CLOSE）——ocdup 被强杀/崩溃时 ProcessExit 钩子不触发，作业句柄随进程消亡由内核关闭并收割整棵进程树，补 C5 的孤儿缺口；③ csproj 版本补 bump（0.3.8 → 0.3.10，对齐变更记录）；④ 全文回填 v0.3.3–v0.3.9 期间滞留的过时描述（工具清单 7→15、权限表补 allow_exec、S4/S5/CI 状态、测试数 49→90、项目结构补 ExecTools/TrafficLog 等） |
 | v0.3.9 | **工程化 S5 收尾**：根目录 `publish.cmd`（单测 Release → publish → 提示重启 DSH；检测到 ocdup.exe 运行即拒绝，防文件锁）；CI workflow（build + 单测 + e2e，windows-latest）。DSH 注册侧的发布顺序（退出 DSH → publish → 启动）已写入 README 与脚本头部 |
 | v0.3.8 | **执行控制 M-exec**（后置里程碑首个落地）：`ExecTools`——`halt [timeoutMs]` / `resume [address]` / `reset run|halt|init`。新权限开关 `allow_exec`（默认 true：读失败→halt→resume 是常规调试路径；`read_only` 总闸照常全拦）。`read_memory` 描述同步改为「失败先 halt，完事 resume」。M-bp（断点）、M-sym（符号层）仍后置；halt/resume 的真机行为待下次 S4 联调记录。工具数 15；测试 90/90，e2e 补「halt→read→resume→reset run」与 read_only 拦截 |
 | v0.3.7 | **openocd 异步日志镜像 + 面板 v1.1**：`OpenOcdLauncher.PumpAsync` 把抽干的 stdout/stderr 逐行 `Record("backend","log",…)` 进流量 JSONL——烧录进度（逐扇区 erase/write）、`Info:`/`Error:`、target 事件从此在侧边栏面板实时可见（此前只在 `backend_log` 工具与启动失败诊断里）。面板（v1.1.0）：direction 新增 `log`（石板灰），过滤下拉与 stats 同步；行为测试 71 项断言全过 |
@@ -40,7 +41,7 @@
 
 支撑这两件事的是**控制层**（TclRpcClient / OpenOcdLauncher / BackendSession）与**权限闸**（PermissionGate）——它们是后续所有能力的地基，本轮必须打牢。
 
-**明确后置**（本轮不做，见第 12 节后置里程碑）：断点/观察点/条件断点、halt/resume/step/reset 执行控制、符号层（ELF 变量名、SVD 外设寄存器）、L3 协议字典、`watch_variables`、`run_command` 逃生舱、与 acccom 的串口协同。
+**明确后置**（见第 12 节后置里程碑）：断点/观察点/条件断点、`step`（halt/resume/reset 执行控制已在 v0.3.8 落地）、符号层（ELF 变量名、SVD 外设寄存器）、L3 协议字典、`watch_variables`、`set_permissions`/`OCD_READONLY`（`run_command` 逃生舱已在 v0.3.6 落地）、与 acccom 的串口协同。
 
 **能力变化**：调试动作的发起方从「人手动敲 TCL / 点 IDE 按钮」变为「模型调用工具」；调试知识的载体从个人经验变为可版本化的项目配置与符号层（符号层后置）。
 
@@ -74,8 +75,10 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 │          （Program.cs：Host + WithStdioServerTransport）  │
 ├────────────────────────────────────────────────────────┤
 │  工具层  Tools/*.cs：每个 [McpServerTool] = 一个能力      │
-│          已实现：connect / status / show_config /         │
-│           flash_info / flash_write / read_memory / dump_memory │
+│          已实现 15 个（清单见第 5 节）：connect / status / show_config /  │
+│           backend_log / flash_info / flash_write / verify_image /  │
+│           flash_erase_sector / read_memory / write_memory / dump_memory / │
+│           halt / resume / reset / run_command │
 ├──────────────┬────────────────┬────────────────────────┤
 │ 控制层        │ 权限层          │ 配置层                  │
 │ BackendSession│ PermissionGate │ ConfigStore             │
@@ -143,7 +146,7 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 1. **docstring 写给模型看**：何时调用、参数形态（`hex address, e.g. '0x20000000'`）、失败时怎么办。
 2. **返回格式化文本**：带上下文的行式输出，人和模型都能直接读；不返回裸 JSON。
 3. **报错带行动指引**：非法参数（`ERROR: address 'hello' is not a hex value…`）、权限（`BLOCKED: … See show_config.`）、后端（`ERROR: … call connect and retry.`）。
-4. **逃生舱后置**：`run_command` 原始命令通道（挂在 `allow_raw_command` 后）留到后续阶段。
+4. **逃生舱**：`run_command` 原始命令通道挂在 `allow_raw_command` 后（v0.3.6 已实现，单行命令）。
 
 ### 4.3 分层配置
 
@@ -164,10 +167,11 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 | 权限项 | 默认 | 闸住的操作 | 状态 |
 |---|---|---|---|
 | `read_only` | false（总闸） | 以下全部 | ✅ 已实现 |
-| `allow_memory_write` | true | write_memory / write_register … | 闸就位，工具后置 |
+| `allow_memory_write` | true | write_memory（write_register 后置） | ✅ 已实现（v0.3.6） |
 | `allow_flash` | true | flash_write | ✅ 已实现 |
-| `allow_flash_erase` | **false** | flash_erase_sector（破坏性，显式开启） | 闸就位，工具后置 |
-| `allow_raw_command` | true | run_command | 闸就位，工具后置 |
+| `allow_flash_erase` | **false** | flash_erase_sector（破坏性，显式开启） | ✅ 已实现（v0.3.6） |
+| `allow_exec` | true | halt / resume / reset（执行控制，改目标运行状态） | ✅ 已实现（v0.3.8） |
+| `allow_raw_command` | true | run_command | ✅ 已实现（v0.3.6） |
 | `flash_allowed_paths` | []（不限） | 烧录文件必须位于白名单目录内 | ✅ 已实现 |
 | `flash_max_bytes` | 0（不限） | 超过大小的烧录文件拒绝 | ✅ 已实现 |
 | `memory_read_max_bytes` | 4096 | 单次读回体积上限（防呆，不是安全边界） | ✅ 已实现 |
@@ -216,7 +220,7 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 
 ## 5. 功能设计（工具清单）
 
-图例：**✅ 已实现（v0.3）** ｜ ⏸ 后置（不在本轮范围）
+图例：**✅ 已实现** ｜ ⏸ 后置（截至 v0.3.10，共 15 个工具已落地）
 
 | 优先级 | 工具 | 用途 | 权限 | 状态 |
 |---|---|---|---|---|
@@ -226,16 +230,18 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 | **本轮** | `flash_info` | 列出 flash banks（驱动、基址、大小） | 只读 | ✅ |
 | **本轮** | `flash_write` | **下载**：烧录镜像（写 + 可选校验 + 可选复位运行） | read_only / allow_flash / 白名单 / 上限 | ✅ |
 | **本轮** | `read_memory` | **读指定地址**：按宽度读回目标内存 | 只读 + 体积上限 | ✅ |
-| **本轮** | `dump_memory` | **大块读落盘**：`dump_image` 到文件（整片 flash / RAM 快照），返回路径 + 字节数 + sha256 + 前 64 字节 | 只读 | ✅ |
-| P1 | `halt` / `resume` / `step` / `reset` | 执行控制 | 变更目标状态 | ⏸ |
-| P1 | `write_memory` / `write_register` | 存储器与寄存器写 | `allow_memory_write` | ⏸ |
+| **本轮** | `dump_memory` | **大块读落盘**：`dump_image` 到文件（整片 flash / RAM 快照），返回路径 + 字节数 + sha256 + 前 64 字节 | 目标侧只读；PC 侧落盘走 dump_allowed_paths / dump_max_bytes | ✅ |
+| v0.3.5 | `verify_image` | **烧后独立校验**：镜像与目标 flash 比对，不写任何东西（回答「板子里到底是谁」） | 只读 | ✅ |
+| v0.3.4 | `backend_log` | 读 ocdup 自拉 openocd 的近期 stdout/stderr（200 行滚动；异步 `Info:`/`Error:` 日志） | 只读 | ✅ |
+| P1 | `halt` / `resume` / `reset` | 执行控制 | `allow_exec` | ✅（v0.3.8；`step` 仍后置） |
+| P1 | `write_memory` / `write_register` | 存储器与寄存器写 | `allow_memory_write` | ✅（v0.3.6；`write_register` 仍后置） |
 | P1 | `add_breakpoint` / `remove_breakpoint` / `list_breakpoints` | 断点管理 | — | ⏸ |
 | P1 | `add_conditional_breakpoint` | 条件断点（服务器侧驱动，见决策 2） | — | ⏸ |
 | P1 | `add_watchpoint` / `remove_watchpoint` | 数据观察点 | — | ⏸ |
-| P1 | `flash_erase_sector` | 擦除（破坏性） | `allow_flash_erase` | ⏸ |
+| P1 | `flash_erase_sector` | 擦除（破坏性，默认关闭） | `allow_flash_erase` | ✅（v0.3.6） |
 | P1 | `load_elf` / `read_variable` / `write_variable` / `list_variables` | 按名访问变量（符号层 L1） | 写操作走 memory 闸 | ⏸ |
 | P1 | `load_svd` / `read_peripheral_register` / … | 按名访问外设寄存器（L2，位域解码） | 同上 | ⏸ |
-| P1 | `run_command` | 原始命令逃生舱 | `allow_raw_command` | ⏸ |
+| P1 | `run_command` | 原始命令逃生舱（单行） | `allow_raw_command` | ✅（v0.3.6） |
 | P2 | `watch_variables` | 不停 CPU 的定时采样 | 只读 | ⏸ |
 | P2 | `set_permissions` | 运行时调整权限 | — | ⏸ |
 | P2 | 串口协同工具组 | 烧录后走 acccom 验证协议帧 | — | ⏸ |
@@ -279,6 +285,7 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
     "allow_memory_write": true,
     "allow_flash": true,
     "allow_flash_erase": false,
+    "allow_exec": true,
     "allow_raw_command": true,
     "flash_allowed_paths": ["build/"],
     "flash_max_bytes": 1048576,
@@ -328,7 +335,7 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 
 ## 8. 非目标（NON-GOALS）
 
-- 本轮不做断点/观察点/执行控制（halt/resume/step/reset）。代价：`read_memory` 若在目标运行时读失败，需要在客户端侧另想办法停下目标（见 Q9）。
+- 不做断点/观察点/条件断点（M-bp 后置）。执行控制 halt/resume/reset 已在 v0.3.8 落地（Q9 真机验证：运行态直读 flash 可行；halt 用于可靠读写现场）。
 - 不做通用逻辑分析仪/示波器驱动（那是另一条产品线）。
 - 不做 GUI 调试器本体。
 - 不替代 OpenOCD / probe-rs / J-Link 官方工具；Ocdup 只是它们的 MCP 门面。
@@ -375,20 +382,25 @@ Ocdup/
 │   ├── Program.cs                   # Host 构建 + MCP 服务器/工具注册
 │   ├── Backend/TclRpcClient.cs      # 控制通道客户端（6666 · 0x1a 分帧 · capture{…} · 串行化）
 │   ├── Backend/BackendSession.cs    # 会话：确保后端在跑 + 复用/丢弃控制通道
+│   ├── Backend/TrafficLog.cs        # 流量镜像（mcp-traffic.jsonl，2MB 轮转；面板数据源）
 │   ├── Backend/Tcl.cs               # TCL 字面量引用（大括号 / 转义引号）
-│   ├── Launcher/OpenOcdLauncher.cs  # 子进程生命周期/端口探测/输出抽干/退出回收
+│   ├── Launcher/OpenOcdLauncher.cs  # 子进程生命周期/端口探测/输出抽干/退出回收/Job Object
 │   ├── Launcher/ProbeDetector.cs    # auto 模式：USB 枚举探针识别（AT-Link/CMSIS-DAP/ST-Link/J-Link）
 │   ├── Config/OcdConfig.cs          # 分层配置合并 + 来源追踪 + 路径解析
 │   ├── Config/ConfigStore.cs        # 配置单一入口（可 Reload）
 │   ├── Config/PermissionGate.cs     # 权限闸（前置检查 + BLOCKED 文案）
-│   ├── Tools/BackendTools.cs        # connect / status
+│   ├── Tools/BackendTools.cs        # connect / status / backend_log / run_command
 │   ├── Tools/ConfigTools.cs         # show_config
-│   ├── Tools/FlashTools.cs          # flash_info / flash_write
-│   ├── Tools/MemoryTools.cs         # read_memory / dump_memory
-│   ├── Tools/Parsing.cs             # 地址解析/渲染
+│   ├── Tools/ExecTools.cs           # halt / resume / reset
+│   ├── Tools/FlashTools.cs          # flash_info / flash_write / verify_image / flash_erase_sector
+│   ├── Tools/MemoryTools.cs         # read_memory / write_memory / dump_memory
+│   ├── Tools/Parsing.cs             # 地址解析/渲染/后端输出解析
 │   └── Ocdup.csproj
 ├── tests/Ocdup.Tests/               # 假 socket 分帧/串行/超时 + 权限矩阵 + 配置加载 + 探针识别
-├── tools/e2e_fake_backend.py        # 端到端：假 TCL-RPC 后端 + 真实 MCP 会话（无硬件回归）
+├── tools/                           # e2e_fake_backend.py（无硬件回归）+ dsh-ocdup-panel/（DSH 侧边栏面板）
+├── plugins/                         # ocdup-zcode（ZCode 本地插件市场：ocdup-flash skill + 快捷命令）
+├── publish.cmd                      # 一键发布（防锁检测）
+├── .github/workflows/ci.yml         # CI（build + 单测 + e2e）
 ├── ocd.json.example
 ├── README.md
 ├── .gitignore
@@ -408,17 +420,17 @@ Ocdup/
 | S1 骨架 | 项目结构、MCP stdio 跑通、工具注册 | 客户端能列出工具 | ✅ |
 | S2 控制层 | `TclRpcClient`（分帧/串行/超时）+ `OpenOcdLauncher`（拉起/探测/抽干/回收）+ `BackendSession` | 假 socket 单测通过；connect/status 可用 | ✅ |
 | S3 烧录与读内存 | `flash_info` / `flash_write` / `read_memory` + 权限闸（含路径白名单与大小上限） | 权限矩阵单测全绿；假后端 e2e 跑通完整链路 | ✅ |
-| S4 真机联调 | AT-Link + 目标板：连接 → 烧录 → 校验 → 复位运行 → 按地址读回 | 记入测试日志：芯片、探针、ocd.json、OpenOCD 版本 | ⏳ 待硬件 |
-| S5 打包与注册 | `dotnet publish` 产物 + 各客户端注册矩阵 + README | 换一台机器 10 分钟内跑通 | ⏳ |
+| S4 真机联调 | AT-Link + 目标板：连接 → 烧录 → 校验 → 复位运行 → 按地址读回 | 记入测试日志：芯片、探针、ocd.json、OpenOCD 版本 | ✅（2026-10，AT32F403AVGT7 + CMSIS-DAP v2，详见第 17 节） |
+| S5 打包与注册 | `dotnet publish` 产物 + 各客户端注册矩阵 + README | 换一台机器 10 分钟内跑通 | 🟡 publish.cmd + CI + DSH/ZCode 注册已就位；换机验收待做 |
 
 ### 后置里程碑（本轮不做）
 
 | 里程碑 | 内容 |
 |---|---|
-| M-exec | halt/resume/step/reset 执行控制（`read_memory` 在运行态读失败时需要） |
+| M-exec | ~~halt/resume/step/reset 执行控制~~ halt/resume/reset 已落地（v0.3.8）；`step` 仍后置 |
 | M-bp | 断点/观察点/条件断点（服务器侧驱动，见决策 2） |
 | M-sym | 符号层 L1（ELF）/ L2（SVD）+ 按名读写 |
-| M-perm | `set_permissions` + `OCD_READONLY` 环境变量 + `run_command` 逃生舱 |
+| M-perm | `set_permissions` + `OCD_READONLY` 环境变量（`run_command` 逃生舱已落地 v0.3.6） |
 | M-prov | provisioning：缓存目录 + 下载 + SHA-256 校验 + `install_openocd` |
 | M-l3 | L3 协议字典（帧名/模板/期望响应） |
 | M-serial | 与 acccom 的串口协同（烧录后自动验证协议帧） |
@@ -430,10 +442,10 @@ Ocdup/
 
 | 层 | 方法 | 现状 |
 |---|---|---|
-| 单元 | xUnit + **假 `TcpListener`**（脚本化响应） | 49 个用例：控制通道（capture 包装 / `0x1a` 分帧 / 跨 TCP 分段组装 / 并发串行化 / 读超时 / 连接失败）、权限矩阵、配置加载（嵌套块 / 顶层平铺 / 来源追踪 / 坏输入降级 / 路径基准）、探针识别（优先级 / 同种去重 / 无关设备忽略 / 空行容错）、TCL 引用、命令行构造、地址解析 |
-| 端到端 | `tools/e2e_fake_backend.py`：Python 假 TCL-RPC 后端 + 真实 MCP stdio 会话（无需硬件） | 已验证：6 个工具注册、connect / status / flash_info / read_memory / flash_write 全链路、三层权限拦截文案、`reload` 生效、无 openocd 与坏二进制时的诊断输出 |
-| 集成 | 真实探针 + 开发板（S4） | 待硬件；每次记入测试日志（芯片、探针、ocd.json、OpenOCD 版本） |
-| CI | tag 与版本号一致性 → build → test → 发布 | 待建（S5） |
+| 单元 | xUnit + **假 `TcpListener`**（脚本化响应） | 90 个用例：控制通道（capture 包装 / `0x1a` 分帧 / 跨 TCP 分段组装 / 并发串行化 / 读超时 / 连接失败）、权限矩阵、配置加载（嵌套块 / 顶层平铺 / 来源追踪 / 坏输入降级 / 路径基准）、探针识别（优先级 / 同种去重 / 无关设备忽略 / 空行容错）、TCL 引用、命令行构造、地址解析、流量日志轮转 |
+| 端到端 | `tools/e2e_fake_backend.py`：Python 假 TCL-RPC 后端 + 真实 MCP stdio 会话（无需硬件） | 已验证：15 个工具注册、烧录/读/写/执行控制/逃生舱全链路、format=json 与 verify_image、dump 白名单与上限拦截、read_only 全拦、`reload` 生效、无 openocd 与坏二进制时的诊断输出 |
+| 集成 | 真实探针 + 开发板（S4） | ✅ 已通过（2026-10）；每次记入测试日志（芯片、探针、ocd.json、OpenOCD 版本） |
+| CI | build → test → e2e（windows-latest） | ✅ `.github/workflows/ci.yml`（v0.3.9 建） |
 
 回归重点：**权限矩阵逐格断言** 与 **错误文案可操作性**（C2/C3）——它们最容易被后续改动悄悄破坏。
 
@@ -482,13 +494,13 @@ Ocdup/
 
 ## 17. 交付结论与下一步（HANDOFF）
 
-**当前状态（v0.3.2）**：**S4 真机联调已通过** ✅（AT32F403AVGT7 + CMSIS-DAP v2 探针 + atopenocd：connect → flash_info → flash_write S300plus.hex 139077 字节，擦 25 扇区、写+校验 Verified OK、reset run、运行态读回向量表 0x08000000 = `20019d28 080002ad …`）。49 个单元测试全绿；剩余 **S5 打包注册**。
+**当前状态（v0.3.10）**：**S4 真机联调已通过** ✅（AT32F403AVGT7 + CMSIS-DAP v2 探针 + atopenocd：connect → flash_info → flash_write S300plus.hex 139077 字节，擦 25 扇区、写+校验 Verified OK、reset run、运行态读回向量表 0x08000000 = `20019d28 080002ad …`）。**15 个工具全部落地**；90 个单元测试全绿 + e2e 无硬件回归 + CI 就绪。S5 的 publish.cmd / CI / DSH 与 ZCode 注册已完成，剩「换一台机器 10 分钟跑通」的换机验收。
 
 **建议的下一步顺序**：
 
 1. ~~跑 S4~~ ✅ 已完成（2026-10：AT32F403AVGT7 + CMSIS-DAP v2，完整闭环验收通过）；
-2. ~~运行态读失败补 M-exec~~ 运行态直读成功，halt/resume 留给 M-bp/M-exec 阶段一并做；
-3. **S5 打包与客户端注册**（当前唯一关键路径）：`dotnet publish -c Release` + 注册到 DSH/Claude Code/Cursor，判据「换一台机器 10 分钟跑通」；
+2. ~~运行态读失败补 M-exec~~ ✅ v0.3.8 落地 halt/resume/reset（Q9 真机验证运行态直读可行；halt 用于可靠读写现场）；
+3. ~~S5 打包与客户端注册~~ 🟡 主体完成（publish.cmd + CI + DSH 双 profile + ZCode MCP/插件）；剩换机 10 分钟验收；
 4. 之后才轮到断点/观察点（M-bp）与符号层（M-sym）——它们建立在同一个控制层之上，成本会显著低于本轮。
 
 本文档随项目演进维护；每关闭一个重要开放问题就相应升级文档状态。

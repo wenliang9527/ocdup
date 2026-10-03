@@ -164,6 +164,16 @@ public static class MemoryTools
         var dir = Path.GetDirectoryName(resolved);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
+        // 先清掉可能存在的旧文件：dump_image 失败时，不能把上一次的产物当本次结果报告（sha256/预览全是旧的）。
+        try
+        {
+            if (File.Exists(resolved)) File.Delete(resolved);
+        }
+        catch (Exception ex)
+        {
+            return $"ERROR: cannot replace '{resolved}': {ex.Message}. Close whatever holds the file, or choose another path.";
+        }
+
         var command = $"dump_image {Tcl.Quote(resolved)} {Parsing.Hex(start)} {length}";
         string output;
         try

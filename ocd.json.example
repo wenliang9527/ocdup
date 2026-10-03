@@ -13,9 +13,12 @@
     "allow_memory_write": true,
     "allow_flash": true,
     "allow_flash_erase": false,
+    "allow_exec": true,
     "allow_raw_command": true,
     "flash_allowed_paths": ["build/"],
     "flash_max_bytes": 1048576,
-    "memory_read_max_bytes": 4096
+    "memory_read_max_bytes": 4096,
+    "dump_allowed_paths": ["dumps/"],
+    "dump_max_bytes": 67108864
   }
 }
