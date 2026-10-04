@@ -2,9 +2,9 @@
 
 | 项目 | 内容 |
 |---|---|
-| 文档版本 | v0.3.12 |
+| 文档版本 | v0.3.13 |
 | 日期 | 2026-10-04 |
-| 状态 | **阶段一完成**：控制层 + 烧录 + 读内存 + 执行控制 + 逃生舱 + 运行时权限均已实现并验证（17 个工具，S4 真机通过）；断点/观察点/符号层/L3 后置 |
+| 状态 | **阶段一完成**：控制层 + 烧录 + 读内存 + 执行控制 + 逃生舱 + 运行时权限 + 符号层 L1 均已实现并验证（18 个工具，S4 真机通过）；断点/观察点/L2(SVD)/L3 后置 |
 | 读者 | 项目负责人（硬件/嵌入式）、后续实现者（Agent 或工程师） |
 | 上游参考 | [microhenrio/openocd-mcp](https://github.com/microhenrio/openocd-mcp) v0.4.5 架构（已逐文件审查） |
 
@@ -14,6 +14,7 @@
 
 | 版本 | 变更 |
 |---|---|
+| v0.3.13 | **M-sym 第一层（L1）落地**：新增 3 个工具——`list_variables`（ELF .symtab 对象符号清单：地址/大小/名，可 pattern 过滤，PC 侧读文件不碰目标）、`read_variable`（按名读：ELF 定位 → 控制通道读回，受 memory_read_max_bytes；1/2/4 字节给单值解释，大对象给 hex 串）、`write_variable`（按名写 1/2/4 字节变量，大对象引导用 write_memory；C2 权限前置）。新增 `Backend/ElfSymbols` 纯函数解析器（ELF32 LE，拒绝 stripped/大端/ELF64 并给可操作文案；Keil/GCC 产物通用）与 ocd.json 新键 `elf_path`（默认镜像）。同名 static（多个编译单元）分列地址引导用 read_memory。工具数 18；测试 114/114，e2e 内嵌最小 ELF32 夹具覆盖三工具 |
 | v0.3.12 | **M-perm 收尾 + P3 清理**：① 新增第 17 个工具 `set_permissions`——运行时改权限（免改 ocd.json），闸 = 新权限键 `allow_set_permissions`（**默认 false**：放宽权限是人的决定，该键就是那份人类授权；刻意不挂 read_only 总闸，否则锁死的会话永远无法解除）；运行时补丁在 `OcdConfig.WithRuntimeChanges` 入口按 `RuntimePatchableKeys` 白名单强制拒绝越界键（防御纵深，路径白名单/探针/芯片配置只走文件），来源标 `(runtime)`，reload/重启丢弃；② `OCD_READONLY=1/true` 环境变量加载时强制只读（优先于 ocd.json）；③ P3 三件：`HexValue` 按宽度掩码（杜绝 33 位输入送成多字写）、TCL-RPC 写方向纳入命令超时（与读对称）、C2 澄清（本地文件解析允许先于闸门，但不得触碰后端）。工具数 17；测试 110/110，e2e 补「runtime 补丁→read_only 拦截→解除→show_config 展示 (runtime) 来源」 |
 | v0.3.11 | **identify_chip 工具 + 启动即死诊断**：① 新增第 16 个工具 `identify_chip`——读 ARM 标准 CPUID（0xE000ED00，解码 Cortex-M 内核型号，任何 Cortex-M 有效）+ 厂商 DBGMCU_IDCODE（默认 0xE0042000，可参数覆盖），DEV_ID 低 12 位在 ocd.json 新增的 `chip_id_map`（外置映射，守 C4 零硬编码）中按数值匹配给出家族名——回答「找到烧录器后，连的是什么芯片」；② `EnsureStartedAsync` 端口就绪判定改为「连续 3 次探测成功且进程未退」——openocd 先绑 tcl_port 随后才连探针，DP 失败会即刻退出，原判定会把刚死的监听当就绪（真机复现：目标未应答时 connect 报 `cannot open channel: refused` 而非真正失败原因）；③ ConnectAsync 失败时附上自拉后端的近期输出诊断。工具数 16；测试 96/96，e2e 补 identify_chip 两用例 |
 | v0.3.10 | **健壮性修复 + 文档全面对齐**：① `dump_memory` 执行前先删除已存在的目标文件——此前 dump_image 失败但路径上有旧 dump 时，会把旧文件的字节数/sha256/预览当本次结果返回（陈旧数据误导验证）；② 自拉 openocd 绑进 Windows Job Object（KILL_ON_JOB_CLOSE）——ocdup 被强杀/崩溃时 ProcessExit 钩子不触发，作业句柄随进程消亡由内核关闭并收割整棵进程树，补 C5 的孤儿缺口；③ csproj 版本补 bump（0.3.8 → 0.3.10，对齐变更记录）；④ 全文回填 v0.3.3–v0.3.9 期间滞留的过时描述（工具清单 7→15、权限表补 allow_exec、S4/S5/CI 状态、测试数 49→90、项目结构补 ExecTools/TrafficLog 等） |
@@ -224,7 +225,7 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 
 ## 5. 功能设计（工具清单）
 
-图例：**✅ 已实现** ｜ ⏸ 后置（截至 v0.3.12，共 17 个工具已落地）
+图例：**✅ 已实现** ｜ ⏸ 后置（截至 v0.3.13，共 18 个工具已落地）
 
 | 优先级 | 工具 | 用途 | 权限 | 状态 |
 |---|---|---|---|---|
@@ -238,6 +239,9 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 | v0.3.5 | `verify_image` | **烧后独立校验**：镜像与目标 flash 比对，不写任何东西（回答「板子里到底是谁」） | 只读 | ✅ |
 | v0.3.4 | `backend_log` | 读 ocdup 自拉 openocd 的近期 stdout/stderr（200 行滚动；异步 `Info:`/`Error:` 日志） | 只读 | ✅ |
 | v0.3.11 | `identify_chip` | 连上后确认芯片：CPUID（ARM 内核）+ 厂商 DEV_ID（默认 0xE0042000，可参数覆盖），按 ocd.json 的 `chip_id_map` 查家族 | 只读 | ✅ |
+| v0.3.13 | `list_variables` | 符号层 L1：列出 .elf 的对象符号（地址/大小/名，可 pattern 过滤；PC 侧读文件） | — | ✅ |
+| v0.3.13 | `read_variable` | 按名读变量（ELF 定位 → 控制通道读回；受 memory_read_max_bytes） | 只读 | ✅ |
+| v0.3.13 | `write_variable` | 按名写 1/2/4 字节变量（大对象引导用 write_memory） | `read_only` / `allow_memory_write` | ✅ |
 | P1 | `halt` / `resume` / `reset` | 执行控制 | `allow_exec` | ✅（v0.3.8；`step` 仍后置） |
 | P1 | `write_memory` / `write_register` | 存储器与寄存器写 | `allow_memory_write` | ✅（v0.3.6；`write_register` 仍后置） |
 | P1 | `add_breakpoint` / `remove_breakpoint` / `list_breakpoints` | 断点管理 | — | ⏸ |
@@ -322,9 +326,9 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 
 ---
 
-## 7. 符号层设计（⏸ 后置）
+## 7. 符号层设计（L1 ✅ v0.3.13；L2/L3 后置）
 
-三层名字映射，自底向上，**本轮不实现**，接口形态先定：
+三层名字映射，自底向上：**L1（ELF 变量名）已落地**，L2/L3 后置，接口形态先定：
 
 | 层 | 数据源 | 提供 | 依赖 |
 |---|---|---|---|
@@ -336,7 +340,7 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 - 聚合类型：>4 字节变量按字 dump（watch 工具注明非原子读）；结构体/数组/枚举展开再往后（DWARF 类型解析）。
 - 扩展点：符号层接口固定为 `lookup(name) -> (addr, size)` / `find(pattern)`，换数据源不改工具层。
 
-**过渡期替代**：本轮用 `read_memory` 按地址 + 宽度直接读，配合 `flash_info` 确认布局——足够完成烧录与裸地址验证。
+**L1 已落地（v0.3.13）**：`list_variables` / `read_variable` / `write_variable` + ocd.json 的 `elf_path`；`Backend/ElfSymbols` 解析 ELF32 LE 的 .symtab（STT_OBJECT、地址非 0、大小 > 0），坏输入（stripped/大端/ELF64）拒绝并给可操作文案。**L2(SVD)/L3 仍后置**：本轮无按名外设寄存器与协议字典。
 
 ---
 
@@ -390,6 +394,7 @@ Ocdup/
 │   ├── Backend/TclRpcClient.cs      # 控制通道客户端（6666 · 0x1a 分帧 · capture{…} · 串行化）
 │   ├── Backend/BackendSession.cs    # 会话：确保后端在跑 + 复用/丢弃控制通道
 │   ├── Backend/TrafficLog.cs        # 流量镜像（mcp-traffic.jsonl，2MB 轮转；面板数据源）
+│   ├── Backend/ElfSymbols.cs        # 符号层 L1：ELF32 .symtab 解析（纯函数，无 IO）
 │   ├── Backend/Tcl.cs               # TCL 字面量引用（大括号 / 转义引号）
 │   ├── Launcher/OpenOcdLauncher.cs  # 子进程生命周期/端口探测/输出抽干/退出回收/Job Object
 │   ├── Launcher/ProbeDetector.cs    # auto 模式：USB 枚举探针识别（AT-Link/CMSIS-DAP/ST-Link/J-Link）
@@ -397,7 +402,8 @@ Ocdup/
 │   ├── Config/ConfigStore.cs        # 配置单一入口（可 Reload）
 │   ├── Config/PermissionGate.cs     # 权限闸（前置检查 + BLOCKED 文案）
 │   ├── Tools/BackendTools.cs        # connect / status / backend_log / run_command
-│   ├── Tools/ConfigTools.cs         # show_config
+│   ├── Tools/ConfigTools.cs         # show_config / set_permissions
+│   ├── Tools/SymbolTools.cs         # list_variables / read_variable / write_variable（L1）
 │   ├── Tools/ExecTools.cs           # halt / resume / reset
 │   ├── Tools/FlashTools.cs          # flash_info / flash_write / verify_image / flash_erase_sector
 │   ├── Tools/MemoryTools.cs         # read_memory / write_memory / dump_memory
@@ -449,8 +455,8 @@ Ocdup/
 
 | 层 | 方法 | 现状 |
 |---|---|---|
-| 单元 | xUnit + **假 `TcpListener`**（脚本化响应） | 110 个用例：控制通道（capture 包装 / `0x1a` 分帧 / 跨 TCP 分段组装 / 并发串行化 / 读超时 / 连接失败）、权限矩阵、配置加载（嵌套块 / 顶层平铺 / 来源追踪 / 坏输入降级 / 路径基准）、探针识别（优先级 / 同种去重 / 无关设备忽略 / 空行容错）、TCL 引用、命令行构造、地址解析、流量日志轮转、CPUID 解码与 chip_id_map 匹配、运行时权限补丁与 OCD_RDONLY |
-| 端到端 | `tools/e2e_fake_backend.py`：Python 假 TCL-RPC 后端 + 真实 MCP stdio 会话（无需硬件） | 已验证：17 个工具注册、烧录/读/写/执行控制/逃生舱/芯片识别/运行时权限全链路、format=json 与 verify_image、dump 白名单与上限拦截、read_only 全拦、`reload` 生效与 runtime 补丁丢弃、无 openocd 与坏二进制时的诊断输出 |
+| 单元 | xUnit + **假 `TcpListener`**（脚本化响应） | 114 个用例：控制通道（capture 包装 / `0x1a` 分帧 / 跨 TCP 分段组装 / 并发串行化 / 读超时 / 连接失败）、权限矩阵、配置加载（嵌套块 / 顶层平铺 / 来源追踪 / 坏输入降级 / 路径基准）、探针识别（优先级 / 同种去重 / 无关设备忽略 / 空行容错）、TCL 引用、命令行构造、地址解析、流量日志轮转、CPUID 解码与 chip_id_map 匹配、运行时权限补丁与 OCD_RDONLY、ELF32 解析（对象符号筛选 / 坏输入拒绝） |
+| 端到端 | `tools/e2e_fake_backend.py`：Python 假 TCL-RPC 后端 + 真实 MCP stdio 会话（无需硬件） | 已验证：18 个工具注册、烧录/读/写/执行控制/逃生舱/芯片识别/运行时权限/按名读写全链路、format=json 与 verify_image、dump 白名单与上限拦截、read_only 全拦、`reload` 生效与 runtime 补丁丢弃、无 openocd 与坏二进制时的诊断输出 |
 | 集成 | 真实探针 + 开发板（S4） | ✅ 已通过（2026-10）；每次记入测试日志（芯片、探针、ocd.json、OpenOCD 版本） |
 | CI | build → test → e2e（windows-latest） | ✅ `.github/workflows/ci.yml`（v0.3.9 建） |
 
@@ -501,7 +507,7 @@ Ocdup/
 
 ## 17. 交付结论与下一步（HANDOFF）
 
-**当前状态（v0.3.12）**：**S4 真机联调已通过** ✅（AT32F403AVGT7 + CMSIS-DAP v2 探针 + atopenocd：connect → flash_info → flash_write S300plus.hex 139077 字节，擦 25 扇区、写+校验 Verified OK、reset run、运行态读回向量表 0x08000000 = `20019d28 080002ad …`）。**17 个工具全部落地**；110 个单元测试全绿 + e2e 无硬件回归 + CI 就绪。S5 的 publish.cmd / CI / DSH 与 ZCode 注册已完成，剩「换一台机器 10 分钟跑通」的换机验收。
+**当前状态（v0.3.13）**：**S4 真机联调已通过** ✅（AT32F403AVGT7 + CMSIS-DAP v2 探针 + atopenocd：connect → flash_info → flash_write S300plus.hex 139077 字节，擦 25 扇区、写+校验 Verified OK、reset run、运行态读回向量表 0x08000000 = `20019d28 080002ad …`）。**18 个工具全部落地**（含符号层 L1 按名读写）；114 个单元测试全绿 + e2e 无硬件回归 + CI 就绪。S5 的 publish.cmd / CI / DSH 与 ZCode 注册已完成，剩「换一台机器 10 分钟跑通」的换机验收。
 
 **建议的下一步顺序**：
 

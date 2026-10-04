@@ -2,6 +2,7 @@
   "//": "Ocdup 项目配置示例。复制为 ocd.json 放在项目根（或用 OCD_CONFIG 指向本文件）。",
   "//paths": "interface_cfg / target_cfg 是 OpenOCD scripts 目录下的脚本名（由 openocd -s 解析）；其余相对路径以本文件所在目录为基准。",
   "//interface": "interface_cfg 建议用 \"auto\"：连接时自动识别已插探针（AT-Link / CMSIS-DAP / ST-Link / J-Link）并选对应脚本；也可显式指定。",
+  "//elf_path": "符号层 L1 的默认镜像（未 strip 的 .elf，相对路径以本文件目录为基准）：list/read/write_variable 用；也可每次传 file 参数。",
   "//chip_id_map": "identify_chip 用：DEV_ID（hex，如 \"0x410\"）-> 家族/建议 target_cfg 的映射；省略 = 只报原始值。DEV_ID 见各厂商参考手册的 DBGMCU 章节。",
   "interface_cfg": "auto",
   "target_cfg": "target/at32f403axx.cfg",

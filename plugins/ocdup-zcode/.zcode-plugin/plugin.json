@@ -1,6 +1,6 @@
 {
   "name": "ocdup-zcode",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Ocdup 烧录工具链知识层：ocdup-flash skill（烧录流程/权限闸纪律/探针与端口纪律）+ /ocdup-status、/ocdup-flash 快捷命令。MCP server 不随插件分发——沿用用户级已配置的 ocdup server，避免双进程与工具重复。",
   "keywords": ["flash", "ocdup", "mcp", "embedded", "openocd", "hardware"]
 }

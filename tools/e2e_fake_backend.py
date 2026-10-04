@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -181,6 +182,26 @@ class Mcp:
             pass
 
 
+def build_mini_elf():
+    """最小合法 ELF32 LE（.symtab + .strtab）：list/read/write_variable 的 e2e 夹具。
+    符号：gCounter(0x20000004,4 OBJECT) / s_local(0x20000010,1 OBJECT) / doThing(FUNC,应被排除)。"""
+    strtab = b"\x00gCounter\x00s_local\x00doThing\x00"
+    symtab = (struct.pack("<IIIBBH", 0, 0, 0, 0, 0, 0)
+              + struct.pack("<IIIBBH", 1, 0x20000004, 4, 1, 0, 1)
+              + struct.pack("<IIIBBH", 10, 0x20000010, 1, 1, 0, 1)
+              + struct.pack("<IIIBBH", 18, 0x08000100, 88, 2, 0, 1))
+    ehsize, shentsize, shnum = 52, 40, 4
+    sym_off, str_off, shoff = ehsize, ehsize + len(symtab), ehsize + len(symtab) + len(strtab)
+
+    def shdr(typ, off, size, link=0, entsize=0):
+        return struct.pack("<IIIIIIIIII", 0, typ, 0, 0, off, size, link, 0, 4, entsize)
+
+    eh = b"\x7fELF\x01\x01\x01\x00" + b"\x00" * 8
+    eh += struct.pack("<HHIIIIIHHHHHH", 2, 40, 1, 0, 0, shoff, 0, ehsize, 0, 0, shentsize, shnum, 0)
+    return eh + symtab + strtab + shdr(0, 0, 0) + shdr(2, sym_off, len(symtab), 2, 16) \
+        + shdr(3, str_off, len(strtab)) + shdr(1, 0, 0)
+
+
 def write_config(work, **permissions):
     cfg = {
         "interface_cfg": "interface/cmsis-dap.cfg",
@@ -188,6 +209,7 @@ def write_config(work, **permissions):
         "transport": "swd",
         "port": PORT,
         "command_timeout_seconds": 30,
+        "elf_path": "fw.elf",
         "permissions": {
             "read_only": False,
             "allow_flash": True,
@@ -211,6 +233,8 @@ def main():
     shutil.rmtree(work, ignore_errors=True)
     os.makedirs(os.path.join(work, "build"))
     os.makedirs(os.path.join(work, "elsewhere"))
+    with open(os.path.join(work, "fw.elf"), "wb") as f:
+        f.write(build_mini_elf())
     for rel in (os.path.join("build", "fw.bin"), os.path.join("elsewhere", "there.bin")):
         with open(os.path.join(work, rel), "wb") as f:
             f.write(b"\x00" * 4096)
@@ -303,6 +327,13 @@ def main():
         print(mcp.call("flash_write", {"file": "build/fw.bin", "address": "0x08000000"}))
         print(mcp.call("set_permissions", {"readOnly": False}))
         print(mcp.call("show_config"))
+
+        banner("symbol layer L1: list/read/write_variable (mini ELF fixture, elf_path in ocd.json)")
+        print(mcp.call("list_variables", {}))
+        print(mcp.call("list_variables", {"pattern": "gcount"}))
+        print(mcp.call("read_variable", {"name": "gCounter"}))
+        print(mcp.call("read_variable", {"name": "missing_var"}))
+        print(mcp.call("write_variable", {"name": "gCounter", "value": "0x42"}))
 
         banner("ocd.json -> read_only=true; show_config(reload) then flash_write")
         write_config(work, read_only=True)
