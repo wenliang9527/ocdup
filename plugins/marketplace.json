@@ -10,7 +10,7 @@
       "source": "./ocdup-zcode",
       "description": "Ocdup 烧录工具链知识层：ocdup-flash skill + /ocdup-status、/ocdup-flash 命令。MCP server 沿用用户级配置，插件不重复声明。",
       "category": "developer-tools",
-      "version": "0.2.2"
+      "version": "0.2.3"
     }
   ]
 }

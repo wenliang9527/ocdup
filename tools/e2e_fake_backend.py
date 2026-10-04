@@ -255,6 +255,10 @@ def main():
         banner("verify_image build/fw.bin @0x08000000 (read-only compare)")
         print(mcp.call("verify_image", {"file": "build/fw.bin", "address": "0x08000000"}))
 
+        banner("identify_chip (CPUID + vendor id register; fake backend echoes address as value)")
+        print(mcp.call("identify_chip", {}))
+        print(mcp.call("identify_chip", {"dbgmcu_address": "hello"}))
+
         banner("dump_memory 0x08000000 x4096 -> dumps/flash-head.bin")
         print(mcp.call("dump_memory", {"file": "dumps/flash-head.bin", "address": "0x08000000", "length": 4096}))
         dumped = os.path.join(work, "dumps", "flash-head.bin")

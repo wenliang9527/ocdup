@@ -4,7 +4,7 @@
 |---|---|
 | 文档版本 | v0.3.10 |
 | 日期 | 2026-10-03 |
-| 状态 | **阶段一完成**：控制层 + 烧录 + 读内存 + 执行控制 + 逃生舱均已实现并验证（15 个工具，S4 真机通过）；断点/观察点/符号层/L3 后置 |
+| 状态 | **阶段一完成**：控制层 + 烧录 + 读内存 + 执行控制 + 逃生舱均已实现并验证（16 个工具，S4 真机通过）；断点/观察点/符号层/L3 后置 |
 | 读者 | 项目负责人（硬件/嵌入式）、后续实现者（Agent 或工程师） |
 | 上游参考 | [microhenrio/openocd-mcp](https://github.com/microhenrio/openocd-mcp) v0.4.5 架构（已逐文件审查） |
 
@@ -14,6 +14,7 @@
 
 | 版本 | 变更 |
 |---|---|
+| v0.3.11 | **identify_chip 工具 + 启动即死诊断**：① 新增第 16 个工具 `identify_chip`——读 ARM 标准 CPUID（0xE000ED00，解码 Cortex-M 内核型号，任何 Cortex-M 有效）+ 厂商 DBGMCU_IDCODE（默认 0xE0042000，可参数覆盖），DEV_ID 低 12 位在 ocd.json 新增的 `chip_id_map`（外置映射，守 C4 零硬编码）中按数值匹配给出家族名——回答「找到烧录器后，连的是什么芯片」；② `EnsureStartedAsync` 端口就绪判定改为「连续 3 次探测成功且进程未退」——openocd 先绑 tcl_port 随后才连探针，DP 失败会即刻退出，原判定会把刚死的监听当就绪（真机复现：目标未应答时 connect 报 `cannot open channel: refused` 而非真正失败原因）；③ ConnectAsync 失败时附上自拉后端的近期输出诊断。工具数 16；测试 96/96，e2e 补 identify_chip 两用例 |
 | v0.3.10 | **健壮性修复 + 文档全面对齐**：① `dump_memory` 执行前先删除已存在的目标文件——此前 dump_image 失败但路径上有旧 dump 时，会把旧文件的字节数/sha256/预览当本次结果返回（陈旧数据误导验证）；② 自拉 openocd 绑进 Windows Job Object（KILL_ON_JOB_CLOSE）——ocdup 被强杀/崩溃时 ProcessExit 钩子不触发，作业句柄随进程消亡由内核关闭并收割整棵进程树，补 C5 的孤儿缺口；③ csproj 版本补 bump（0.3.8 → 0.3.10，对齐变更记录）；④ 全文回填 v0.3.3–v0.3.9 期间滞留的过时描述（工具清单 7→15、权限表补 allow_exec、S4/S5/CI 状态、测试数 49→90、项目结构补 ExecTools/TrafficLog 等） |
 | v0.3.9 | **工程化 S5 收尾**：根目录 `publish.cmd`（单测 Release → publish → 提示重启 DSH；检测到 ocdup.exe 运行即拒绝，防文件锁）；CI workflow（build + 单测 + e2e，windows-latest）。DSH 注册侧的发布顺序（退出 DSH → publish → 启动）已写入 README 与脚本头部 |
 | v0.3.8 | **执行控制 M-exec**（后置里程碑首个落地）：`ExecTools`——`halt [timeoutMs]` / `resume [address]` / `reset run|halt|init`。新权限开关 `allow_exec`（默认 true：读失败→halt→resume 是常规调试路径；`read_only` 总闸照常全拦）。`read_memory` 描述同步改为「失败先 halt，完事 resume」。M-bp（断点）、M-sym（符号层）仍后置；halt/resume 的真机行为待下次 S4 联调记录。工具数 15；测试 90/90，e2e 补「halt→read→resume→reset run」与 read_only 拦截 |
@@ -78,7 +79,7 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 │          已实现 15 个（清单见第 5 节）：connect / status / show_config /  │
 │           backend_log / flash_info / flash_write / verify_image /  │
 │           flash_erase_sector / read_memory / write_memory / dump_memory / │
-│           halt / resume / reset / run_command │
+│           halt / resume / reset / run_command / identify_chip │
 ├──────────────┬────────────────┬────────────────────────┤
 │ 控制层        │ 权限层          │ 配置层                  │
 │ BackendSession│ PermissionGate │ ConfigStore             │
@@ -220,7 +221,7 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 
 ## 5. 功能设计（工具清单）
 
-图例：**✅ 已实现** ｜ ⏸ 后置（截至 v0.3.10，共 15 个工具已落地）
+图例：**✅ 已实现** ｜ ⏸ 后置（截至 v0.3.11，共 16 个工具已落地）
 
 | 优先级 | 工具 | 用途 | 权限 | 状态 |
 |---|---|---|---|---|
@@ -233,6 +234,7 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 | **本轮** | `dump_memory` | **大块读落盘**：`dump_image` 到文件（整片 flash / RAM 快照），返回路径 + 字节数 + sha256 + 前 64 字节 | 目标侧只读；PC 侧落盘走 dump_allowed_paths / dump_max_bytes | ✅ |
 | v0.3.5 | `verify_image` | **烧后独立校验**：镜像与目标 flash 比对，不写任何东西（回答「板子里到底是谁」） | 只读 | ✅ |
 | v0.3.4 | `backend_log` | 读 ocdup 自拉 openocd 的近期 stdout/stderr（200 行滚动；异步 `Info:`/`Error:` 日志） | 只读 | ✅ |
+| v0.3.11 | `identify_chip` | 连上后确认芯片：CPUID（ARM 内核）+ 厂商 DEV_ID（默认 0xE0042000，可参数覆盖），按 ocd.json 的 `chip_id_map` 查家族 | 只读 | ✅ |
 | P1 | `halt` / `resume` / `reset` | 执行控制 | `allow_exec` | ✅（v0.3.8；`step` 仍后置） |
 | P1 | `write_memory` / `write_register` | 存储器与寄存器写 | `allow_memory_write` | ✅（v0.3.6；`write_register` 仍后置） |
 | P1 | `add_breakpoint` / `remove_breakpoint` / `list_breakpoints` | 断点管理 | — | ⏸ |
@@ -256,6 +258,7 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 - `read_memory`：`mdb`/`mdh`/`mdw` 对应 `width=8/16/32`；返回 `read N x W-bit from 0xADDR (B bytes):` + 后端原始数据行。
 - `dump_memory`：`dump_image {file} {addr} {length}`，输出文件父目录自动创建；返回 dumped 路径/字节数/sha256 前缀/前 64 字节 hex 字；请求字节数与实际不符或后端报错时附 NOTE。
 - `status`：只用 300ms 端口探测 + 已连通的 TCL-RPC 查询，**不启动**任何进程。
+- `identify_chip`：读 `mdw 0xE000ED00 1`（CPUID，ARM 标准位域解码）与 `mdw <dbgmcu_address> 1`（默认 0xE0042000）；DEV_ID 低 12 位在 `chip_id_map`（ocd.json）中按数值匹配；单次读失败不硬失败（该地址因厂商而异），原文带回报告。CPUID 解码是纯函数（`DescribeCpuid`），未知 partno 原样报告不猜。
 
 ---
 
@@ -442,8 +445,8 @@ Ocdup/
 
 | 层 | 方法 | 现状 |
 |---|---|---|
-| 单元 | xUnit + **假 `TcpListener`**（脚本化响应） | 90 个用例：控制通道（capture 包装 / `0x1a` 分帧 / 跨 TCP 分段组装 / 并发串行化 / 读超时 / 连接失败）、权限矩阵、配置加载（嵌套块 / 顶层平铺 / 来源追踪 / 坏输入降级 / 路径基准）、探针识别（优先级 / 同种去重 / 无关设备忽略 / 空行容错）、TCL 引用、命令行构造、地址解析、流量日志轮转 |
-| 端到端 | `tools/e2e_fake_backend.py`：Python 假 TCL-RPC 后端 + 真实 MCP stdio 会话（无需硬件） | 已验证：15 个工具注册、烧录/读/写/执行控制/逃生舱全链路、format=json 与 verify_image、dump 白名单与上限拦截、read_only 全拦、`reload` 生效、无 openocd 与坏二进制时的诊断输出 |
+| 单元 | xUnit + **假 `TcpListener`**（脚本化响应） | 96 个用例：控制通道（capture 包装 / `0x1a` 分帧 / 跨 TCP 分段组装 / 并发串行化 / 读超时 / 连接失败）、权限矩阵、配置加载（嵌套块 / 顶层平铺 / 来源追踪 / 坏输入降级 / 路径基准）、探针识别（优先级 / 同种去重 / 无关设备忽略 / 空行容错）、TCL 引用、命令行构造、地址解析、流量日志轮转、CPUID 解码与 chip_id_map 匹配 |
+| 端到端 | `tools/e2e_fake_backend.py`：Python 假 TCL-RPC 后端 + 真实 MCP stdio 会话（无需硬件） | 已验证：16 个工具注册、烧录/读/写/执行控制/逃生舱/芯片识别全链路、format=json 与 verify_image、dump 白名单与上限拦截、read_only 全拦、`reload` 生效、无 openocd 与坏二进制时的诊断输出 |
 | 集成 | 真实探针 + 开发板（S4） | ✅ 已通过（2026-10）；每次记入测试日志（芯片、探针、ocd.json、OpenOCD 版本） |
 | CI | build → test → e2e（windows-latest） | ✅ `.github/workflows/ci.yml`（v0.3.9 建） |
 
@@ -494,7 +497,7 @@ Ocdup/
 
 ## 17. 交付结论与下一步（HANDOFF）
 
-**当前状态（v0.3.10）**：**S4 真机联调已通过** ✅（AT32F403AVGT7 + CMSIS-DAP v2 探针 + atopenocd：connect → flash_info → flash_write S300plus.hex 139077 字节，擦 25 扇区、写+校验 Verified OK、reset run、运行态读回向量表 0x08000000 = `20019d28 080002ad …`）。**15 个工具全部落地**；90 个单元测试全绿 + e2e 无硬件回归 + CI 就绪。S5 的 publish.cmd / CI / DSH 与 ZCode 注册已完成，剩「换一台机器 10 分钟跑通」的换机验收。
+**当前状态（v0.3.11）**：**S4 真机联调已通过** ✅（AT32F403AVGT7 + CMSIS-DAP v2 探针 + atopenocd：connect → flash_info → flash_write S300plus.hex 139077 字节，擦 25 扇区、写+校验 Verified OK、reset run、运行态读回向量表 0x08000000 = `20019d28 080002ad …`）。**16 个工具全部落地**；96 个单元测试全绿 + e2e 无硬件回归 + CI 就绪。S5 的 publish.cmd / CI / DSH 与 ZCode 注册已完成，剩「换一台机器 10 分钟跑通」的换机验收。
 
 **建议的下一步顺序**：
 

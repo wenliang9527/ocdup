@@ -106,6 +106,11 @@ public sealed class BackendSession
                 var message =
                     $"ERROR: cannot open the OpenOCD TCL-RPC channel on {cfg.Host}:{cfg.Port}: {ex.Message}. " +
                     "Check the probe wiring and interface_cfg/target_cfg in ocd.json, then retry or call connect.";
+                // 端口曾被探测到、随即又拒绝连接 → openocd 大概率起来后死了（探针/DP 初始化失败）。
+                // 把自拉后端的近期输出带出来，别让模型只看到一句 refused 无从下手。
+                var recent = _launcher.RecentOutput(OpenOcdLauncher.MaxBufferLines);
+                if (recent.Length > 0)
+                    message += "\n--- recent openocd output ---\n" + recent;
                 _traffic.Record("backend", "SYS", message, $"{cfg.Host}:{cfg.Port}");
                 throw new BackendException(message, ex);
             }

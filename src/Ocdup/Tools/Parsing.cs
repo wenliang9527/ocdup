@@ -34,6 +34,43 @@ public static class Parsing
     };
 
     /// <summary>
+    /// 解码 ARM CPUID（地址 0xE000ED00，任何 Cortex-M 都有）：
+    /// [31:24] implementer（'A' = ARM）、[23:20] variant、[19:16] architecture、[15:4] partno、[3:0] patch。
+    /// partno 表只收录 ARM 公开的标准值；未知值按 partno 原样报告，不猜。
+    /// </summary>
+    public static string DescribeCpuid(long cpuid)
+    {
+        var implementer = (cpuid >> 24) & 0xFF;
+        var variant = (cpuid >> 20) & 0xF;
+        var architecture = (cpuid >> 16) & 0xF;
+        var partno = (cpuid >> 4) & 0xFFF;
+        var patch = cpuid & 0xF;
+
+        var core = partno switch
+        {
+            0xC20 => "Cortex-M0",
+            0xC21 => "Cortex-M1",
+            0xC23 => "Cortex-M3",
+            0xC24 => "Cortex-M4",
+            0xC27 => "Cortex-M7",
+            0xC60 => "Cortex-M0+",
+            0xD20 => "Cortex-M23",
+            0xD21 => "Cortex-M33",
+            _ => $"Cortex-M (partno 0x{partno:x3})",
+        };
+        var arch = architecture switch
+        {
+            0xC => "ARMv6-M",
+            0xF => "ARMv7-M/v8-M",
+            _ => $"arch 0x{architecture:x}",
+        };
+        var impl = implementer is >= 0x20 and <= 0x7E
+            ? $"'{(char)implementer}'"
+            : $"0x{implementer:x2}";
+        return $"{core} ({arch}, implementer {impl}, r{variant}p{patch})";
+    }
+
+    /// <summary>
     /// 解析 OpenOCD mdw/mdh/mdb 的文本输出：每行 "0xADDR: v v v v"（值的位宽随参数，
     /// 值本身无 0x 前缀；每行末尾常有尾随空格）。只从形态匹配的行收集值，其余行
     /// （警告/日志混入）忽略；收集满 <paramref name="count"/> 个即成功（多余值丢弃）。

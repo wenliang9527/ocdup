@@ -30,7 +30,7 @@
 | 「擦掉 0x080C0000 那个扇区」 | `flash_erase_sector` | 破坏性操作，默认关闭，显式开启才可用 |
 | 「跑这条 TCL：`targets`」 | `run_command` | 原始命令逃生舱，兜底专用工具没覆盖的操作 |
 
-## 🧰 工具一览（15 个）
+## 🧰 工具一览（16 个）
 
 ### 会话与诊断
 
@@ -40,6 +40,7 @@
 | `status` | 后端是否运行、版本、target 列表（只读，不启动任何东西） | — |
 | `show_config` | 有效设置与每项来源（`reload=true` 重读 ocd.json） | — |
 | `backend_log` | ocdup 自己拉起的 openocd 近期 stdout/stderr（异步 `Info:` / `Error:` 日志从这里出） | 只读 |
+| `identify_chip` | **连上后确认芯片**：读 CPUID（0xE000ED00，ARM 内核标准）+ 厂商 ID 寄存器（默认 0xE0042000），DEV_ID 按 ocd.json 的 `chip_id_map` 给出家族 | 只读 |
 
 ### 烧录
 
@@ -255,7 +256,7 @@ verify_image file=build/fw.bin
 ## 🧪 开发与测试
 
 ```bash
-dotnet test Ocdup.sln                     # 90 个单测，不需要硬件
+dotnet test Ocdup.sln                     # 96 个单测，不需要硬件
 python tools/e2e_fake_backend.py          # 端到端：假 TCL-RPC 后端 + 真实 MCP 会话
 ```
 
@@ -279,7 +280,7 @@ python tools/e2e_fake_backend.py          # 端到端：假 TCL-RPC 后端 + 真
 
 | 里程碑 | 状态 |
 |---|---|
-| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 90 个单测 + 假后端 e2e 覆盖 |
+| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 96 个单测 + 假后端 e2e 覆盖 |
 | S4 真机联调 | ✅ AT32F403AVGT7 + CMSIS-DAP v2（DAPLink `0D28:0204`）+ atopenocd：`connect` → `flash_info` → `flash_write`（擦 25 扇区、写 + Verified OK、reset run）→ `read_memory` 运行态读回向量表 |
 | S5 打包与客户端注册 | 🟡 已注册进 DSH（desktop + web 两个 profile）与 ZCode（`mcp.servers` 条目 + `ocdup-zcode` 插件，均指 `publish/ocdup.exe`） |
 

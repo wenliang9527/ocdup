@@ -246,6 +246,7 @@ public sealed class OpenOcdLauncher : IDisposable
         _ = Task.Run(() => PumpAsync(process.StandardError));
 
         var deadline = DateTime.UtcNow + StartupTimeout;
+        var stableProbes = 0;
         while (DateTime.UtcNow < deadline)
         {
             ct.ThrowIfCancellationRequested();
@@ -254,11 +255,21 @@ public sealed class OpenOcdLauncher : IDisposable
                 return new LaunchOutcome(false, BuildFailureMessage(binary, $"the process exited with code {process.ExitCode}", probeNote));
 
             if (await ProbePortAsync(cfg.Host, cfg.Port, 250, ct).ConfigureAwait(false))
-                return new LaunchOutcome(true,
-                    $"started {binary} (pid {process.Id}); command port {cfg.Host}:{cfg.Port} is up" +
-                    (probeNote.Length > 0 ? $" ({probeNote})" : ""));
+            {
+                // 端口起来不等于活稳了：openocd 先绑 tcl_port、随后才连探针，DP 初始化失败会即刻退出。
+                // 连续数次探测都通且进程未退才认定就绪——否则 connect 会撞在刚死的监听上（真机复现过）。
+                stableProbes++;
+                if (stableProbes >= 3)
+                    return new LaunchOutcome(true,
+                        $"started {binary} (pid {process.Id}); command port {cfg.Host}:{cfg.Port} is up" +
+                        (probeNote.Length > 0 ? $" ({probeNote})" : ""));
+            }
+            else
+            {
+                stableProbes = 0;
+            }
 
-            await Task.Delay(200, ct).ConfigureAwait(false);
+            await Task.Delay(150, ct).ConfigureAwait(false);
         }
 
         // 超时：回收自己刚启动的进程，别留一个半死的实例占着探针。

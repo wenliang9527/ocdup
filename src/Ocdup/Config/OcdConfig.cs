@@ -65,6 +65,12 @@ public sealed class OcdConfig
     public List<string> DumpAllowedPaths { get; private set; } = new() { "dumps/" };
     public long DumpMaxBytes { get; private set; } = DefaultDumpMaxBytes;
 
+    /// <summary>
+    /// identify_chip 的 DEV_ID -> 家族名映射（键为 hex 字符串，按数值比较）。
+    /// 外置在 ocd.json（C4：不把具体芯片家族硬编码进程序）；缺省为空 = 只报原始值。
+    /// </summary>
+    public Dictionary<string, string> ChipIdMap { get; private set; } = new();
+
     /// <summary>生效的 ocd.json 绝对路径（null = 没找到配置文件）。</summary>
     public string? ConfigFilePath { get; private set; }
 
@@ -82,7 +88,7 @@ public sealed class OcdConfig
         "interface_cfg", "target_cfg", "transport", "host", "port", "command_timeout_seconds",
         "read_only", "allow_memory_write", "allow_flash", "allow_flash_erase", "allow_raw_command", "allow_exec",
         "flash_allowed_paths", "flash_max_bytes", "memory_read_max_bytes",
-        "dump_allowed_paths", "dump_max_bytes",
+        "dump_allowed_paths", "dump_max_bytes", "chip_id_map",
     };
 
     /// <summary>按分层顺序加载：OCD_CONFIG 指定的文件，否则 CWD 下的 ocd.json。</summary>
@@ -174,6 +180,8 @@ public sealed class OcdConfig
 
         TakeStringArray(obj, "dump_allowed_paths", source, v => DumpAllowedPaths = v);
         TakeLong(obj, "dump_max_bytes", source, v => DumpMaxBytes = v, min: 0);
+
+        TakeStringDict(obj, "chip_id_map", source, v => ChipIdMap = v);
     }
 
     private void TakeString(JsonElement obj, string key, string source, Action<string> set, Func<string, bool>? reject = null)
@@ -259,6 +267,30 @@ public sealed class OcdConfig
         Sources[key] = source;
     }
 
+    private void TakeStringDict(JsonElement obj, string key, string source, Action<Dictionary<string, string>> set)
+    {
+        if (!obj.TryGetProperty(key, out var el)) return;
+        if (el.ValueKind != JsonValueKind.Object)
+        {
+            NoteError($"'{key}' must be an object with string values");
+            return;
+        }
+
+        var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var prop in el.EnumerateObject())
+        {
+            if (prop.Value.ValueKind != JsonValueKind.String)
+            {
+                NoteError($"'{key}' values must be strings");
+                return;
+            }
+            dict[prop.Name] = prop.Value.GetString()!;
+        }
+
+        set(dict);
+        Sources[key] = source;
+    }
+
     private void NoteError(string message)
     {
         _errors.Add(message);
@@ -303,6 +335,7 @@ public sealed class OcdConfig
             $"  memory_read_max_bytes = {(MemoryReadMaxBytes == 0 ? "(unlimited)" : MemoryReadMaxBytes.ToString())}   [src: {Src("memory_read_max_bytes")}]",
             $"  dump_allowed_paths    = {(DumpAllowedPaths.Count == 0 ? "(unrestricted)" : string.Join(", ", DumpAllowedPaths))}   [src: {Src("dump_allowed_paths")}]",
             $"  dump_max_bytes        = {(DumpMaxBytes == 0 ? "(unlimited)" : DumpMaxBytes.ToString())}   [src: {Src("dump_max_bytes")}]",
+            $"  chip_id_map           = {(ChipIdMap.Count == 0 ? "(none - identify_chip reports raw ids only)" : $"{ChipIdMap.Count} entries")}   [src: {Src("chip_id_map")}]",
         };
 
         if (Sources.TryGetValue("ocd_json_error", out var error))
