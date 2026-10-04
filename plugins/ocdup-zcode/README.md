@@ -7,9 +7,10 @@ ZCode 本身）。装好后 ZCode 会话自动获得烧录操作的流程纪律�
 
 | 组件 | 内容 |
 |------|------|
-| skill | `ocdup-flash`：标准烧录流程（connect → flash_info → flash_write → 读回验证，失败 halt→读→resume）、verify_image 独立校验、read_memory format=json、地址/宽度与相对路径惯例、权限闸纪律（BLOCKED → show_config → 改 ocd.json → reload，含 allow_exec 等五个写类开关）、探针 auto 识别边界（DAPLink 必走 cmsis-dap.cfg 的 A/B 实测定论）、端口纪律（6666 单实例，DSH/ZCode 共享后端）、backend_log 异步日志 |
+| skill | `ocdup-flash`：标准烧录流程（connect → flash_info → flash_write → 读回验证，失败 halt→读→resume）、verify_image 独立校验、read_memory format=json、地址/宽度与相对路径惯例、权限闸纪律（BLOCKED → show_config → 改 ocd.json → reload，含 allow_exec 等五个写类开关）、探针 auto 识别边界（DAPLink 必走 cmsis-dap.cfg 的 A/B 实测定论）、端口纪律（6666 单实例，DSH/ZCode 共享后端）、backend_log 异步日志、烧录后串口验证（Ocdup × acccom 会话层协同三步） |
 | command | `/ocdup-status`：后端状态 + 权限生效值（不启动任何进程） |
 | command | `/ocdup-flash`：引导式烧录（连探针 → 确认布局 → 烧录 → 读向量表） |
+| command | `/flash-verify`：烧录后串口验证（记 acccom 水位 → 烧录/上电 → 发指定帧 → traffic_log 复盘；方案 A 会话层协同） |
 
 **刻意不包含 MCP server**：MCP 由用户级配置（`~/.zcode/cli/config.json` 的
 `ocdup` 条目）持有。ZCode 对插件 MCP 键名做命名空间处理，若插件再声明一份

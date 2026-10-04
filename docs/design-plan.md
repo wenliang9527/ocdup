@@ -446,7 +446,7 @@ Ocdup/
 | M-perm | ~~`set_permissions` + `OCD_READONLY` 环境变量 + `run_command` 逃生舱~~ ✅ 全部落地（run_command v0.3.6；其余 v0.3.12） |
 | M-prov | provisioning：缓存目录 + 下载 + SHA-256 校验 + `install_openocd` |
 | M-l3 | L3 协议字典（帧名/模板/期望响应） |
-| M-serial | 与 acccom 的串口协同（烧录后自动验证协议帧） |
+| M-serial | ~~与 acccom 的串口协同~~ 方案 A 已落地：会话层协同 + 插件 `/flash-verify` 命令（0.2.6）；L3 字典化的帧自动比对仍后置 |
 | M-watch | `watch_variables` 定时采样（独立 CLI 形态） |
 
 ---
@@ -496,7 +496,7 @@ Ocdup/
 | Q3 | 后端：OpenOCD vs probe-rs | 后期里程碑 | ✅ 阶段一采用 OpenOCD（AT32 生态成熟） |
 | Q4 | 是否随包分发 Windows 版 OpenOCD（git/zip 形态）还是纯下载 | 不阻塞，影响 M-prov | ⏳ 待定 |
 | Q5 | L3 协议字典覆盖哪些协议（私有帧？Modbus？CAN？） | M-l3 | ⏳ 待定 |
-| Q6 | 与 acccom 的分工边界：Ocdup 只发「去烧录/去验证」指令，帧交互仍走 acccom？ | M-serial | ⏳ 待定 |
+| Q6 | 与 acccom 的分工边界：Ocdup 只发「去烧录/去验证」指令，帧交互仍走 acccom？ | M-serial | ✅ 关闭（**方案 A：会话层协同**）：两个 MCP server 挂在同一会话由 AI 编排，帧交互全走 acccom，Ocdup 侧零代码；流程固化为插件 `/flash-verify` 命令（0.2.6） |
 | Q7 | 相对路径基准 = ocd.json 所在目录 | — | ✅ 关闭并已实现 |
 | Q8 | 单目标（C6）是否满足？多探针场景是否需要多连接 | M-serial 等 | ⏳ 待定 |
 | **Q9** | `read_memory` 是否需要先 halt？ | S4 | ✅ 真机验证：运行态直读 flash（0x08000000 向量表）成功，无需 halt；RAM 变量的「一致性快照」场景留待 M-exec |

@@ -202,7 +202,7 @@ dotnet build Ocdup.sln
 完全退出并重启 ZCode 后，工具以 `mcp__ocdup__<tool>` 出现在所有会话。
 
 仓库还带 ZCode 插件 `plugins/ocdup-zcode`（ocdup-flash skill +
-`/ocdup-status`、`/ocdup-flash` 命令，纯知识层、不含 MCP server）：在 ZCode →
+`/ocdup-status`、`/ocdup-flash`、`/flash-verify` 命令，纯知识层、不含 MCP server）：在 ZCode →
 Settings → Plugin Management → Discover → `+` 添加本仓库的 `plugins/` 目录并
 安装即可，详见 [plugins/ocdup-zcode/README.md](plugins/ocdup-zcode/README.md)。
 

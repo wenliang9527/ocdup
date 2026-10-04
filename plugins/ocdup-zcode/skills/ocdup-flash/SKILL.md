@@ -99,6 +99,20 @@ connect
 dump_memory file=dumps/flash.bin address=0x08000000 length=1048576
 ```
 
+## 烧录后串口验证（方案 A：会话层协同，Q6 定案）
+
+烧录验证常常不止"读回 flash"——板子跑起来后串口该吐协议帧。Ocdup 与 acccom 是两个
+独立 MCP server，**帧交互全部走 acccom**（Q6：Ocdup 只管烧录），会话层天然可以先后
+编排两边。干净复现三步（细节纪律以 acccom-serial skill 为准）：
+
+1. **记水位**：`mcp__acccom__traffic_log`(limit=1) 记下 `lastSeq = S` 并告知用户；
+2. **烧录 + 让板子跑起来**：ocdup 标准流程（flash_write 默认 verify + reset run）；
+   需要重新上电时停下来等用户确认；
+3. **发帧 + 读回**：`send`/`send_and_wait` 发指定帧（端口未开先 `open_port`，用完
+   `close_port`），然后 `traffic_log`(sinceSeq=S, compact=true) 读回本次全部收发复盘。
+
+`/flash-verify` 命令把这套流程固化（参数：镜像路径 + 可选验证帧 + COM 口）。
+
 ## 故障升级路径
 
 1. `connect` 失败/超时 → 看返回的 `--- recent openocd output ---` 诊断
