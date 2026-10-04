@@ -2,9 +2,9 @@
 
 | 项目 | 内容 |
 |---|---|
-| 文档版本 | v0.3.10 |
-| 日期 | 2026-10-03 |
-| 状态 | **阶段一完成**：控制层 + 烧录 + 读内存 + 执行控制 + 逃生舱均已实现并验证（16 个工具，S4 真机通过）；断点/观察点/符号层/L3 后置 |
+| 文档版本 | v0.3.12 |
+| 日期 | 2026-10-04 |
+| 状态 | **阶段一完成**：控制层 + 烧录 + 读内存 + 执行控制 + 逃生舱 + 运行时权限均已实现并验证（17 个工具，S4 真机通过）；断点/观察点/符号层/L3 后置 |
 | 读者 | 项目负责人（硬件/嵌入式）、后续实现者（Agent 或工程师） |
 | 上游参考 | [microhenrio/openocd-mcp](https://github.com/microhenrio/openocd-mcp) v0.4.5 架构（已逐文件审查） |
 
@@ -14,6 +14,7 @@
 
 | 版本 | 变更 |
 |---|---|
+| v0.3.12 | **M-perm 收尾 + P3 清理**：① 新增第 17 个工具 `set_permissions`——运行时改权限（免改 ocd.json），闸 = 新权限键 `allow_set_permissions`（**默认 false**：放宽权限是人的决定，该键就是那份人类授权；刻意不挂 read_only 总闸，否则锁死的会话永远无法解除）；运行时补丁在 `OcdConfig.WithRuntimeChanges` 入口按 `RuntimePatchableKeys` 白名单强制拒绝越界键（防御纵深，路径白名单/探针/芯片配置只走文件），来源标 `(runtime)`，reload/重启丢弃；② `OCD_READONLY=1/true` 环境变量加载时强制只读（优先于 ocd.json）；③ P3 三件：`HexValue` 按宽度掩码（杜绝 33 位输入送成多字写）、TCL-RPC 写方向纳入命令超时（与读对称）、C2 澄清（本地文件解析允许先于闸门，但不得触碰后端）。工具数 17；测试 110/110，e2e 补「runtime 补丁→read_only 拦截→解除→show_config 展示 (runtime) 来源」 |
 | v0.3.11 | **identify_chip 工具 + 启动即死诊断**：① 新增第 16 个工具 `identify_chip`——读 ARM 标准 CPUID（0xE000ED00，解码 Cortex-M 内核型号，任何 Cortex-M 有效）+ 厂商 DBGMCU_IDCODE（默认 0xE0042000，可参数覆盖），DEV_ID 低 12 位在 ocd.json 新增的 `chip_id_map`（外置映射，守 C4 零硬编码）中按数值匹配给出家族名——回答「找到烧录器后，连的是什么芯片」；② `EnsureStartedAsync` 端口就绪判定改为「连续 3 次探测成功且进程未退」——openocd 先绑 tcl_port 随后才连探针，DP 失败会即刻退出，原判定会把刚死的监听当就绪（真机复现：目标未应答时 connect 报 `cannot open channel: refused` 而非真正失败原因）；③ ConnectAsync 失败时附上自拉后端的近期输出诊断。工具数 16；测试 96/96，e2e 补 identify_chip 两用例 |
 | v0.3.10 | **健壮性修复 + 文档全面对齐**：① `dump_memory` 执行前先删除已存在的目标文件——此前 dump_image 失败但路径上有旧 dump 时，会把旧文件的字节数/sha256/预览当本次结果返回（陈旧数据误导验证）；② 自拉 openocd 绑进 Windows Job Object（KILL_ON_JOB_CLOSE）——ocdup 被强杀/崩溃时 ProcessExit 钩子不触发，作业句柄随进程消亡由内核关闭并收割整棵进程树，补 C5 的孤儿缺口；③ csproj 版本补 bump（0.3.8 → 0.3.10，对齐变更记录）；④ 全文回填 v0.3.3–v0.3.9 期间滞留的过时描述（工具清单 7→15、权限表补 allow_exec、S4/S5/CI 状态、测试数 49→90、项目结构补 ExecTools/TrafficLog 等） |
 | v0.3.9 | **工程化 S5 收尾**：根目录 `publish.cmd`（单测 Release → publish → 提示重启 DSH；检测到 ocdup.exe 运行即拒绝，防文件锁）；CI workflow（build + 单测 + e2e，windows-latest）。DSH 注册侧的发布顺序（退出 DSH → publish → 启动）已写入 README 与脚本头部 |
@@ -79,7 +80,8 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 │          已实现 15 个（清单见第 5 节）：connect / status / show_config /  │
 │           backend_log / flash_info / flash_write / verify_image /  │
 │           flash_erase_sector / read_memory / write_memory / dump_memory / │
-│           halt / resume / reset / run_command / identify_chip │
+│           halt / resume / reset / run_command / identify_chip /  │
+│           set_permissions │
 ├──────────────┬────────────────┬────────────────────────┤
 │ 控制层        │ 权限层          │ 配置层                  │
 │ BackendSession│ PermissionGate │ ConfigStore             │
@@ -173,6 +175,7 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 | `allow_flash_erase` | **false** | flash_erase_sector（破坏性，显式开启） | ✅ 已实现（v0.3.6） |
 | `allow_exec` | true | halt / resume / reset（执行控制，改目标运行状态） | ✅ 已实现（v0.3.8） |
 | `allow_raw_command` | true | run_command | ✅ 已实现（v0.3.6） |
+| `allow_set_permissions` | **false** | set_permissions（运行时改权限）——**人类授权开关**：放宽权限的决定权在人 | ✅ 已实现（v0.3.12） |
 | `flash_allowed_paths` | []（不限） | 烧录文件必须位于白名单目录内 | ✅ 已实现 |
 | `flash_max_bytes` | 0（不限） | 超过大小的烧录文件拒绝 | ✅ 已实现 |
 | `memory_read_max_bytes` | 4096 | 单次读回体积上限（防呆，不是安全边界） | ✅ 已实现 |
@@ -180,8 +183,8 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 | `dump_max_bytes` | 64 MB（0=不限） | dump_memory 单次落盘体积上限 | ✅ 已实现 |
 
 - 拦截文案模板（`PermissionGate.Blocked`）：`BLOCKED: '<op>' is not permitted by the current safety settings ('<setting>'). To allow it, <如何开启>. See show_config.`
-- 设置途径（后者优先）：`ocd.json` 的 `permissions` 块（或顶层平铺同名字段）→ 环境变量 `OCD_READONLY=1`（⏸ 后置）→ `set_permissions` 工具（⏸ 后置；`flash_allowed_paths` 只走文件）。
-- 检查必须前置到操作第一步（C2）；被拦时**不得**触碰后端。
+- 设置途径（后者优先）：ocd.json 的 `permissions` 块（或顶层平铺同名字段）→ 环境变量 `OCD_READONLY=1`（✅ v0.3.12：加载时强制只读，优先于文件）→ `set_permissions` 工具（✅ v0.3.12：运行时补丁，受 `allow_set_permissions` 闸约束；`flash_allowed_paths`/`dump_allowed_paths` 只走文件）。运行时补丁在 reload 或重启时丢弃。
+- 检查必须前置到操作第一步（C2）；被拦时**不得**触碰后端。澄清（v0.3.12）：烧录/落盘类工具的**本地**文件解析（确定白名单路径与大小）允许先于闸门执行——它不触碰后端，闸门仍在任何目标 I/O 之前。
 - 路径白名单支持「目录」与「文件」两种写法；相对项以 ocd.json 目录为基准解析。
 
 ### 4.5 进程生命周期
@@ -221,7 +224,7 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 
 ## 5. 功能设计（工具清单）
 
-图例：**✅ 已实现** ｜ ⏸ 后置（截至 v0.3.11，共 16 个工具已落地）
+图例：**✅ 已实现** ｜ ⏸ 后置（截至 v0.3.12，共 17 个工具已落地）
 
 | 优先级 | 工具 | 用途 | 权限 | 状态 |
 |---|---|---|---|---|
@@ -245,7 +248,7 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 | P1 | `load_svd` / `read_peripheral_register` / … | 按名访问外设寄存器（L2，位域解码） | 同上 | ⏸ |
 | P1 | `run_command` | 原始命令逃生舱（单行） | `allow_raw_command` | ✅（v0.3.6） |
 | P2 | `watch_variables` | 不停 CPU 的定时采样 | 只读 | ⏸ |
-| P2 | `set_permissions` | 运行时调整权限 | — | ⏸ |
+| P2 | `set_permissions` | 运行时调整权限（补丁入口强制键白名单；reload/重启丢弃） | `allow_set_permissions`（默认 false，人类授权） | ✅（v0.3.12） |
 | P2 | 串口协同工具组 | 烧录后走 acccom 验证协议帧 | — | ⏸ |
 | P2 | `start_openocd` / `stop_openocd` / `install_openocd` | 后端进程与 provisioning 管理 | — | ⏸ |
 | P2 | L3 协议字典工具组 | `ping_req` → 字节模板 + 期望响应 | — | ⏸ |
@@ -259,6 +262,7 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 - `dump_memory`：`dump_image {file} {addr} {length}`，输出文件父目录自动创建；返回 dumped 路径/字节数/sha256 前缀/前 64 字节 hex 字；请求字节数与实际不符或后端报错时附 NOTE。
 - `status`：只用 300ms 端口探测 + 已连通的 TCL-RPC 查询，**不启动**任何进程。
 - `identify_chip`：读 `mdw 0xE000ED00 1`（CPUID，ARM 标准位域解码）与 `mdw <dbgmcu_address> 1`（默认 0xE0042000）；DEV_ID 低 12 位在 `chip_id_map`（ocd.json）中按数值匹配；单次读失败不硬失败（该地址因厂商而异），原文带回报告。CPUID 解码是纯函数（`DescribeCpuid`），未知 partno 原样报告不猜。
+- `set_permissions`：运行时权限补丁（不改文件）。闸 = `allow_set_permissions`（默认 false）；补丁入口按 `RuntimePatchableKeys` 白名单拒绝越界键；变更来源标 `(runtime)`，`show_config reload=true` 或重启丢弃。
 
 ---
 
@@ -433,7 +437,7 @@ Ocdup/
 | M-exec | ~~halt/resume/step/reset 执行控制~~ halt/resume/reset 已落地（v0.3.8）；`step` 仍后置 |
 | M-bp | 断点/观察点/条件断点（服务器侧驱动，见决策 2） |
 | M-sym | 符号层 L1（ELF）/ L2（SVD）+ 按名读写 |
-| M-perm | `set_permissions` + `OCD_READONLY` 环境变量（`run_command` 逃生舱已落地 v0.3.6） |
+| M-perm | ~~`set_permissions` + `OCD_READONLY` 环境变量 + `run_command` 逃生舱~~ ✅ 全部落地（run_command v0.3.6；其余 v0.3.12） |
 | M-prov | provisioning：缓存目录 + 下载 + SHA-256 校验 + `install_openocd` |
 | M-l3 | L3 协议字典（帧名/模板/期望响应） |
 | M-serial | 与 acccom 的串口协同（烧录后自动验证协议帧） |
@@ -445,8 +449,8 @@ Ocdup/
 
 | 层 | 方法 | 现状 |
 |---|---|---|
-| 单元 | xUnit + **假 `TcpListener`**（脚本化响应） | 96 个用例：控制通道（capture 包装 / `0x1a` 分帧 / 跨 TCP 分段组装 / 并发串行化 / 读超时 / 连接失败）、权限矩阵、配置加载（嵌套块 / 顶层平铺 / 来源追踪 / 坏输入降级 / 路径基准）、探针识别（优先级 / 同种去重 / 无关设备忽略 / 空行容错）、TCL 引用、命令行构造、地址解析、流量日志轮转、CPUID 解码与 chip_id_map 匹配 |
-| 端到端 | `tools/e2e_fake_backend.py`：Python 假 TCL-RPC 后端 + 真实 MCP stdio 会话（无需硬件） | 已验证：16 个工具注册、烧录/读/写/执行控制/逃生舱/芯片识别全链路、format=json 与 verify_image、dump 白名单与上限拦截、read_only 全拦、`reload` 生效、无 openocd 与坏二进制时的诊断输出 |
+| 单元 | xUnit + **假 `TcpListener`**（脚本化响应） | 110 个用例：控制通道（capture 包装 / `0x1a` 分帧 / 跨 TCP 分段组装 / 并发串行化 / 读超时 / 连接失败）、权限矩阵、配置加载（嵌套块 / 顶层平铺 / 来源追踪 / 坏输入降级 / 路径基准）、探针识别（优先级 / 同种去重 / 无关设备忽略 / 空行容错）、TCL 引用、命令行构造、地址解析、流量日志轮转、CPUID 解码与 chip_id_map 匹配、运行时权限补丁与 OCD_RDONLY |
+| 端到端 | `tools/e2e_fake_backend.py`：Python 假 TCL-RPC 后端 + 真实 MCP stdio 会话（无需硬件） | 已验证：17 个工具注册、烧录/读/写/执行控制/逃生舱/芯片识别/运行时权限全链路、format=json 与 verify_image、dump 白名单与上限拦截、read_only 全拦、`reload` 生效与 runtime 补丁丢弃、无 openocd 与坏二进制时的诊断输出 |
 | 集成 | 真实探针 + 开发板（S4） | ✅ 已通过（2026-10）；每次记入测试日志（芯片、探针、ocd.json、OpenOCD 版本） |
 | CI | build → test → e2e（windows-latest） | ✅ `.github/workflows/ci.yml`（v0.3.9 建） |
 
@@ -497,7 +501,7 @@ Ocdup/
 
 ## 17. 交付结论与下一步（HANDOFF）
 
-**当前状态（v0.3.11）**：**S4 真机联调已通过** ✅（AT32F403AVGT7 + CMSIS-DAP v2 探针 + atopenocd：connect → flash_info → flash_write S300plus.hex 139077 字节，擦 25 扇区、写+校验 Verified OK、reset run、运行态读回向量表 0x08000000 = `20019d28 080002ad …`）。**16 个工具全部落地**；96 个单元测试全绿 + e2e 无硬件回归 + CI 就绪。S5 的 publish.cmd / CI / DSH 与 ZCode 注册已完成，剩「换一台机器 10 分钟跑通」的换机验收。
+**当前状态（v0.3.12）**：**S4 真机联调已通过** ✅（AT32F403AVGT7 + CMSIS-DAP v2 探针 + atopenocd：connect → flash_info → flash_write S300plus.hex 139077 字节，擦 25 扇区、写+校验 Verified OK、reset run、运行态读回向量表 0x08000000 = `20019d28 080002ad …`）。**17 个工具全部落地**；110 个单元测试全绿 + e2e 无硬件回归 + CI 就绪。S5 的 publish.cmd / CI / DSH 与 ZCode 注册已完成，剩「换一台机器 10 分钟跑通」的换机验收。
 
 **建议的下一步顺序**：
 

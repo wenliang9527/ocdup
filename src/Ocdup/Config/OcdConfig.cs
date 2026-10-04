@@ -29,7 +29,8 @@ public sealed class OcdConfig
     /// <summary>dump_memory 单次落盘的字节上限默认值(64 MB;0 = 不限)。</summary>
     public const long DefaultDumpMaxBytes = 64 * 1024 * 1024;
 
-    private readonly List<string> _errors = new();
+    // 非 readonly：WithRuntimeChanges（set_permissions 运行时补丁）需要克隆后重填。
+    private List<string> _errors = new();
 
     // --- 项目设置（snake_case，与设计文档 7.2 节的 ocd.json 一致） ---
     public string? InterfaceCfg { get; private set; }
@@ -53,6 +54,12 @@ public sealed class OcdConfig
     /// <summary>执行控制(halt/resume/reset):改变目标执行状态,与写操作同级设防。默认允许。</summary>
     public bool AllowExec { get; private set; } = true;
     public bool AllowRawCommand { get; private set; } = true;
+
+    /// <summary>
+    /// set_permissions 的闸(默认 false):放宽权限是人的决定,模型只有在 ocd.json 里被显式
+    /// 授权后才能在运行时改权限。收紧不受此闸限制之外的任何闸约束——本闸就是它的唯一闸。
+    /// </summary>
+    public bool AllowSetPermissions { get; private set; }
     public List<string> FlashAllowedPaths { get; private set; } = new();
     public long FlashMaxBytes { get; private set; }
     public long MemoryReadMaxBytes { get; private set; } = DefaultMemoryReadMaxBytes;
@@ -74,8 +81,8 @@ public sealed class OcdConfig
     /// <summary>生效的 ocd.json 绝对路径（null = 没找到配置文件）。</summary>
     public string? ConfigFilePath { get; private set; }
 
-    /// <summary>每项设置的实际来源，如 "(default)" 或 "ocd.json (C:\proj\ocd.json)"。</summary>
-    public Dictionary<string, string> Sources { get; } = new();
+    /// <summary>每项设置的实际来源，如 "(default)"、"ocd.json (C:\proj\ocd.json)" 或 "(runtime)"。</summary>
+    public Dictionary<string, string> Sources { get; private set; } = new();
 
     private static readonly JsonDocumentOptions ParseOptions = new()
     {
@@ -87,6 +94,7 @@ public sealed class OcdConfig
     {
         "interface_cfg", "target_cfg", "transport", "host", "port", "command_timeout_seconds",
         "read_only", "allow_memory_write", "allow_flash", "allow_flash_erase", "allow_raw_command", "allow_exec",
+        "allow_set_permissions",
         "flash_allowed_paths", "flash_max_bytes", "memory_read_max_bytes",
         "dump_allowed_paths", "dump_max_bytes", "chip_id_map",
     };
@@ -154,7 +162,57 @@ public sealed class OcdConfig
             cfg.NoteError($"{fullPath}: {ex.Message}");
         }
 
+        // OCD_READONLY=1/true（设计文档 4.4）：环境级的人类开关，优先于 ocd.json 的 read_only。
+        // 只在加载时生效——运行时 set_permissions 仍可解除（它有自己独立的 allow_set_permissions 闸）。
+        ApplyOcdReadonlyEnv(cfg, Environment.GetEnvironmentVariable("OCD_READONLY"));
+
         return cfg;
+    }
+
+    /// <summary>OCD_READONLY 环境变量的语义（internal 以便无环境变量单测）。</summary>
+    internal static void ApplyOcdReadonlyEnv(OcdConfig cfg, string? envValue)
+    {
+        if (!string.IsNullOrWhiteSpace(envValue) &&
+            (envValue.Trim() == "1" || envValue.Trim().Equals("true", StringComparison.OrdinalIgnoreCase)))
+        {
+            cfg.ReadOnly = true;
+            cfg.Sources["read_only"] = "env OCD_READONLY";
+        }
+    }
+
+    /// <summary>
+    /// set_permissions 运行时补丁允许改的键（权限开关 + 数值上限）。路径白名单与探针/芯片
+    /// 配置刻意不在此列——它们只走 ocd.json（设计文档 4.4）。补丁入口按此白名单拒绝越界键。
+    /// </summary>
+    internal static readonly string[] RuntimePatchableKeys =
+    {
+        "read_only", "allow_memory_write", "allow_flash", "allow_flash_erase",
+        "allow_exec", "allow_raw_command", "allow_set_permissions",
+        "flash_max_bytes", "memory_read_max_bytes", "dump_max_bytes",
+    };
+
+    /// <summary>
+    /// 运行时权限补丁（set_permissions 工具通道）：以当前配置为底，套用 JSON 对象里的权限键，
+    /// 来源标为 "(runtime)"。只接受 <see cref="RuntimePatchableKeys"/> 内的键，越界键抛异常
+    /// （防御纵深：不依赖调用方的自觉）。返回新实例、原实例不动——ConfigStore 用 Volatile 原子换入。
+    /// </summary>
+    internal OcdConfig WithRuntimeChanges(string json)
+    {
+        var clone = (OcdConfig)MemberwiseClone();
+        clone.Sources = new Dictionary<string, string>(Sources);
+        clone._errors = new List<string>(_errors);
+        using var doc = JsonDocument.Parse(json, ParseOptions);
+        if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            throw new ArgumentException("permission patch must be a JSON object");
+        foreach (var prop in doc.RootElement.EnumerateObject())
+        {
+            if (!RuntimePatchableKeys.Contains(prop.Name, StringComparer.Ordinal))
+                throw new ArgumentException(
+                    $"'{prop.Name}' is not a runtime-patchable permission key; " +
+                    "path whitelists and probe/target config only change via ocd.json");
+        }
+        clone.ApplyFrom(doc.RootElement, "(runtime)");
+        return clone;
     }
 
     private void ApplyFrom(JsonElement obj, string source)
@@ -173,6 +231,7 @@ public sealed class OcdConfig
         TakeBool(obj, "allow_flash_erase", source, v => AllowFlashErase = v);
         TakeBool(obj, "allow_exec", source, v => AllowExec = v);
         TakeBool(obj, "allow_raw_command", source, v => AllowRawCommand = v);
+        TakeBool(obj, "allow_set_permissions", source, v => AllowSetPermissions = v);
 
         TakeStringArray(obj, "flash_allowed_paths", source, v => FlashAllowedPaths = v);
         TakeLong(obj, "flash_max_bytes", source, v => FlashMaxBytes = v, min: 0);
@@ -330,6 +389,7 @@ public sealed class OcdConfig
             $"  allow_flash_erase     = {AllowFlashErase}   [src: {Src("allow_flash_erase")}]",
             $"  allow_raw_command     = {AllowRawCommand}   [src: {Src("allow_raw_command")}]",
             $"  allow_exec            = {AllowExec}   [src: {Src("allow_exec")}]",
+            $"  allow_set_permissions = {AllowSetPermissions}   [src: {Src("allow_set_permissions")}]",
             $"  flash_allowed_paths   = {(FlashAllowedPaths.Count == 0 ? "(unrestricted)" : string.Join(", ", FlashAllowedPaths))}   [src: {Src("flash_allowed_paths")}]",
             $"  flash_max_bytes       = {(FlashMaxBytes == 0 ? "(unlimited)" : FlashMaxBytes.ToString())}   [src: {Src("flash_max_bytes")}]",
             $"  memory_read_max_bytes = {(MemoryReadMaxBytes == 0 ? "(unlimited)" : MemoryReadMaxBytes.ToString())}   [src: {Src("memory_read_max_bytes")}]",

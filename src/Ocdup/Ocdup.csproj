@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <RootNamespace>Ocdup</RootNamespace>
     <AssemblyName>ocdup</AssemblyName>
-    <Version>0.3.11</Version>
+    <Version>0.3.12</Version>
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
@@ -15,6 +15,11 @@
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1" />
     <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
     <!-- ModelContextProtocol 版本由 dotnet add package 写入 -->
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 测试需要覆盖 internal 语义层（WithRuntimeChanges / ApplyOcdReadonlyEnv 等） -->
+    <InternalsVisibleTo Include="Ocdup.Tests" />
   </ItemGroup>
 
 </Project>

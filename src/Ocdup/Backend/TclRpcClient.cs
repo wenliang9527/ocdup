@@ -84,8 +84,8 @@ public sealed class TclRpcClient : IDisposable
         var frame = new byte[body.Length + 1];
         body.CopyTo(frame, 0);
         frame[^1] = Delimiter;
-        await _stream.WriteAsync(frame, ct).ConfigureAwait(false);
 
+        // 命令超时同时管写与读：写方向同样可能因对端异常挂住（本机 TCP 概率极低，但闸要对称）。
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(_commandTimeout);
 
@@ -93,6 +93,7 @@ public sealed class TclRpcClient : IDisposable
         using var payload = new MemoryStream(256);
         try
         {
+            await _stream.WriteAsync(frame, cts.Token).ConfigureAwait(false);
             while (true)
             {
                 var read = await _stream.ReadAsync(_buffer.AsMemory(), cts.Token).ConfigureAwait(false);

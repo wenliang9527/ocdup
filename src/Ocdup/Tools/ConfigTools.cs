@@ -1,5 +1,7 @@
 using System.ComponentModel;
+using System.Text;
 using ModelContextProtocol.Server;
+using Ocdup.Backend;
 using Ocdup.Config;
 
 namespace Ocdup.Tools;
@@ -15,6 +17,79 @@ public static class ConfigTools
         var store = ConfigStore.Instance;
         if (reload) store.Reload();
         return store.Current.Describe();
+    }
+
+    [McpServerTool(Name = "set_permissions")]
+    [Description(
+        "Change permission settings at RUNTIME (no ocd.json edit needed). Gated by allow_set_permissions in ocd.json " +
+        "(default false - loosening permissions is the human's decision, this key is that authorization; a BLOCKED answer means it is not enabled). " +
+        "Pass only the settings you want to change; path whitelists (flash_allowed_paths / dump_allowed_paths) and probe/target config are NOT settable here - only via ocd.json. " +
+        "Runtime changes are lost when ocd.json is reloaded (show_config reload=true) or the server restarts. See show_config afterwards to confirm.")]
+    public static string SetPermissions(
+        [Description("Master switch: block all target-changing operations.")] bool? readOnly = null,
+        [Description("Gate for write_memory.")] bool? allowMemoryWrite = null,
+        [Description("Gate for flash_write.")] bool? allowFlash = null,
+        [Description("Gate for flash_erase_sector (destructive).")] bool? allowFlashErase = null,
+        [Description("Gate for halt/resume/reset.")] bool? allowExec = null,
+        [Description("Gate for run_command.")] bool? allowRawCommand = null,
+        [Description("Gate for set_permissions itself.")] bool? allowSetPermissions = null,
+        [Description("Max image size for flash_write in bytes (0 = unlimited).")] long? flashMaxBytes = null,
+        [Description("Max bytes returned per read_memory (0 = unlimited).")] long? memoryReadMaxBytes = null,
+        [Description("Max bytes per dump_memory write (0 = unlimited).")] long? dumpMaxBytes = null)
+    {
+        var store = ConfigStore.Instance;
+        var cfg = store.Current;
+
+        if (PermissionGate.CheckSetPermissions(cfg) is { } blocked)
+            return blocked;
+
+        var pairs = new List<string>();
+        void AddBool(string key, bool? v)
+        {
+            if (v is { } b) pairs.Add($"\"{key}\": {(b ? "true" : "false")}");
+        }
+        void AddLong(string key, long? v)
+        {
+            if (v is { } n)
+            {
+                if (n < 0)
+                    throw new ArgumentException($"{key} must be >= 0");
+                pairs.Add($"\"{key}\": {n}");
+            }
+        }
+
+        AddBool("read_only", readOnly);
+        AddBool("allow_memory_write", allowMemoryWrite);
+        AddBool("allow_flash", allowFlash);
+        AddBool("allow_flash_erase", allowFlashErase);
+        AddBool("allow_exec", allowExec);
+        AddBool("allow_raw_command", allowRawCommand);
+        AddBool("allow_set_permissions", allowSetPermissions);
+        AddLong("flash_max_bytes", flashMaxBytes);
+        AddLong("memory_read_max_bytes", memoryReadMaxBytes);
+        AddLong("dump_max_bytes", dumpMaxBytes);
+
+        if (pairs.Count == 0)
+            return "ERROR: no changes requested. Pass at least one permission to change (see the tool parameters).";
+
+        string json = "{ " + string.Join(", ", pairs) + " }";
+        OcdConfig next;
+        try
+        {
+            next = store.ApplyRuntimePatch(json);
+        }
+        catch (Exception ex)
+        {
+            return $"ERROR: could not apply the permission change: {ex.Message}";
+        }
+
+        var changed = string.Join(", ", pairs.Select(p => p.Split(':')[0].Trim('"')));
+        var sb = new StringBuilder();
+        sb.AppendLine($"updated (runtime): {changed}");
+        sb.AppendLine(next.Describe());
+        sb.Append("note: runtime changes are discarded by show_config reload=true or a server restart; " +
+                  "path whitelists and probe/target config only change via ocd.json.");
+        return sb.ToString();
     }
 }
 

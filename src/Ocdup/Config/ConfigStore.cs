@@ -21,4 +21,15 @@ public sealed class ConfigStore
 
     /// <summary>重新从磁盘加载（对应设计文档 4.3 的「运行时修改」层；编辑 ocd.json 后无需重启服务器）。</summary>
     public void Reload() => Volatile.Write(ref _current, OcdConfig.Load());
+
+    /// <summary>
+    /// 运行时权限补丁（set_permissions 通道）：基于当前配置应用 JSON 变更并原子换入。
+    /// 调用方（工具层）负责闸门检查与键白名单；reload from disk 会丢弃 runtime 补丁。
+    /// </summary>
+    public OcdConfig ApplyRuntimePatch(string json)
+    {
+        var next = _current.WithRuntimeChanges(json);
+        Volatile.Write(ref _current, next);
+        return next;
+    }
 }

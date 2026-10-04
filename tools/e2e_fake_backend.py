@@ -191,6 +191,7 @@ def write_config(work, **permissions):
         "permissions": {
             "read_only": False,
             "allow_flash": True,
+            "allow_set_permissions": True,
             "flash_allowed_paths": ["build/"],
             "flash_max_bytes": 1048576,
             "memory_read_max_bytes": 4096,
@@ -296,6 +297,12 @@ def main():
 
         banner("read_memory bad address")
         print(mcp.call("read_memory", {"address": "hello"}))
+
+        banner("set_permissions runtime patch (allow_set_permissions=true in e2e config)")
+        print(mcp.call("set_permissions", {"readOnly": True}))
+        print(mcp.call("flash_write", {"file": "build/fw.bin", "address": "0x08000000"}))
+        print(mcp.call("set_permissions", {"readOnly": False}))
+        print(mcp.call("show_config"))
 
         banner("ocd.json -> read_only=true; show_config(reload) then flash_write")
         write_config(work, read_only=True)

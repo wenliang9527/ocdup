@@ -66,6 +66,18 @@ public static class PermissionGate
             ? null
             : Blocked(op, "allow_exec", "set \"allow_exec\": true in the ocd.json permissions block"));
 
+    /// <summary>
+    /// set_permissions 的闸（独立的 allow_set_permissions，默认 false）：放宽权限是人的决定，
+    /// 模型只有在 ocd.json 里被显式授权后才可运行时改权限。刻意不挂 read_only 总闸——
+    /// 否则被 read_only 锁死的会话永远无法解除；allow_set_permissions 本身就是那份人类授权。
+    /// </summary>
+    public static string? CheckSetPermissions(OcdConfig cfg) =>
+        cfg.AllowSetPermissions
+            ? null
+            : Blocked("set_permissions", "allow_set_permissions",
+                "set \"allow_set_permissions\": true in the ocd.json permissions block " +
+                "(this authorizes the model to change permissions at runtime)");
+
     /// <summary>读操作的体积上限：不是安全边界，而是防呆（防止一次读回上百 KB 文本淹掉上下文）。</summary>
     public static string? CheckReadLimit(OcdConfig cfg, long bytes, string op)
     {

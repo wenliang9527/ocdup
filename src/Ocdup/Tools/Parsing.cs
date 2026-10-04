@@ -25,12 +25,13 @@ public static class Parsing
     /// <summary>把地址渲染回 hex 形式：0x 前缀、小写、至少 8 位（保持 32 位地址的可读性）。</summary>
     public static string Hex(long value) => $"0x{value:x8}";
 
-    /// <summary>按宽度渲染值：0x 前缀、小写、8/16/32 位分别为 2/4/8 位（read_memory JSON 输出用）。</summary>
+    /// <summary>按宽度渲染值：0x 前缀、小写、8/16/32 位分别为 2/4/8 位，并掩掉超出宽度的位
+    /// （防止 33 位输入把 mww 送成多字写）。read_memory JSON 输出与 write_memory 命令构造共用。</summary>
     public static string HexValue(long value, int width) => width switch
     {
-        8 => $"0x{value:x2}",
-        16 => $"0x{value:x4}",
-        _ => $"0x{value:x8}",
+        8 => $"0x{value & 0xFF:x2}",
+        16 => $"0x{value & 0xFFFF:x4}",
+        _ => $"0x{value & 0xFFFFFFFF:x8}",
     };
 
     /// <summary>

@@ -16,6 +16,7 @@
     "allow_flash_erase": false,
     "allow_exec": true,
     "allow_raw_command": true,
+    "allow_set_permissions": false,
     "flash_allowed_paths": ["build/"],
     "flash_max_bytes": 1048576,
     "memory_read_max_bytes": 4096,

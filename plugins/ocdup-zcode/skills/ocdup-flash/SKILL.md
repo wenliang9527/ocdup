@@ -1,6 +1,6 @@
 ---
 name: ocdup-flash
-description: Use when flashing firmware or reading target memory through the Ocdup toolchain — Ocdup MCP tools (connect/status/show_config/backend_log/identify_chip/flash_info/flash_write/verify_image/flash_erase_sector/read_memory/write_memory/dump_memory/halt/resume/reset/run_command) wrapping OpenOCD. Covers the standard flash workflow (connect → flash_info → flash_write → read-back), exec control for reliable reads (halt → operate → resume), chip identification after connect (identify_chip: CPUID + vendor DEV_ID), address/width conventions, permission-gate discipline (BLOCKED → show_config), probe auto-detection boundaries, and port discipline (6666 single backend, shared by DSH and ZCode). 触发词：烧录、刷机、固件、下载程序、烧写、读 flash、读内存、dump、向量表、卡死、挂起、复位、halt、识别芯片、芯片型号、什么芯片、探针、OpenOCD、DAPLink、AT-Link、ST-Link、J-Link、AT32。
+description: Use when flashing firmware or reading target memory through the Ocdup toolchain — Ocdup MCP tools (connect/status/show_config/backend_log/identify_chip/set_permissions/flash_info/flash_write/verify_image/flash_erase_sector/read_memory/write_memory/dump_memory/halt/resume/reset/run_command) wrapping OpenOCD. Covers the standard flash workflow (connect → flash_info → flash_write → read-back), exec control for reliable reads (halt → operate → resume), chip identification after connect (identify_chip: CPUID + vendor DEV_ID), runtime permission changes (set_permissions, gated by allow_set_permissions), address/width conventions, permission-gate discipline (BLOCKED → show_config), probe auto-detection boundaries, and port discipline (6666 single backend, shared by DSH and ZCode). 触发词：烧录、刷机、固件、下载程序、烧写、读 flash、读内存、dump、向量表、卡死、挂起、复位、halt、识别芯片、芯片型号、什么芯片、改权限、临时允许、探针、OpenOCD、DAPLink、AT-Link、ST-Link、J-Link、AT32。
 ---
 
 # Ocdup 烧录工具链（AI 操作手册）
@@ -9,7 +9,7 @@ Ocdup 是 PC 侧的 OpenOCD 门面（MCP 服务器，stdio），把「连接探�
 按地址读回数据」封装成 MCP 工具。本技能只管**流程与纪律**；参数细节以工具
 docstring 与 `show_config` 输出为准，不要凭记忆猜。
 
-## 工具总览（ZCode 内以 `mcp__ocdup__*` 形式提供；DSH 内为 `mcp__ocdup__<tool>`；共 16 个，随版本演进以实际列表为准）
+## 工具总览（ZCode 内以 `mcp__ocdup__*` 形式提供；DSH 内为 `mcp__ocdup__<tool>`；共 17 个，随版本演进以实际列表为准）
 
 | 工具 | 作用 | 变更目标？ |
 |---|---|---|
@@ -27,6 +27,7 @@ docstring 与 `show_config` 输出为准，不要凭记忆猜。
 | `run_command` | 原始 TCL 逃生舱（单行；兜底专用工具没覆盖的操作） | 视命令 |
 | `backend_log` | ocdup 自己拉起的 openocd 近期 stdout/stderr（异步 `Info:`/`Error:` 日志） | 否 |
 | `identify_chip` | 读 CPUID（ARM 内核，任何 Cortex-M 有效）+ 厂商 DEV_ID（默认 0xE0042000），按 ocd.json 的 `chip_id_map` 查家族 | 否 |
+| `set_permissions` | 运行时改权限（免改文件；闸 = `allow_set_permissions`，默认关；reload/重启丢弃） | 改的是闸本身 |
 
 ## 标准烧录流程
 
