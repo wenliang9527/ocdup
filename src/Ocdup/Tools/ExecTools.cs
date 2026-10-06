@@ -56,7 +56,8 @@ public static class ExecTools
         timeout.CancelAfter(TimeSpan.FromSeconds(2));
 
         var parts = new List<string>(4);
-        foreach (var reg in new[] { "pc", "lr", "sp", "xpsr" })
+        // 寄存器名大小写敏感（atopenocd 实测：xPSR 大写才认,xpsr 报 not found）
+        foreach (var reg in new[] { "pc", "lr", "sp", "xPSR" })
         {
             try
             {

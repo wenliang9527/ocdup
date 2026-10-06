@@ -110,28 +110,36 @@ public static class Parsing
     }
 
     /// <summary>
-    /// 解析 OpenOCD `reg &lt;name&gt;` 的输出（如 "pc = 0x080002ad"，部分版本带尾注
-    /// "(+0x2ad)"）：取 '=' 后第一个 hex token（0x 前缀可有可无）。目标未 halt /
-    /// 寄存器名不识别等错误文本 → null（调用方按"取不到"跳过，best-effort）。
+    /// 解析 OpenOCD `reg &lt;name&gt;` 的输出，取寄存器值。实测两种形态：
+    /// atopenocd（0.11.0+dev）"pc (/32): 0x080002ab62"（<b>冒号</b>），
+    /// 主线旧版 "pc = 0x080002ad"（<b>等号</b>）——逐行找第一个 '=' 或 ':'，
+    /// 其后第一个 hex token（0x 前缀可有可无）即值；分隔符后是普通文本的行
+    /// （日志前缀/错误文本）整行跳过。全部行都取不到 → null（best-effort 调用方只少一行）。
     /// </summary>
     public static uint? ParseRegValue(string output)
     {
         if (string.IsNullOrWhiteSpace(output)) return null;
 
-        var assign = output.IndexOf('=');
-        if (assign < 0) return null;
-        foreach (var tok in output[(assign + 1)..].Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        foreach (var rawLine in output.Split('\n'))
         {
-            var t = tok.Replace("_", "");
-            if (t.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) t = t[2..];
-            // 尾注 token（如 "(+0x2ad)"）带括号,不会整体成 hex;首个成功解析的即寄存器值
-            if (uint.TryParse(t, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var v))
-                return v;
-            if (t.StartsWith('(')) continue; // 跳过注释性 token,继续找
-            return null; // '=' 后出现别的文本 = 错误输出
+            var line = rawLine.Trim();
+            var sep = line.IndexOfAny(SeparatorChars);
+            if (sep < 0) continue;
+            foreach (var tok in line[(sep + 1)..].Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var t = tok.Replace("_", "");
+                if (t.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) t = t[2..];
+                if (uint.TryParse(t, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var v))
+                    return v;
+                // 尾注/括号/散落的分隔符（"( = 0x… ) 形态）:跳过继续找;普通文本 = 这行不是读数
+                if (t.StartsWith('(') || t is "=" or ")") continue;
+                break;
+            }
         }
         return null;
     }
+
+    private static readonly char[] SeparatorChars = ['=', ':'];
 
     /// <summary>
     /// 把 OpenOCD `targets` 表格解析成一行式摘要（每目标一行：

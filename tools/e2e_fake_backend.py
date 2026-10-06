@@ -56,10 +56,12 @@ def handle_command(cmd):
     if c.startswith("resume"):
         return ""
     if c.startswith("reg "):
-        # `reg <name>`（halt 后核心寄存器回读）：pc/lr/sp/xpsr 给固定现场
-        regs = {"pc": "pc = 0x080002ad", "lr": "lr = 0x080001ed",
-                "sp": "sp = 0x20019d28", "xpsr": "xpsr = 0x01000000"}
-        return regs.get(c.split()[1], "Error: unknown register")
+        # `reg <name>`（halt 后核心寄存器回读）：按 atopenocd 实测形态响应（冒号 + 位宽注，
+        # 寄存器名大小写敏感——xPSR 大写才认），未知名回真实错误文本
+        regs = {"pc": "pc (/32): 0x080002ad", "lr": "lr (/32): 0x080001ed",
+                "sp": "sp (/32): 0x20019d28", "xPSR": "xPSR (/32): 0x01000000"}
+        name = c.split()[1]
+        return regs.get(name, "register %s not found in current target" % name)
     if c.startswith("dump_image"):
         m = re.match(r"dump_image \{(.*)\} (0x[0-9a-fA-F]+) (\d+)$", c)
         if m:
