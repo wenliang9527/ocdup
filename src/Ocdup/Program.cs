@@ -3,6 +3,12 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Protocol;
+using Ocdup.Cli;
+
+// `ocdup watch ...`：M-watch 采样 CLI（长时运行会占死 stdio/MCP 通道，所以走子命令
+// 而不是 MCP 工具）。不匹配时按 MCP stdio 服务器正常启动。
+if (args.Length > 0 && args[0].Equals("watch", StringComparison.OrdinalIgnoreCase))
+    return await WatchCli.RunAsync(args.Skip(1).ToArray());
 
 var builder = Host.CreateApplicationBuilder(args);
 
@@ -18,6 +24,7 @@ builder.Services
     .WithToolsFromAssembly();
 
 await builder.Build().RunAsync();
+return 0;
 
 static string VersionText()
 {

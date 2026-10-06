@@ -193,7 +193,8 @@ public static class SymbolTools
             $"ERROR: variable '{name}' not found in the symbol table. list_variables shows what the ELF contains.");
     }
 
-    private static List<ElfSymbol> LoadSymbols(OcdConfig cfg, string? file)
+    // internal:watch CLI（M-watch）复用同一套 ELF 路径解析与报错文案
+    internal static List<ElfSymbol> LoadSymbols(OcdConfig cfg, string? file)
     {
         var pathArg = string.IsNullOrWhiteSpace(file) ? cfg.ElfPath : file;
         if (string.IsNullOrWhiteSpace(pathArg))

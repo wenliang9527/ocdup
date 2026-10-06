@@ -7,3 +7,4 @@ dumps/
 TestResults/
 publish/
 LOCAL-MACHINE.md
+__pycache__/

@@ -13,6 +13,7 @@
   10. backend_log：非 ocdup 启动的后端如实说明「无捕获输出」
    11. connect 后后 best-effort 自动识别芯片 + flash 布局；target 失配时回报失配行
    12. set_target：list / 未知名 / 切换（假后端是外部实例 → 警告 + 配置已换）/ 重复切换空转 / read_only 拦截
+   13. halt 后 best-effort 回读核心寄存器（pc/lr/sp/xpsr；reset halt 同样带回）
 """
 import json
 import os
@@ -54,6 +55,11 @@ def handle_command(cmd):
         return "halted"
     if c.startswith("resume"):
         return ""
+    if c.startswith("reg "):
+        # `reg <name>`（halt 后核心寄存器回读）：pc/lr/sp/xpsr 给固定现场
+        regs = {"pc": "pc = 0x080002ad", "lr": "lr = 0x080001ed",
+                "sp": "sp = 0x20019d28", "xpsr": "xpsr = 0x01000000"}
+        return regs.get(c.split()[1], "Error: unknown register")
     if c.startswith("dump_image"):
         m = re.match(r"dump_image \{(.*)\} (0x[0-9a-fA-F]+) (\d+)$", c)
         if m:
@@ -332,6 +338,7 @@ def main():
         print(mcp.call("read_memory", {"address": "0x20000000", "count": 2}))
         print(mcp.call("resume", {}))
         print(mcp.call("reset", {"mode": "run"}))
+        print(mcp.call("reset", {"mode": "halt"}))
 
         banner("read_memory count=4000 (over memory_read_max_bytes)")
         print(mcp.call("read_memory", {"address": "0x20000000", "count": 4000}))

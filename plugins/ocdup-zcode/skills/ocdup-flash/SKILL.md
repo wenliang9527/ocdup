@@ -1,6 +1,6 @@
 ---
 name: ocdup-flash
-description: Use when flashing firmware or reading target memory through the Ocdup toolchain — Ocdup MCP tools (connect/status/show_config/backend_log/identify_chip/set_permissions/flash_info/flash_write/verify_image/flash_erase_sector/read_memory/write_memory/dump_memory/halt/resume/reset/run_command/list_variables/read_variable/write_variable) wrapping OpenOCD. Covers the standard flash workflow (connect → flash_info → flash_write → read-back), exec control for reliable reads (halt → operate → resume), chip identification after connect (identify_chip: CPUID + vendor DEV_ID), runtime permission changes (set_permissions, gated by allow_set_permissions), variable access by name via the ELF symbol layer (elf_path in ocd.json), address/width conventions, permission-gate discipline (BLOCKED → show_config), probe auto-detection boundaries, and port discipline (6666 single backend, shared by DSH and ZCode). 触发词：烧录、刷机、固件、下载程序、烧写、读 flash、读内存、dump、向量表、卡死、挂起、复位、halt、识别芯片、芯片型号、什么芯片、改权限、临时允许、变量名、按名读写、gCounter、探针、OpenOCD、DAPLink、AT-Link、ST-Link、J-Link、AT32。
+description: Use when flashing firmware or reading target memory through the Ocdup toolchain — Ocdup MCP tools (connect/status/show_config/backend_log/identify_chip/set_target/set_permissions/flash_info/flash_write/verify_image/flash_erase_sector/read_memory/write_memory/dump_memory/halt/resume/reset/run_command/list_variables/read_variable/write_variable) wrapping OpenOCD. Covers the standard flash workflow (connect → flash_info → flash_write → read-back), exec control for reliable reads (halt → operate → resume, with PC/LR/SP/xPSR snapshot), chip identification after connect (identify_chip: CPUID + vendor DEV_ID) and switching target_cfg without restarting the session (set_target via target_presets), runtime permission changes (set_permissions, gated by allow_set_permissions), variable access by name via the ELF symbol layer (elf_path in ocd.json) and timed sampling via the `ocdup watch` CLI, address/width conventions, permission-gate discipline (BLOCKED → show_config), probe auto-detection boundaries, and port discipline (6666 single backend, shared by DSH and ZCode). 触发词：烧录、刷机、固件、下载程序、烧写、读 flash、读内存、dump、向量表、卡死、挂起、复位、halt、识别芯片、芯片型号、什么芯片、切换芯片、换板子、set_target、改权限、临时允许、变量名、按名读写、采样、watch、gCounter、探针、OpenOCD、DAPLink、AT-Link、ST-Link、J-Link、AT32。
 ---
 
 # Ocdup 烧录工具链（AI 操作手册）
@@ -9,28 +9,33 @@ Ocdup 是 PC 侧的 OpenOCD 门面（MCP 服务器，stdio），把「连接探�
 按地址读回数据」封装成 MCP 工具。本技能只管**流程与纪律**；参数细节以工具
 docstring 与 `show_config` 输出为准，不要凭记忆猜。
 
-## 工具总览（ZCode 内以 `mcp__ocdup__*` 形式提供；DSH 内为 `mcp__ocdup__<tool>`；共 18 个，随版本演进以实际列表为准）
+## 工具总览（ZCode 内以 `mcp__ocdup__*` 形式提供；DSH 内为 `mcp__ocdup__<tool>`；共 19 个，随版本演进以实际列表为准）
 
 | 工具 | 作用 | 变更目标？ |
 |---|---|---|
-| `connect` | 连接控制通道；无监听时按 ocd.json 自动拉起 OpenOCD（探针 auto 识别） | 拉起后端 |
+| `connect` | 连接控制通道；无监听时按 ocd.json 自动拉起 OpenOCD（探针 auto 识别）；成功后 best-effort 自动识芯 + flash 布局 | 拉起后端 |
 | `status` | 后端是否在跑、版本、target 一行式摘要（只读探测，**不启动**任何东西） | 否 |
 | `show_config` | 有效设置与每项来源；`reload=true` 重读 ocd.json | 否 |
-| `flash_info` | 列出 flash banks（驱动、基址、大小） | 否 |
+| `flash_info` | 列出 flash banks（先逐 bank probe：自动容量配置/双 bank 的 bank1 必须 probe 过才有真实大小） | 否 |
 | `flash_write` | 烧录镜像（默认 verify + reset run） | **是** |
 | `flash_erase_sector` | 擦除扇区（last=-1 = 到 bank 末尾；**默认关闭**） | **是** |
 | `verify_image` | 镜像与目标 flash 比对，**不写任何东西**（回答「板子里到底是谁」） | 否 |
 | `read_memory` | 按地址/宽度读回；`format=json` 返回结构化值（≤ `memory_read_max_bytes`，默认 4096） | 否 |
 | `write_memory` | 写内存/寄存器（一条命令多值，单次 ≤256） | **是** |
 | `dump_memory` | 大块读落盘（整片 flash/RAM 快照），返回路径 + 字节数 + sha256 | 否 |
-| `halt` / `resume` / `reset` | 执行控制：halt 后读写才可靠；`reset run` 重启固件 | **是**（执行状态） |
+| `halt` / `resume` / `reset` | 执行控制：halt 后读写才可靠，并带回核心寄存器现场（pc/lr/sp/xpsr，"跑飞在哪"一步定位）；`reset halt` 同样带回 | **是**（执行状态） |
 | `run_command` | 原始 TCL 逃生舱（单行；兜底专用工具没覆盖的操作） | 视命令 |
 | `backend_log` | ocdup 自己拉起的 openocd 近期 stdout/stderr（异步 `Info:`/`Error:` 日志） | 否 |
-| `identify_chip` | 读 CPUID（ARM 内核，任何 Cortex-M 有效）+ 厂商 DEV_ID（默认 0xE0042000），按 ocd.json 的 `chip_id_map` 查家族 | 否 |
+| `identify_chip` | 读 CPUID（ARM 内核，任何 Cortex-M 有效）+ 厂商 DEV_ID（默认 0xE0042000），按 ocd.json 的 `chip_id_map` 查家族；与当前 target_cfg 不符时报 `target mismatch` 行 | 否 |
+| `set_target` | **换芯片不重启会话**：按 ocd.json 的 `target_presets` 注册表切 target_cfg 并重启后端（只重启 ocdup 自拉实例；起不来自动回滚；外部实例占端口时警告） | **是**（重启后端） |
 | `set_permissions` | 运行时改权限（免改文件；闸 = `allow_set_permissions`，默认关；reload/重启丢弃） | 改的是闸本身 |
 | `list_variables` | 列出 .elf 的变量（地址/大小/名，可过滤）——PC 侧读文件，不动目标 | 否 |
 | `read_variable` | 按名读变量（ELF 定位 → 目标读回；受 `memory_read_max_bytes`） | 否 |
 | `write_variable` | 按名写 1/2/4 字节变量（大对象引导用 write_memory） | **是** |
+
+另有 **`ocdup watch` 子命令 CLI**（M-watch，不是 MCP 工具）：按符号名定时采样变量
+（`--name` 多个、`--interval`、`--format csv` 重定向画曲线、`--halt` 每拍暂停固件读
+一致快照），长时运行不占 MCP 通道；`ocdup watch --help` 看用法。
 
 ## 标准烧录流程
 
@@ -79,7 +84,10 @@ docstring 与 `show_config` 输出为准，不要凭记忆猜。
   src/Ocdup/Ocdup.csproj -c Release -o publish` → 再启动客户端。
 - 本机配置：AT32F403AVGT7 + CMSIS-DAP v2 探针 + Artery 定制版 atopenocd
   （安装位置由 `OCD_BIN` / `OCD_SCRIPTS` 指定，`show_config` 可核对），`ocd.json`
-  已按此配好；换板子改 `target_cfg` 一行。
+  已按此配好。多芯片场景（v0.4.0）：identify 报 `target mismatch` 时按提示
+  `set_target <家族名>` 一键切换（不用改文件、不用重启会话）；`set_target list`
+  看注册表。仓库 `cfgs/` 里的板级 cfg（钥匙板 AT32F423 / 锁芯板 PY32F002A）
+  已收录进本机 target_presets。
 
 ## 典型会话
 

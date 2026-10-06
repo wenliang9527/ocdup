@@ -2,9 +2,9 @@
 
 | 项目 | 内容 |
 |---|---|
-| 文档版本 | v0.4.2 |
+| 文档版本 | v0.4.3 |
 | 日期 | 2026-10-06 |
-| 状态 | **阶段一完成**：控制层 + 烧录 + 读内存 + 执行控制 + 逃生舱 + 运行时权限 + 符号层 L1 + target 注册表均以实现并验证（19 个工具，S4 真机通过）；断点/观察点/L2(SVD)/L3 后置 |
+| 状态 | **阶段一完成**：控制层 + 烧录 + 读内存 + 执行控制 + 逃生舱 + 运行时权限 + 符号层 L1 + target 注册表 + watch 采样 CLI 均已实现并验证（19 个 MCP 工具 + 1 个 CLI 子命令，S4 真机通过）；断点/观察点/L2(SVD)/L3 后置 |
 | 读者 | 项目负责人（硬件/嵌入式）、后续实现者（Agent 或工程师） |
 | 上游参考 | [microhenrio/openocd-mcp](https://github.com/microhenrio/openocd-mcp) v0.4.5 架构（已逐文件审查） |
 
@@ -14,6 +14,7 @@
 
 | 版本 | 变更 |
 |---|---|
+| v0.4.3 | **halt 核心寄存器现场 + watch 采样 CLI（M-watch 翻牌）+ 收尾**：① `halt`/`reset halt` 成功后 best-effort 回读核心寄存器（`reg pc/lr/sp/xpsr`，2s 总预算 + 全吞异常，取不到只少一行）——"程序跑飞在哪"一步定位：PC 看现场、LR 看调用来源、xPSR 看异常态；`Parsing.ParseRegValue` 纯函数容忍 `pc = 0x…`/位宽注/尾注各形态。② `ocdup watch` 子命令 CLI（`Cli/WatchCli.cs`）：按符号名定时采样变量——`--name` 可重复/逗号分隔、`--interval`（默认 250ms）、`--format csv` 重定向画曲线、`--halt` 每拍 halt/resume 读一致快照（过 `allow_exec` 闸）、`--count` 限次；ELF/路径解析复用 SymbolTools（LoadSymbols 转 internal），取值 = mdw 对齐字 + 小端移位掩码（`WatchValue` 纯函数，兼容非对齐 u8/u16）；连续 30 拍失败退出并提示，Ctrl+C 优雅收尾（--halt 途中保证 resume）。独立 CLI 而非 MCP 工具：长时运行会占死 MCP 串行通道（C1）。③ 收尾：ocd.json.example 补 `target_presets`/`chip_id_map` 示例键；面板 test.js 按 mode 自设 env + 日志落临时目录（README 一行命令零配置可跑）+ 面板测试进 CI 独立 job；板级 cfg 入库 `cfgs/`（钥匙板 AT32F423 connect_assert_srst 治深睡禁调试；锁芯板 PY32F002A 最小 cortex_m 调试 cfg）+ README 板级分工说明；e2e 假后端补 `reg` 响应与 `reset halt` 用例；插件 0.2.7（SKILL 同步 19 工具 + set_target/watch）。C# 测试 140→169（ParseRegValue 9 例 + WatchCli 纯函数 20 例），e2e exit 0，面板 158 不变 |
 | v0.4.2 | **面板 v1.3.2 界面精修(纯 Client,C# 零改动)**：用户回报「按键和文字显示以及配色」——用 stub-React 渲染 + headless Chrome 截图/量尺寸的方式,先在真像素上定位崩坏,再改:① **控件折行崩坏**:所有控件 `nowrap + flex:0 0 auto`,工具栏两行都允许整组换行(旧版窄面板把「暂停/跟随」挤成上下两行、状态胶囊里第 4~5 个方向计数被裁掉)。② **配色撞车**:engaged 态统一「墨色实底」(`label-primary` 底 + `bg-layer` 字,深浅主题自动反转)——DSH 主题里 `bg-layer-4` 缺席,旧版 `var(--dsw-alias-bg-layer-4, #eef1fe)` 会露出浅蓝底配墨色描边,和宿主近黑品牌色打架;`.op-sel` 选中底色也改 `color-mix(brand 12%)`。③ **方向过滤改通道 chip**:原生 `<select>` 换成带色方点 + 计数的 chip(cmd 69/rsp 78/sys 14/log 159,`dirLegend(stats, active)` 纯函数,当前生效方向即使归零也保留),与工具 chip 同一套「点中即过滤、再点取消」语言;顺带删掉与占比表重复的图例、`SYS` 统一 `sys`。④ **工具条单行横滚**(右缘渐隐 + 滚轮转横向 + 计数贴右):旧版 11 枚 chip 换行成 3~4 行、窄面板吃掉半个屏幕;清空/导出随计数挪到该行右侧。⑤ 正则 `.*` 内嵌搜索框右端;目标下拉按需出现(单目标且未过滤不占位);计数文案 `counterLabel` 单调化(替掉「渲染 300 / 320 / 320 条」)。⑥ **链路读数条层级翻转**:值(型号/容量/探针名)做主读数(主文本 + 600 + tabular),段名退成弱标签,段色只留左色条 + 图标;`chipLabel` 增 `head/tail`,`tail`(内核/dev)在 ≤620px 整段隐藏(不再半词截断),型号未识别时芯片图标转警示色。⑦ 传输控件改 SVG(暂停/继续/跟随),详情区 `log` 段名改石板灰对齐通道色、标题行去 `·` 串与重复日期。验证:C# 140/140 不变,e2e exit 0,面板断言 142→158(client 100→116,新增 T23 图例/计数/芯片分层与 T24 面板整体渲染冒烟) |
 | v0.4.1 | **双 bank flash 探测修复 + 面板 v1.3.1 精修**：① 实测 AT32F403AVGT7(G 版 = 双 bank:bank1 0x08000000 + bank2 0x08080000,各 512K,合计 **1024K**)——`at32f403axG.cfg` 两个 bank 都 FLASH_SIZE=0,而 **`flash probe 0` 不带动 bank1**(驱动只报 "main flash size: 0x100000 ... bank size: 0x80000"),导致 bank2 显示 size 0。`FlashTools.BanksAfterProbeAsync`(公开,connect 自动探测复用):先 `flash banks` 数 bank 数(#N 正则),再**逐个** `flash probe N`,最后列 banks;零 bank/单 bank 探不动都有明确文案。② ocd.json 转 G 版:target_cfg `target/at32f403axG.cfg`,presets 增 `AT32F403A-512K → at32f403axx.cfg`(单 bank 旧版备用)。③ 面板 v1.3.1(纯 Client):Flash 段报 bank 合计(`parseFlashInfo.total`,1024K 一眼可见)、工具栏下排分组(方向/目标/正则 | 搜索 | 操作 | 计数,组间发丝线,窄屏整组换行)、stats 计数改方向色图例(替 '·' 串)、调用视图补吸顶列头条、链路卡左侧 2px 段色条。真机验证:`flash_info` → 两 bank 各 0x00080000,合计 1024K;C# 140/140,面板断言 139→142 |
 | v0.4.0 | **target 注册表 + set_target:换芯片不重启会话（C# 与面板双侧）**：① ocd.json 新键 `target_presets`（家族名 → openocd target cfg,值就是 `-f` 参数,scripts 名或绝对路径均可；show_config 展示清单）与 `chip_id_map` 联动；② 新工具 `set_target <家族名|list>`（第 19 个工具）——ResolvePreset 纯函数校验（大小写不敏感/'list' 保留字/未知名报错带清单）→ 已在跑同脚本则空转 → `read_only` 拦截（切换=重启后端,属改变后端状态）→ ConfigStore.ApplyTargetSwitch 运行时换 target_cfg（独立通道,target_cfg 刻意不在 RuntimePatchableKeys,set_permissions 碰不到它）→ BackendSession.RestartAsync（Invalidate + launcher.Stop 只杀自拉进程 + 等端口释放 + 重新拉起,失败自动回滚 target_cfg）→ 外部实例占端口时如实警告；成功镜像一条 SYS 进流量日志。③ identify 失配检测：`TargetMismatch(currentCfg, family, presets)` 纯函数（basename 忽略大小写比较,绝对路径与 scripts 名视为同脚本）,命中时 identify/connect 报告末行追加 `target mismatch: identified X, current target_cfg: Y -> use set_target X`。④ connect 成功后顺带 best-effort flash 布局（`flash probe 0`+`flash banks`,auto-size 配置必须 probe 才有真实容量;失配时跳过并说明;镜像 tool=flash_info 同格式）。⑤ 面板 v1.3.0：链路行「⚡ 切换 <家族名>」胶囊（parseTargetMismatch 解析失配行,点击复制 `mcp__ocdup__set_target` 调用——面板不能调 MCP,沿用复制提问模式;胶囊跟着最近一次 identify 报告走,切完即消失）。C# 测试 128→140（TargetMismatch 四形态/ResolvePreset 五形态/target_presets 解析/WithTargetChange）,面板断言 135→139（T22 失配行解析+胶囊跟随语义）。本机 ocd.json 转多芯片配置：interface cmsis-dap 钉死不变、target_cfg 切 `target/at32f403axx.cfg`（通用,flash 自动探测不挑封装）、chip_id_map 填实测 `"0x344": "AT32F403A"`、presets 收录 AT32F403A/STM32F103/PY32F002A/AT32F423 |
@@ -398,8 +399,12 @@ Ocdup 与它的关系：**复刻架构，不复刻功能边界**。Ocdup 保留�
 ```
 Ocdup/
 ├── docs/design-plan.md              ← 本文档
-├── src/Ocdup/                       # MCP 服务器（.NET 8 控制台，stdio）
-│   ├── Program.cs                   # Host 构建 + MCP 服务器/工具注册
+├── cfgs/                            ← 板级手写 target cfg（target_presets 绝对路径引用；头部注释=排障记录）
+│   ├── target_at32f423_key.cfg      #   钥匙板：connect_assert_srst 治 deepsleep 睡死
+│   └── target_py32f002a_lock.cfg    #   锁芯板：最小通用 cortex_m 调试 cfg（烧录走 Keil）
+├── src/Ocdup/                       # MCP 服务器（.NET 8 控制台，stdio）+ watch CLI
+│   ├── Program.cs                   # watch 子命令分发 + Host 构建 + MCP 服务器/工具注册
+│   ├── Cli/WatchCli.cs              # watch 采样 CLI（M-watch）：选项解析/对齐取值/渲染均为纯函数
 │   ├── Backend/TclRpcClient.cs      # 控制通道客户端（6666 · 0x1a 分帧 · capture{…} · 串行化）
 │   ├── Backend/BackendSession.cs    # 会话：确保后端在跑 + 复用/丢弃控制通道
 │   ├── Backend/TrafficLog.cs        # 流量镜像（mcp-traffic.jsonl，2MB 轮转；面板数据源）
@@ -456,7 +461,7 @@ Ocdup/
 | M-prov | provisioning：缓存目录 + 下载 + SHA-256 校验 + `install_openocd` |
 | M-l3 | L3 协议字典（帧名/模板/期望响应） |
 | M-serial | ~~与 acccom 的串口协同~~ 方案 A 已落地：会话层协同 + 插件 `/flash-verify` 命令（0.2.6）；L3 字典化的帧自动比对仍后置 |
-| M-watch | `watch_variables` 定时采样（独立 CLI 形态） |
+| M-watch | ~~`watch_variables` 定时采样（独立 CLI 形态）~~ ✅ v0.4.3 `ocdup watch` 子命令（--format csv 重定向画曲线、--halt 一致快照；MCP 工具形态刻意不做——长时运行占死 C1 串行通道） |
 
 ---
 
@@ -464,8 +469,8 @@ Ocdup/
 
 | 层 | 方法 | 现状 |
 |---|---|---|
-| 单元 | xUnit + **假 `TcpListener`**（脚本化响应） | 114 个用例：控制通道（capture 包装 / `0x1a` 分帧 / 跨 TCP 分段组装 / 并发串行化 / 读超时 / 连接失败）、权限矩阵、配置加载（嵌套块 / 顶层平铺 / 来源追踪 / 坏输入降级 / 路径基准）、探针识别（优先级 / 同种去重 / 无关设备忽略 / 空行容错）、TCL 引用、命令行构造、地址解析、流量日志轮转、CPUID 解码与 chip_id_map 匹配、运行时权限补丁与 OCD_RDONLY、ELF32 解析（对象符号筛选 / 坏输入拒绝） |
-| 端到端 | `tools/e2e_fake_backend.py`：Python 假 TCL-RPC 后端 + 真实 MCP stdio 会话（无需硬件） | 已验证：18 个工具注册、烧录/读/写/执行控制/逃生舱/芯片识别/运行时权限/按名读写全链路、format=json 与 verify_image、dump 白名单与上限拦截、read_only 全拦、`reload` 生效与 runtime 补丁丢弃、无 openocd 与坏二进制时的诊断输出 |
+| 单元 | xUnit + **假 `TcpListener`**（脚本化响应） | 169 个用例：控制通道（capture 包装 / `0x1a` 分帧 / 跨 TCP 分段组装 / 并发串行化 / 读超时 / 连接失败）、权限矩阵、配置加载（嵌套块 / 顶层平铺 / 来源追踪 / 坏输入降级 / 路径基准）、探针识别（优先级 / 同种去重 / 无关设备忽略 / 空行容错）、TCL 引用、命令行构造、地址解析、流量日志轮转、CPUID 解码与 chip_id_map 匹配、运行时权限补丁与 OCD_RDONLY、ELF32 解析（对象符号筛选 / 坏输入拒绝）、reg 输出解析、target_presets 解析与切换（ResolvePreset / TargetMismatch / WithTargetChange）、watch CLI 选项/取值/渲染 |
+| 端到端 | `tools/e2e_fake_backend.py`：Python 假 TCL-RPC 后端 + 真实 MCP stdio 会话（无需硬件） | 已验证：19 个工具注册、烧录/读/写/执行控制（halt/reset halt 回读 PC/LR/SP/xPSR）/逃生舱/芯片识别与 target 失配/set_target 切换（list/未知名/大小写/外部实例警告）/运行时权限/按名读写全链路、format=json 与 verify_image、dump 白名单与上限拦截、read_only 全拦、`reload` 生效与 runtime 补丁丢弃、无 openocd 与坏二进制时的诊断输出 |
 | 集成 | 真实探针 + 开发板（S4） | ✅ 已通过（2026-10）；每次记入测试日志（芯片、探针、ocd.json、OpenOCD 版本） |
 | CI | build → test → e2e（windows-latest） | ✅ `.github/workflows/ci.yml`（v0.3.9 建） |
 
@@ -516,7 +521,7 @@ Ocdup/
 
 ## 17. 交付结论与下一步（HANDOFF）
 
-**当前状态（v0.3.13）**：**S4 真机联调已通过** ✅（AT32F403AVGT7 + CMSIS-DAP v2 探针 + atopenocd：connect → flash_info → flash_write S300plus.hex 139077 字节，擦 25 扇区、写+校验 Verified OK、reset run、运行态读回向量表 0x08000000 = `20019d28 080002ad …`）。**18 个工具全部落地**（含符号层 L1 按名读写）；114 个单元测试全绿 + e2e 无硬件回归 + CI 就绪。S5 的 publish.cmd / CI / DSH 与 ZCode 注册已完成，剩「换一台机器 10 分钟跑通」的换机验收。
+**当前状态（v0.4.3）**：**S4 真机联调已通过** ✅（AT32F403AVGT7 + CMSIS-DAP v2 探针 + atopenocd：connect → flash_info → flash_write S300plus.hex 139077 字节，擦 25 扇区、写+校验 Verified OK、reset run、运行态读回向量表 0x08000000 = `20019d28 080002ad …`）。**19 个 MCP 工具 + `ocdup watch` 采样 CLI 全部落地**（含符号层 L1 按名读写、target 注册表与 set_target 切换、halt 核心寄存器现场）；169 个单元测试全绿 + e2e 无硬件回归 + CI 就绪。S5 的 publish.cmd / CI / DSH 与 ZCode 注册已完成，剩「换一台机器 10 分钟跑通」的换机验收。
 
 **建议的下一步顺序**：
 

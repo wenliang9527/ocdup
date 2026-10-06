@@ -33,14 +33,45 @@ public static class ExecTools
         try
         {
             var output = (await BackendSession.Instance.ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: "halt")).Trim();
+            var regs = await CoreRegsReportAsync(cfg, ct).ConfigureAwait(false);
             return $"halt issued ({command}).\n" +
                    (output.Length == 0 ? "(no output - check the target state with status)" : output) +
+                   (regs.Length == 0 ? "" : $"\n{regs}") +
                    "\nnext: read/write now works reliably; call resume when done.";
         }
         catch (BackendException ex)
         {
             return ex.Message;
         }
+    }
+
+    /// <summary>
+    /// halt 后 best-effort 回读核心寄存器（PC/LR/SP/xPSR）："程序跑飞在哪"一步定位——
+    /// PC 看现场、LR 看调用来源、xPSR 看异常态。2 秒总预算 + 全吞异常：目标不应答或
+    /// 驱动不支持时只少一行，绝不把成功的 halt 判失败（与 connect 自动识芯同一纪律）。
+    /// </summary>
+    internal static async Task<string> CoreRegsReportAsync(OcdConfig cfg, CancellationToken ct)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(2));
+
+        var parts = new List<string>(4);
+        foreach (var reg in new[] { "pc", "lr", "sp", "xpsr" })
+        {
+            try
+            {
+                var output = await BackendSession.Instance
+                    .ExecuteAsync(cfg, $"reg {reg}", startIfNeeded: false, timeout.Token, op: "halt").ConfigureAwait(false);
+                if (Parsing.ParseRegValue(output) is { } value)
+                    parts.Add($"{reg}={Parsing.Hex(value)}");
+            }
+            catch (Exception ex) when (ex is OperationCanceledException or BackendException)
+            {
+                break; // 预算耗尽或通道异常:拿多少算多少
+            }
+        }
+
+        return parts.Count == 0 ? "" : "core registers: " + string.Join("  ", parts);
     }
 
     [McpServerTool(Name = "resume")]
@@ -100,8 +131,10 @@ public static class ExecTools
         try
         {
             var output = (await BackendSession.Instance.ExecuteAsync(cfg, $"reset {m}", startIfNeeded: true, ct, op: "reset")).Trim();
+            var regs = m == "halt" ? await CoreRegsReportAsync(cfg, ct).ConfigureAwait(false) : "";
             return $"reset {m} issued.\n" +
-                   (output.Length == 0 ? "(no output)" : output);
+                   (output.Length == 0 ? "(no output)" : output) +
+                   (regs.Length == 0 ? "" : $"\n{regs}");
         }
         catch (BackendException ex)
         {

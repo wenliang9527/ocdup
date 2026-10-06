@@ -1,0 +1,326 @@
+using System.Globalization;
+using Ocdup.Backend;
+using Ocdup.Config;
+using Ocdup.Tools;
+
+namespace Ocdup.Cli;
+
+/// <summary>
+/// `ocdup watch`（M-watch，设计文档后置里程碑）：按符号名定时采样变量，盯曲线/调参。
+/// 独立 CLI 而非 MCP 工具——长时运行会占死 MCP 控制通道（C1 串行），且 stdout 重定向
+/// 成 CSV 文件画曲线更顺手。全部复用既有层：ocd.json 配置、BackendSession 控制通道、
+/// ElfSymbols 符号表（与 read_variable 同一套路径解析）。变量值读法：mdw 按对齐地址
+/// 读一个 32 位字，按小端移位掩码摘出 1/2/4 字节——兼容非对齐的 u8/u16 符号。
+/// </summary>
+public static class WatchCli
+{
+    public static async Task<int> RunAsync(string[] args)
+    {
+        var options = WatchOptions.Parse(args);
+        if (options.Help)
+        {
+            Console.Write(HelpText);
+            return 0;
+        }
+        if (options.Errors.Count > 0)
+        {
+            foreach (var e in options.Errors) Console.Error.WriteLine("ERROR: " + e);
+            Console.Error.WriteLine("run 'ocdup watch --help' for usage.");
+            return 1;
+        }
+
+        var cfg = ConfigStore.Instance.Current;
+
+        // --halt 每拍暂停目标固件再读：执行控制，与 halt 工具同级设防。
+        if (options.Halt && PermissionGate.CheckExec(cfg, "watch --halt") is { } blocked)
+        {
+            Console.Error.WriteLine(blocked);
+            return 1;
+        }
+
+        List<ElfSymbol> symbols;
+        try
+        {
+            symbols = SymbolTools.LoadSymbols(cfg, options.ElfPath);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine("ERROR: " + ex.Message);
+            return 1;
+        }
+
+        // 逐名解析：精确命中才可盯；>4 字节警告跳过（watch 只盯标量，大对象用 dump_memory）；
+        // 重名/未找到给出与 read_variable 同款的引导。全部落空 = 退出。
+        var watchable = new List<ElfSymbol>();
+        foreach (var name in options.Names)
+        {
+            var exact = symbols.Where(s => s.Name == name).ToList();
+            if (exact.Count > 1)
+            {
+                Console.Error.WriteLine($"ERROR: '{name}' is defined at {exact.Count} addresses (static in multiple units?) - " +
+                                        "watch by address is not supported; rename or pick one via dump_memory.");
+                continue;
+            }
+            var symbol = exact.SingleOrDefault();
+            if (symbol is null)
+            {
+                var ci = symbols.Where(s => s.Name.Equals(name, StringComparison.OrdinalIgnoreCase)).Take(3).ToList();
+                Console.Error.WriteLine($"ERROR: variable '{name}' not found in the symbol table" +
+                                        (ci.Count > 0 ? " (names are case-sensitive). Did you mean: " + string.Join(", ", ci.Select(s => s.Name)) + "?" : "."));
+                continue;
+            }
+            if (symbol.Size is not (1 or 2 or 4))
+            {
+                Console.Error.WriteLine($"WARNING: skipping '{name}' ({symbol.Size} bytes) - watch covers 1/2/4-byte scalars; " +
+                                        $"use dump_memory at {Parsing.Hex(symbol.Address)} for bigger objects.");
+                continue;
+            }
+            watchable.Add(symbol);
+        }
+
+        if (watchable.Count == 0)
+        {
+            Console.Error.WriteLine("ERROR: nothing to watch. list_variables shows what the ELF contains.");
+            return 1;
+        }
+
+        var pad = watchable.Max(s => s.Name.Length);
+        Console.WriteLine($"ocdup watch: {watchable.Count} variable(s) every {options.IntervalMs}ms " +
+                          $"(format={options.Format}, halt={options.Halt switch { true => "on (firmware pauses each sample)", false => "off" }})");
+        foreach (var s in watchable)
+            Console.WriteLine($"  {s.Name.PadRight(pad)} @ {Parsing.Hex(s.Address)} ({s.Size} bytes)");
+        Console.WriteLine("Ctrl+C to stop.");
+
+        using var cts = new CancellationTokenSource();
+        Console.CancelKeyPress += (_, e) =>
+        {
+            e.Cancel = true; // 自己收尾，不粗暴杀（--halt 途中保证 resume）
+            cts.Cancel();
+        };
+
+        if (options.Format == "csv")
+            Console.WriteLine("time," + string.Join(",", watchable.Select(s => s.Name)));
+
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(options.IntervalMs));
+        var samples = 0;
+        var failures = 0;
+        try
+        {
+            while (await timer.WaitForNextTickAsync(cts.Token).ConfigureAwait(false))
+            {
+                List<uint> values;
+                try
+                {
+                    values = await SampleAsync(cfg, watchable, options.Halt, cts.Token).ConfigureAwait(false);
+                    failures = 0;
+                }
+                catch (BackendException ex)
+                {
+                    failures++;
+                    if (failures == 1)
+                        Console.Error.WriteLine($"!! sample failed ({ex.Message.Split('\n')[0]}) - retrying; " +
+                                                "the connection recovers automatically.");
+                    else if (failures % 10 == 0)
+                        Console.Error.WriteLine($"!! still failing ({failures} samples in a row).");
+                    if (failures >= 30)
+                    {
+                        Console.Error.WriteLine("ERROR: 30 consecutive failed samples - the backend is probably gone. Exiting.");
+                        return 2;
+                    }
+                    continue;
+                }
+
+                samples++;
+                var now = DateTime.Now;
+                Console.WriteLine(options.Format == "csv"
+                    ? RenderCsv(now, watchable, values)
+                    : RenderPretty(now, watchable, values));
+                if (options.Count > 0 && samples >= options.Count)
+                    break;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Ctrl+C：正常收尾
+        }
+
+        Console.WriteLine($"done: {samples} sample(s).");
+        return 0;
+    }
+
+    /// <summary>采一拍：逐变量 mdw 对齐字；--halt 时先 halt 200ms 再读、finally 里 resume。</summary>
+    private static async Task<List<uint>> SampleAsync(OcdConfig cfg, List<ElfSymbol> vars, bool halt, CancellationToken ct)
+    {
+        if (halt)
+            await BackendSession.Instance.ExecuteAsync(cfg, "halt 200", startIfNeeded: true, ct, op: "watch").ConfigureAwait(false);
+        try
+        {
+            var values = new List<uint>(vars.Count);
+            foreach (var s in vars)
+            {
+                var aligned = s.Address & ~3L;
+                var output = await BackendSession.Instance
+                    .ExecuteAsync(cfg, $"mdw {Parsing.Hex(aligned)} 1", startIfNeeded: !halt, ct, op: "watch").ConfigureAwait(false);
+                if (!Parsing.TryParseMemoryOutput(output, 32, 1, out var words))
+                    throw new BackendException($"could not read '{s.Name}' @ {Parsing.Hex(s.Address)}: {output.ReplaceLineEndings(" ").Trim()}");
+                values.Add(WatchValue.Extract((uint)words[0], s.Address, (int)s.Size));
+            }
+            return values;
+        }
+        finally
+        {
+            if (halt)
+            {
+                try
+                {
+                    await BackendSession.Instance.ExecuteAsync(cfg, "resume", startIfNeeded: false, ct, op: "watch").ConfigureAwait(false);
+                }
+                catch (BackendException)
+                {
+                    // resume 失败不吞掉取样本身的结果；下一拍 halt 会先于一切执行
+                }
+            }
+        }
+    }
+
+    // ── 渲染（纯函数，便于单测）──
+
+    internal static string RenderCsv(DateTime time, IReadOnlyList<ElfSymbol> vars, IReadOnlyList<uint> values) =>
+        $"{time:HH:mm:ss.fff}," + string.Join(",", values);
+
+    internal static string RenderPretty(DateTime time, IReadOnlyList<ElfSymbol> vars, IReadOnlyList<uint> values)
+    {
+        var pad = vars.Max(s => s.Name.Length);
+        var cells = vars.Zip(values, (s, v) => $"{s.Name.PadRight(pad)}={WatchValue.FormatHex(v, (int)s.Size)} ({v})");
+        return $"{time:HH:mm:ss.fff}  " + string.Join("  ", cells);
+    }
+
+    private const string HelpText = """
+        ocdup watch - sample ELF variables by name on a timer (M-watch)
+
+        usage: ocdup watch --name <var> [--name <var2> ...] [options]
+
+        options:
+          --name <n>      variable name to watch (repeatable; commas also split)
+          --elf <path>    .elf image (default: "elf_path" in ocd.json; relative to it)
+          --interval <ms> sampling period, 20..600000 (default 250)
+          --format <f>    pretty (default) or csv - csv rows: time,value1,value2,...
+          --halt          pause the firmware (halt/resume) around each sample for
+                          consistent reads; needs allow_exec and pauses the target
+          --count <n>     stop after n samples (default: until Ctrl+C)
+          --help          this text
+
+        config/backend come from ocd.json (OCD_CONFIG) exactly like the MCP tools;
+        the OpenOCD backend is started on demand and cleaned up on exit.
+        """;
+}
+
+/// <summary>`ocdup watch` 的命令行选项（解析为纯函数，可单测；错误攒在 Errors 里一次报告）。</summary>
+public sealed record WatchOptions(
+    IReadOnlyList<string> Names,
+    string? ElfPath,
+    int IntervalMs,
+    string Format,
+    bool Halt,
+    int Count,
+    bool Help,
+    IReadOnlyList<string> Errors)
+{
+    public static WatchOptions Parse(string[] args)
+    {
+        var names = new List<string>();
+        var errors = new List<string>();
+        string? elf = null;
+        var interval = 250;
+        string format = "pretty";
+        var halt = false;
+        var count = 0;
+        var help = false;
+
+        for (var i = 0; i < args.Length; i++)
+        {
+            var arg = args[i];
+            var eq = arg.IndexOf('=');
+            var key = eq > 0 ? arg[..eq] : arg;
+            var inline = eq > 0 ? arg[(eq + 1)..] : null;
+
+            string? Value()
+            {
+                if (inline is not null) return inline;
+                if (i + 1 >= args.Length)
+                {
+                    errors.Add($"option '{key}' needs a value.");
+                    return null;
+                }
+                return args[++i];
+            }
+
+            switch (key)
+            {
+                case "--help" or "-h" or "/?":
+                    help = true;
+                    break;
+                case "--name":
+                    var v = Value();
+                    if (v is not null)
+                        names.AddRange(v.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+                    break;
+                case "--elf":
+                    elf = Value();
+                    break;
+                case "--interval":
+                    var iv = Value();
+                    if (iv is not null && (!int.TryParse(iv, NumberStyles.Integer, CultureInfo.InvariantCulture, out interval) || interval is < 20 or > 600_000))
+                    {
+                        errors.Add($"interval '{iv}' is out of range - use milliseconds between 20 and 600000.");
+                        interval = 250;
+                    }
+                    break;
+                case "--format":
+                    var f = Value();
+                    if (f is not null && !f.Equals("pretty", StringComparison.OrdinalIgnoreCase) && !f.Equals("csv", StringComparison.OrdinalIgnoreCase))
+                        errors.Add($"format '{f}' is not supported - use 'pretty' or 'csv'.");
+                    else if (f is not null)
+                        format = f.ToLowerInvariant();
+                    break;
+                case "--halt":
+                    halt = true;
+                    break;
+                case "--count":
+                    var c = Value();
+                    if (c is not null && (!int.TryParse(c, NumberStyles.Integer, CultureInfo.InvariantCulture, out count) || count < 0))
+                    {
+                        errors.Add($"count '{c}' is invalid - use a non-negative integer (0 = unlimited).");
+                        count = 0;
+                    }
+                    break;
+                default:
+                    errors.Add($"unknown option '{arg}'.");
+                    break;
+            }
+        }
+
+        if (!help && names.Count == 0)
+            errors.Add("no variable to watch - pass --name at least once (list_variables shows what the ELF contains).");
+
+        return new WatchOptions(names, elf, interval, format, halt, count, help, errors);
+    }
+}
+
+/// <summary>变量取值工具（纯函数）：mdw 只能读对齐的 32 位字，小端移位掩码摘出 1/2/4 字节标量。</summary>
+public static class WatchValue
+{
+    public static uint Extract(uint word, long address, int size) => size switch
+    {
+        1 => (word >> (int)((address & 3) * 8)) & 0xFF,
+        2 => (word >> (int)((address & 3) * 8)) & 0xFFFF,
+        _ => word,
+    };
+
+    public static string FormatHex(uint value, int size) => size switch
+    {
+        1 => $"0x{value & 0xFF:x2}",
+        2 => $"0x{value & 0xFFFF:x4}",
+        _ => $"0x{value:x8}",
+    };
+}

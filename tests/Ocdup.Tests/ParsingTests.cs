@@ -35,6 +35,29 @@ public sealed class ParsingTests
         Assert.Equal("0x00000100", Parsing.Hex(0x100));
     }
 
+    // ── ParseRegValue:halt 后 `reg <name>` 输出的寄存器值解析 ──
+
+    [Theory]
+    [InlineData("pc = 0x080002ad", 0x080002adu)]
+    [InlineData("sp = 0x20019D28", 0x20019D28u)]                 // 大写 hex
+    [InlineData("xpsr = 0x01000000 (APSR/nzcvq...)", 0x01000000u)] // 带尾注
+    [InlineData("pc = 080002ad", 0x080002adu)]                   // 无 0x 前缀
+    [InlineData("pc (/32) = 0x00000100", 0x100u)]                // 版本差异:名带位宽注
+    public void ParseRegValue_AcceptsRegOutputForms(string output, uint expected)
+    {
+        Assert.Equal(expected, Parsing.ParseRegValue(output));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("target not halted")]                 // 无 '=' 的错误文本
+    [InlineData("pc = unknown register")]             // '=' 后无 hex token
+    [InlineData("Error: Target not halted")]          // 部分版本错误形态
+    public void ParseRegValue_RejectsNonValueOutput(string output)
+    {
+        Assert.Null(Parsing.ParseRegValue(output));
+    }
+
     // ── TryParseMemoryOutput:read_memory format=json 的解析器 ──
 
     private const string Mdw16 = """

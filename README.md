@@ -65,7 +65,7 @@
 
 | 工具 | 作用 | 权限 |
 |---|---|---|
-| `halt` / `resume` / `reset` | 执行控制：halt 后读写才可靠；reset run 重启固件 | `read_only` / **`allow_exec`（默认 true）** |
+| `halt` / `resume` / `reset` | 执行控制：halt 后读写才可靠，并带回核心寄存器现场（pc/lr/sp/xpsr，「跑飞在哪」一步定位）；reset run 重启固件 | `read_only` / **`allow_exec`（默认 true）** |
 | `run_command` | 原始 TCL 逃生舱（单行命令，兜底专用工具没覆盖的操作） | `read_only` / `allow_raw_command` |
 
 ### 符号层（L1，按变量名读写）
@@ -78,7 +78,18 @@
 
 > 用法：`ocd.json` 里把 `elf_path` 指到编译产物（未 strip 的 .elf），三个工具就都有默认镜像了。
 
-> 后续里程碑：断点 / 观察点 / 符号层（按名读变量）/ L3 协议字典，见[设计文档第 12 节](docs/design-plan.md)。
+### ⏱ watch CLI（M-watch，v0.4.3）
+
+盯变量曲线/调参用**子命令 CLI**（长时运行不占 MCP 串行通道），配置与后端复用 `ocd.json`：
+
+```bash
+ocdup watch --name gCounter --name flag          # 默认 250ms 一拍,人读格式,Ctrl+C 结束
+ocdup watch --name gCounter --format csv --interval 100 > log.csv   # 重定向画曲线
+ocdup watch --name adc --halt                    # 每拍暂停固件读一致快照(过 allow_exec 闸)
+ocdup watch --help                               # 全部选项
+```
+
+> 后续里程碑：断点 / 观察点 / 符号层 L2(SVD) / L3 协议字典，见[设计文档第 12 节](docs/design-plan.md)。
 
 ## 🏗️ 架构
 
@@ -285,7 +296,7 @@ reload/重启丢弃）；否则 `show_config` 核对生效权限，改 ocd.json 
 ## 🧪 开发与测试
 
 ```bash
-dotnet test Ocdup.sln                     # 140 个单测，不需要硬件
+dotnet test Ocdup.sln                     # 169 个单测，不需要硬件
 python tools/e2e_fake_backend.py          # 端到端：假 TCL-RPC 后端 + 真实 MCP 会话
 ```
 
@@ -323,7 +334,7 @@ python tools/e2e_fake_backend.py          # 端到端：假 TCL-RPC 后端 + 真
 
 | 里程碑 | 状态 |
 |---|---|
-| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 140 个单测 + 假后端 e2e 覆盖 |
+| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 169 个单测 + 假后端 e2e 覆盖 |
 | S4 真机联调 | ✅ AT32F403AVGT7 + CMSIS-DAP v2（DAPLink `0D28:0204`）+ atopenocd：`connect` → `flash_info` → `flash_write`（擦 25 扇区、写 + Verified OK、reset run）→ `read_memory` 运行态读回向量表 |
 | S5 打包与客户端注册 | 🟡 已注册进 DSH（desktop + web 两个 profile）与 ZCode（`mcp.servers` 条目 + `ocdup-zcode` 插件，均指 `publish/ocdup.exe`） |
 

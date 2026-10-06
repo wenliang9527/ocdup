@@ -110,6 +110,30 @@ public static class Parsing
     }
 
     /// <summary>
+    /// 解析 OpenOCD `reg &lt;name&gt;` 的输出（如 "pc = 0x080002ad"，部分版本带尾注
+    /// "(+0x2ad)"）：取 '=' 后第一个 hex token（0x 前缀可有可无）。目标未 halt /
+    /// 寄存器名不识别等错误文本 → null（调用方按"取不到"跳过，best-effort）。
+    /// </summary>
+    public static uint? ParseRegValue(string output)
+    {
+        if (string.IsNullOrWhiteSpace(output)) return null;
+
+        var assign = output.IndexOf('=');
+        if (assign < 0) return null;
+        foreach (var tok in output[(assign + 1)..].Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var t = tok.Replace("_", "");
+            if (t.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) t = t[2..];
+            // 尾注 token（如 "(+0x2ad)"）带括号,不会整体成 hex;首个成功解析的即寄存器值
+            if (uint.TryParse(t, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var v))
+                return v;
+            if (t.StartsWith('(')) continue; // 跳过注释性 token,继续找
+            return null; // '=' 后出现别的文本 = 错误输出
+        }
+        return null;
+    }
+
+    /// <summary>
     /// 把 OpenOCD `targets` 表格解析成一行式摘要（每目标一行：
     /// "0* at32f435zmt7 (cortex_m, little) running"），给模型省 token。
     /// 没有任何数据行（表头不符/空输出/错误文本）→ null，调用方回退展示原文。
