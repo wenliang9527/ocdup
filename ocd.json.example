@@ -4,12 +4,20 @@
   "//interface": "interface_cfg 建议用 \"auto\"：连接时自动识别已插探针（AT-Link / CMSIS-DAP / ST-Link / J-Link）并选对应脚本；也可显式指定。",
   "//elf_path": "符号层 L1 的默认镜像（未 strip 的 .elf，相对路径以本文件目录为基准）：list/read/write_variable 用；也可每次传 file 参数。",
   "//chip_id_map": "identify_chip 用：DEV_ID（hex，如 \"0x410\"）-> 家族/建议 target_cfg 的映射；省略 = 只报原始值。DEV_ID 见各厂商参考手册的 DBGMCU 章节。",
+  "//target_presets": "target 注册表（v0.4.0）：家族名 -> openocd target（值就是 -f 的参数：scripts 名或绝对路径均可）。identify 认出的家族与当前 target_cfg 不符时回报失配行，set_target <家族名> 一键切换并重启后端（外部实例占端口时只会换配置并警告）；'list' 看清单。加芯片 = 这里 + chip_id_map 各一行，零编译。仓库自带的板级 cfg 见 cfgs/（手写 cfg 建议写绝对路径）。",
   "interface_cfg": "auto",
   "target_cfg": "target/at32f403axx.cfg",
   "transport": "swd",
   "host": "127.0.0.1",
   "port": 6666,
   "command_timeout_seconds": 60,
+  "chip_id_map": {
+    "0x410": "STM32F103"
+  },
+  "target_presets": {
+    "AT32F403A": "target/at32f403axx.cfg",
+    "STM32F103": "target/stm32f1x.cfg"
+  },
   "permissions": {
     "read_only": false,
     "allow_memory_write": true,

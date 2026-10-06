@@ -23,3 +23,20 @@ jobs:
 
       - name: End-to-end (fake TCL-RPC backend + real MCP stdio session)
         run: python tools/e2e_fake_backend.py
+
+  panel-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Panel behavior tests (zero-dependency, self-configured env)
+        working-directory: tools/dsh-ocdup-panel
+        run: |
+          node test.js core
+          node test.js window
+          node test.js api
+          node test.js client

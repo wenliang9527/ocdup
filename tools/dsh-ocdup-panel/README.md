@@ -168,7 +168,9 @@ deploy.cmd web    :: 追加部署到 web profile
 
 ## 测试
 
-Host 半区带一套零依赖行为测试,在插件目录下运行:
+Host 半区带一套零依赖行为测试,在插件目录下运行(每个模式自设所需的环境变量
+(如 `MAX_ENTRIES=5/40`、`FIRST_TAIL=600`),日志默认落在临时目录——零配置直接跑,
+也绝不碰真实的流量日志;要压别的边界时手动设置这些 env 即可覆盖):
 
 ```cmd
 node test.js core     & node test.js window & node test.js api & node test.js client

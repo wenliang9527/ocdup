@@ -8,9 +8,9 @@
 //    node test.js api      # Δt/compact/导出/help(需要 MAX_ENTRIES≥40)
 //    node test.js client   # client.js 注册结构冒烟 + 纯函数契约(stub React,不起浏览器)
 //
-//  用环境变量把插件参数压小,便于快速触发边界:
-//    DSH_OCDUP_PANEL_LOG / DSH_OCDUP_PANEL_MAX_ENTRIES / DSH_OCDUP_PANEL_FIRST_TAIL
-//  说明:插件在 require 时读取这些常量,所以必须在 require 之前设置 env。
+//  各模式需要的插件常量(如 MAX_ENTRIES/FIRST_TAIL)由 test.js 按 mode 自行设置,
+//  日志默认落临时目录——上面那行零配置可跑;手动设 env 可覆盖,压别的边界用。
+//  说明:插件在 require 时读取这些常量,所以 env 必须在 require 之前设置。
 // ============================================================
 
 const fs = require('fs')
@@ -18,11 +18,30 @@ const path = require('path')
 const os = require('os')
 
 const mode = process.argv[2] || 'core'
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-op-'))
-const logFile = process.env.DSH_OCDUP_PANEL_LOG
 
-if (!logFile && mode !== 'client') { console.error('DSH_OCDUP_PANEL_LOG must be set'); process.exit(1) }
-if (logFile) {
+// 各模式对插件常量的要求不同(插件 require 时读 env,所以必须现在就设)。
+// 已显式设置的值不动——想压别的边界时环境变量仍然优先。
+//   core:   MAX_ENTRIES=5   → T4 批量裁剪(写 12 条裁到 5)
+//   window: FIRST_TAIL=600  → T8 首次挂载只读 600B 尾部窗口(大日志不全量读入)
+//   api:    MAX_ENTRIES=40  → T4/T9 Δt 统计需要 ≥40 条环
+const MODE_ENV = {
+  core: { DSH_OCDUP_PANEL_MAX_ENTRIES: '5' },
+  window: { DSH_OCDUP_PANEL_FIRST_TAIL: '600' },
+  api: { DSH_OCDUP_PANEL_MAX_ENTRIES: '40' },
+}
+for (const [k, v] of Object.entries(MODE_ENV[mode] || {})) {
+  if (!process.env[k]) {
+    process.env[k] = v
+    console.log(`  (env ${k}=${v} for mode ${mode})`)
+  }
+}
+
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-op-'))
+// 未显式指定时兜底用临时目录日志——README 的一行命令就能直接跑,也绝不碰真实流量日志。
+const logFile = process.env.DSH_OCDUP_PANEL_LOG || path.join(tmp, 'traffic.jsonl')
+if (mode !== 'client') console.log(`  (log file: ${logFile})`)
+if (!process.env.DSH_OCDUP_PANEL_LOG) process.env.DSH_OCDUP_PANEL_LOG = logFile
+{
   fs.mkdirSync(path.dirname(logFile), { recursive: true })
   // 清掉上次运行残留:否则 apply 时会先读入旧内容、offset 停在旧文件末尾,
   // 随后 writeFileSync 的新内容只被"增量"读到一半(T1 丢行的根因)。

@@ -124,6 +124,17 @@ dotnet build Ocdup.sln
 会话。权限按需收紧（见[权限与安全](#-权限与安全)）；
 联调期把 `elf_path` 指到编译产物 .elf，即可按变量名读写（符号层 L1）。
 
+**板级 cfg（[cfgs/](cfgs/)）**：仓库自带两块手写板的专用 target cfg（`target_presets`
+用绝对路径指向它们），cfg 头部注释即排障记录：
+
+- `cfgs/target_at32f423_key.cfg` — 钥匙板（AT32F423TCU7）。固件在 VBUS 掉电时进
+  deepsleep（深睡禁调试、AHB-AP 全堵），裸 attach 必然 `can't assert SRST` /
+  `Error connecting DP`；cfg 用 `reset_config connect_assert_srst` 在复位态完成附加。
+- `cfgs/target_py32f002a_lock.cfg` — 锁芯板（PY32F002A，Cortex-M0+）。**烧录不走
+  ocdup**（当前后端 atopenocd 无 PY32 flash 驱动，量产走 Keil+DAPLink / J-Link）；
+  此 cfg 是最小通用 cortex_m 目标（不挂 flash 驱动），供 ocdup 做 halt / 读内存 /
+  dump_memory / 符号读写等调试观察。
+
 ## 📱 客户端注册
 
 > 路径说明：本文所有 `D:/path/to/...` 均为**占位符**，按本机实际位置替换
