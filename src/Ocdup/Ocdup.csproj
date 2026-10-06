@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <RootNamespace>Ocdup</RootNamespace>
     <AssemblyName>ocdup</AssemblyName>
-    <Version>0.3.13</Version>
+    <Version>0.4.1</Version>
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 

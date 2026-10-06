@@ -32,4 +32,15 @@ public sealed class ConfigStore
         Volatile.Write(ref _current, next);
         return next;
     }
+
+    /// <summary>
+    /// set_target 通道的运行时切换（只换 target_cfg）：与权限补丁分开的另一条路，
+    /// 校验/闸门在工具层。返回新配置实例。
+    /// </summary>
+    public OcdConfig ApplyTargetSwitch(string targetCfg)
+    {
+        var next = _current.WithTargetChange(targetCfg);
+        Volatile.Write(ref _current, next);
+        return next;
+    }
 }

@@ -198,7 +198,9 @@ public sealed class OpenOcdLauncher : IDisposable
         else
         {
             interfaceCfg = cfg.InterfaceCfg!;
-            probeNote = "";
+            // 钉死接口脚本时也留一句说明：启动成功/失败文案带上实际脚本名，DSH 面板
+            // 链路区的「探针」段据此显示（固定配置，未自动识别物理型号——那是 auto 专属）。
+            probeNote = $"interface: {cfg.InterfaceCfg}";
         }
 
         var psi = new ProcessStartInfo(binary)

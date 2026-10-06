@@ -11,6 +11,8 @@
   8. 无 openocd 可执行文件 / 后端进程起不来时，connect 给出可操作报错
   9. dump_memory 落盘闸：白名单内放行落盘，白名单外 / 超 dump_max_bytes 被拦截
   10. backend_log：非 ocdup 启动的后端如实说明「无捕获输出」
+   11. connect 后后 best-effort 自动识别芯片 + flash 布局；target 失配时回报失配行
+   12. set_target：list / 未知名 / 切换（假后端是外部实例 → 警告 + 配置已换）/ 重复切换空转 / read_only 拦截
 """
 import json
 import os
@@ -210,6 +212,11 @@ def write_config(work, **permissions):
         "port": PORT,
         "command_timeout_seconds": 30,
         "elf_path": "fw.elf",
+        "chip_id_map": {"0x000": "AT32F403A"},
+        "target_presets": {
+            "AT32F403A": "target/at32f403axx.cfg",
+            "AT32F435": "target/at32f435xx.cfg",
+        },
         "permissions": {
             "read_only": False,
             "allow_flash": True,
@@ -284,6 +291,16 @@ def main():
         print(mcp.call("identify_chip", {}))
         print(mcp.call("identify_chip", {"dbgmcu_address": "hello"}))
 
+        banner("set_target list / unknown name / switch (fake backend is external -> warning)")
+        print(mcp.call("set_target", {"name": "list"}))
+        print(mcp.call("set_target", {"name": "GD32F303"}))
+        print(mcp.call("set_target", {"name": "AT32F403A"}))
+        print(mcp.call("set_target", {"name": "at32f403a"}))
+        print(mcp.call("show_config"))
+
+        banner("identify_chip again after switch (mismatch gone: preset == running target)")
+        print(mcp.call("identify_chip", {}))
+
         banner("dump_memory 0x08000000 x4096 -> dumps/flash-head.bin")
         print(mcp.call("dump_memory", {"file": "dumps/flash-head.bin", "address": "0x08000000", "length": 4096}))
         dumped = os.path.join(work, "dumps", "flash-head.bin")
@@ -341,6 +358,7 @@ def main():
         print(mcp.call("flash_write", {"file": "build/fw.bin", "address": "0x08000000"}))
         print(mcp.call("write_memory", {"address": "0x20000000", "values": ["0x1"]}))
         print(mcp.call("halt", {}))
+        print(mcp.call("set_target", {"name": "AT32F403A"}))
 
         banner("backend commands observed")
         for c in backend.commands:

@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.IO;
 using System.Text;
+using System.Text.RegularExpressions;
 using ModelContextProtocol.Server;
 using Ocdup.Backend;
 using Ocdup.Config;
@@ -12,21 +13,58 @@ namespace Ocdup.Tools;
 public static class FlashTools
 {
     [McpServerTool(Name = "flash_info")]
-    [Description("List the flash banks the backend knows (driver, base address, size). Read-only. Requires a running backend - call connect first if this fails.")]
+    [Description("List the flash banks the backend knows (driver, base address, size). Read-only. Requires a running backend - call connect first if this fails. Probes every flash bank first, because auto-sized target cfgs (FLASH_SIZE=0, e.g. the generic at32f403axG.cfg) report size 0 until probed - and a second bank is NOT covered by probing bank 0 (measured on AT32F403AVGT7 dual-bank).")]
     public static async Task<string> FlashInfo(CancellationToken ct = default)
     {
         var cfg = ConfigStore.Instance.Current;
         try
         {
-            var banks = (await BackendSession.Instance.ExecuteAsync(cfg, "flash banks", startIfNeeded: true, ct, op: "flash_info")).Trim();
-            return banks.Length == 0
-                ? "ERROR: the backend reported no flash banks. Check target_cfg in ocd.json (see show_config)."
-                : $"flash banks:\n{banks}";
+            var banks = await BanksAfterProbeAsync(cfg, ct).ConfigureAwait(false);
+            if (banks.Length == 0)
+                return "ERROR: the backend reported no flash banks. Check target_cfg in ocd.json (see show_config).";
+            if (ZeroSizedBank.IsMatch(banks))
+                banks += "\nNOTE: a flash bank reports size 0 even after probing it - the target_cfg uses runtime size detection (FLASH_SIZE=0). " +
+                         "Check the probe/target connection (SWD wiring, power), then retry; a healthy auto-sized " +
+                         "target reports its real size here.";
+            return $"flash banks:\n{banks}";
         }
         catch (BackendException ex)
         {
             return ex.Message;
         }
+    }
+
+    /// <summary>
+    /// 列出 banks 前**逐个** probe（auto-size 配置 probe 过才有真实容量；双 bank 芯片的
+    /// bank 1 不会因为 probe 0 被带上——实测 at32f403axG：`flash probe 0` 只给 bank0 的
+    /// 真实容量，bank1 必须显式 `flash probe 1`，驱动自己会报
+    /// "main flash size: 0x100000 ... bank size: 0x80000"）。
+    /// best-effort：单个 bank probe 失败不中断；零 bank 返回 ""（调用方给「无 banks」文案）。
+    /// 公开供 BackendTools 的 connect 自动探测复用（同一套镜像 tool=flash_info）。
+    /// </summary>
+    public static async Task<string> BanksAfterProbeAsync(OcdConfig cfg, CancellationToken ct)
+    {
+        var listed = (await BackendSession.Instance.ExecuteAsync(cfg, "flash banks", startIfNeeded: true, ct, op: "flash_info")).Trim();
+        if (listed.Length == 0) return "";
+
+        var count = 0;
+        foreach (Match m in Regex.Matches(listed, @"#(\d+)\s*:"))
+            count = Math.Max(count, int.Parse(m.Groups[1].Value) + 1);
+        if (count == 0) count = 1; // 解析不出编号时至少探 bank 0
+
+        for (var i = 0; i < count; i++)
+        {
+            try
+            {
+                await BackendSession.Instance.ExecuteAsync(cfg, $"flash probe {i}", startIfNeeded: false, ct, op: "flash_info").ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is BackendException or OperationCanceledException)
+            {
+                // 某个 bank 探不到(没接/驱动不支持):不中断,让最终 banks 列表说话
+            }
+        }
+
+        return (await BackendSession.Instance.ExecuteAsync(cfg, "flash banks", startIfNeeded: false, ct, op: "flash_info")).Trim();
     }
 
     [McpServerTool(Name = "flash_write")]
@@ -231,4 +269,7 @@ public static class FlashTools
     private static bool LooksLikeFailure(string output) =>
         output.Contains("Error:", StringComparison.OrdinalIgnoreCase) ||
         output.Contains("failed", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>"size 0x0…,"（任意个 0）：容量未探测到的 bank 行（纯函数，便于单测）。</summary>
+    private static readonly Regex ZeroSizedBank = new(@"size\s+0x0+\s*,", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 }

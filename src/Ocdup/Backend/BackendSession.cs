@@ -127,6 +127,26 @@ public sealed class BackendSession
     /// <summary>丢弃当前连接（后端可能已被外部重启或半死）。</summary>
     public void Invalidate() => Interlocked.Exchange(ref _client, null)?.Dispose();
 
+    /// <summary>
+    /// 重启后端（set_target 的切换通道）：丢连接 → 杀 ocdup 自己拉起的 openocd（外部
+    /// 实例杀不动，stop 是 no-op）→ 等端口释放 → 用当前配置重新拉起并就绪。
+    /// 返回启动说明；启动失败抛 BackendException（文案由启动路径给全）。
+    /// </summary>
+    public async Task<string> RestartAsync(CancellationToken ct = default)
+    {
+        var cfg = ConfigStore.Instance.Current;
+        Invalidate();
+        _launcher.Stop();
+
+        // 端口linger：Kill+WaitForExit 后通常已释放，最多再等 2s（外部实例占着则等满也没用，
+        // 让 Acquire 走「复用已有监听」的分支，语义正确但不换 target —— set_target 会自己解释）。
+        for (var i = 0; i < 20 && await OpenOcdLauncher.ProbePortAsync(cfg.Host, cfg.Port, 100, ct).ConfigureAwait(false); i++)
+            await Task.Delay(100, ct).ConfigureAwait(false);
+
+        await AcquireAsync(cfg, startIfNeeded: true, ct).ConfigureAwait(false);
+        return LastBackendNote ?? "backend restarted";
+    }
+
     /// <summary>自己拉起的 openocd 的近期输出（backend_log 工具的数据源）。</summary>
     public string RecentBackendOutput(int maxLines) => _launcher.RecentOutput(maxLines);
 }

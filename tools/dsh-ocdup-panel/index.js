@@ -1,6 +1,37 @@
 'use strict'
 // ============================================================
-//  dsh-ocdup-panel — Host 半区(永久 cordis 插件)  v1.1.0
+//  dsh-ocdup-panel — Host 半区(永久 cordis 插件)  v1.3.2
+//
+//  v1.3.2:界面精修(按钮/文字/配色:控件不折行、engaged 墨色实底、方向通道
+//  chip 取代下拉、工具条单行横滚、链路读数条层级翻转)——纯 Client 侧,
+//  数据层无变化,Host 继续哑管道;仅版本号随插件整体 bump。
+//
+//  v1.3.1:Flash 段报 bank 合计 + 工具栏分组/图例/调用列头条(纯 Client 侧,
+//  数据层无变化,Host 继续哑管道);仅版本号随插件整体 bump。
+//
+//  v1.3.0:配套 ocdup v0.4.0(target 注册表 + set_target 工具):数据层仍无变化
+// ——失配行走的是同一条 rsp 文本镜像,Host 继续哑管道;仅版本号随插件整体 bump。
+//
+//  v1.2.5:芯片段「只信实测」+ 链路三段语义色(纯 Client 侧;数据层无变化,
+//  Host 继续哑管道;仅版本号随插件整体 bump)。
+//
+//  v1.2.4:「台架仪器」界面改版(工具栏两行化/链路规格读数条/列表列头条/
+//  控件统一 28px+6px 圆角/tabular 数字)全部在 Client 侧;数据层无变化,
+//  Host 继续哑管道;仅版本号随插件整体 bump。
+//
+//  v1.2.3:界面美化 + 链路三段显示修正全部在 Client 侧;数据层无变化
+//  (identify_chip 的新 'model (from target_cfg …)' 行走的是同一条 rsp
+//  文本镜像),Host 继续哑管道;仅版本号随插件整体 bump。
+//
+//  v1.2.2:配套 ocdup v0.3.16(connect 自动芯片识别):数据层无变化,
+//  connect 的 'chip identity:' 块由 IdentifyTools.TryIdentifyAsync 镜像,
+//  Host 继续哑管道;仅版本号随插件整体 bump。
+//
+//  v1.2.1:链路状态区同样在 Client 侧派生(deriveLinkInfo 扫原始条目),
+//  Host 继续做哑管道;仅版本号随插件整体 bump。
+//
+//  v1.2.0:数据语义不变(调用配对/烧录进度/会话分组全部在 Client 侧从
+//  现有条目派生,Host 保持哑管道);仅版本号随插件整体 bump。
 //
 //  v1.1.0:direction 新增 log(openocd 异步 stdout/stderr 镜像,ocdup 侧
 //  OpenOcdLauncher.PumpAsync 逐行 Record 进 JSONL);stats 相应加 log 计数。

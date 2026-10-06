@@ -81,6 +81,14 @@ public sealed class OcdConfig
     /// </summary>
     public Dictionary<string, string> ChipIdMap { get; private set; } = new();
 
+    /// <summary>
+    /// target 注册表（v0.4.0）：家族名 -> OpenOCD target 脚本（值就是 openocd -f 的参数：
+    /// scripts 目录下的脚本名或绝对路径都行）。identify 认出家族但与当前 target_cfg 不符时，
+    /// 失配行提示用 set_target 按这里的条目切换；set_target 也按这里校验名字。
+    /// 外置在 ocd.json（C4 同 chip_id_map）。缺省为空 = 没有可切换的预设。
+    /// </summary>
+    public Dictionary<string, string> TargetPresets { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>生效的 ocd.json 绝对路径（null = 没找到配置文件）。</summary>
     public string? ConfigFilePath { get; private set; }
 
@@ -99,7 +107,7 @@ public sealed class OcdConfig
         "read_only", "allow_memory_write", "allow_flash", "allow_flash_erase", "allow_raw_command", "allow_exec",
         "allow_set_permissions",
         "flash_allowed_paths", "flash_max_bytes", "memory_read_max_bytes",
-        "dump_allowed_paths", "dump_max_bytes", "chip_id_map",
+        "dump_allowed_paths", "dump_max_bytes", "chip_id_map", "target_presets",
     };
 
     /// <summary>按分层顺序加载：OCD_CONFIG 指定的文件，否则 CWD 下的 ocd.json。</summary>
@@ -218,6 +226,23 @@ public sealed class OcdConfig
         return clone;
     }
 
+    /// <summary>
+    /// set_target 专用运行时切换通道（与 set_permissions 的 JSON 补丁分开）：
+    /// 只换 target_cfg 一个值，来源标 "(runtime via set_target)"，返回新实例。
+    /// target_cfg 刻意不在 <see cref="RuntimePatchableKeys"/> 里——set_permissions 不能碰它；
+    /// 此通道只给 set_target 工具用（自带 read_only 闸），杜绝第二条后门。
+    /// </summary>
+    internal OcdConfig WithTargetChange(string targetCfg)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetCfg);
+        var clone = (OcdConfig)MemberwiseClone();
+        clone.Sources = new Dictionary<string, string>(Sources);
+        clone._errors = new List<string>(_errors);
+        clone.TargetCfg = targetCfg;
+        clone.Sources["target_cfg"] = "(runtime via set_target)";
+        return clone;
+    }
+
     private void ApplyFrom(JsonElement obj, string source)
     {
         TakeString(obj, "interface_cfg", source, v => InterfaceCfg = v);
@@ -245,6 +270,7 @@ public sealed class OcdConfig
         TakeLong(obj, "dump_max_bytes", source, v => DumpMaxBytes = v, min: 0);
 
         TakeStringDict(obj, "chip_id_map", source, v => ChipIdMap = v);
+        TakeStringDict(obj, "target_presets", source, v => TargetPresets = v);
     }
 
     private void TakeString(JsonElement obj, string key, string source, Action<string> set, Func<string, bool>? reject = null)
@@ -401,6 +427,7 @@ public sealed class OcdConfig
             $"  dump_allowed_paths    = {(DumpAllowedPaths.Count == 0 ? "(unrestricted)" : string.Join(", ", DumpAllowedPaths))}   [src: {Src("dump_allowed_paths")}]",
             $"  dump_max_bytes        = {(DumpMaxBytes == 0 ? "(unlimited)" : DumpMaxBytes.ToString())}   [src: {Src("dump_max_bytes")}]",
             $"  chip_id_map           = {(ChipIdMap.Count == 0 ? "(none - identify_chip reports raw ids only)" : $"{ChipIdMap.Count} entries")}   [src: {Src("chip_id_map")}]",
+            $"  target_presets        = {(TargetPresets.Count == 0 ? "(none - set_target has nothing to switch to)" : string.Join(", ", TargetPresets.Select(p => p.Key + " -> " + p.Value)))}   [src: {Src("target_presets")}]",
         };
 
         if (Sources.TryGetValue("ocd_json_error", out var error))

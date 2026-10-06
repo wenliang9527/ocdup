@@ -172,4 +172,44 @@ public sealed class OcdConfigTests : IDisposable
         Assert.True(cfg.AllowFlash);
         Assert.False(cfg.Sources.ContainsKey("ocd_json_error"));
     }
+
+    [Fact]
+    public void TargetPresets_Parsed_CaseInsensitive_DescribeListsThem()
+    {
+        var path = WriteConfig("""
+        {
+          "target_presets": { "AT32F403A": "target/at32f403axx.cfg", "stm32f103": "target/stm32f1x.cfg" }
+        }
+        """);
+
+        var cfg = OcdConfig.LoadFrom(path);
+
+        Assert.Equal(2, cfg.TargetPresets.Count);
+        Assert.True(cfg.TargetPresets.ContainsKey("at32f403a")); // 名字大小写不敏感
+        Assert.Equal("target/at32f403axx.cfg", cfg.TargetPresets["AT32F403A"]);
+        Assert.Contains("AT32F403A -> target/at32f403axx.cfg", cfg.Describe()); // show_config 展示注册表
+    }
+
+    [Fact]
+    public void TargetPresets_WrongShape_NotesError_KeepsDefaults()
+    {
+        var path = WriteConfig("""{ "target_presets": [1, 2] }""");
+
+        var cfg = OcdConfig.LoadFrom(path);
+
+        Assert.Empty(cfg.TargetPresets);
+        Assert.Contains("target_presets", cfg.Sources["ocd_json_error"]);
+    }
+
+    [Fact]
+    public void WithTargetChange_SwapsOnlyTarget_SourceRuntime_OriginalUntouched()
+    {
+        var cfg = OcdConfig.LoadFrom(WriteConfig("""{ "target_cfg": "target_py32f002a_lock.cfg" }"""));
+
+        var next = cfg.WithTargetChange("target/at32f403axx.cfg");
+
+        Assert.Equal("target/at32f403axx.cfg", next.TargetCfg);
+        Assert.Equal("(runtime via set_target)", next.Sources["target_cfg"]);
+        Assert.Equal("target_py32f002a_lock.cfg", cfg.TargetCfg); // 原实例不动
+    }
 }

@@ -6,7 +6,7 @@
 //    node test.js core     # 增量/半行/切片/批量裁剪/轮转/清空/方法守卫/方向归一化
 //    node test.js window   # 首次挂载只读尾部窗口(大日志不全量读入)
 //    node test.js api      # Δt/compact/导出/help(需要 MAX_ENTRIES≥40)
-//    node test.js client   # client.js 注册结构冒烟(stub React,不起浏览器)
+//    node test.js client   # client.js 注册结构冒烟 + 纯函数契约(stub React,不起浏览器)
 //
 //  用环境变量把插件参数压小,便于快速触发边界:
 //    DSH_OCDUP_PANEL_LOG / DSH_OCDUP_PANEL_MAX_ENTRIES / DSH_OCDUP_PANEL_FIRST_TAIL
@@ -313,6 +313,343 @@ const ok = (cond, label, extra) => {
     bs.update(20)
     ok(events.length === 3, 'T14 退订后不再通知')
 
+    // T15 烧录进度解析(openocd 0.11/0.12 与 atopenocd 实测文案)
+    const pfp = mod._test.parseFlashProgress
+    ok(pfp('Info : erased sector 3 3').type === 'erase' && pfp('Info : erased sector 3 3').count === 1
+      && pfp('Info : erased sector 3 3').last === 3, 'T15 erased sector N N 单扇区', pfp('Info : erased sector 3 3'))
+    ok(pfp('Info : erased sectors 0 3').count === 4 && pfp('Info : erased sectors 0 3').last === 3,
+      'T15 erased sectors first last 区间计数', pfp('Info : erased sectors 0 3'))
+    ok(pfp('erased 25 sectors').count === 25 && pfp('erased 25 sectors').last === -1,
+      'T15 "N sectors erased" 汇总形态', pfp('erased 25 sectors'))
+    ok(pfp('erased sectors 0..last on bank 0').type === 'erase',
+      'T15 flash_erase_sector 汇总行识别为擦除', pfp('erased sectors 0..last on bank 0'))
+    ok(pfp('wrote 139077 bytes from file D:/fw.hex in 1.234s').bytes === 139077,
+      'T15 wrote N bytes 提取字节数', pfp('wrote 139077 bytes from file D:/fw.hex in 1.234s'))
+    ok(pfp('verified 28288 bytes in 0.01s').bytes === 28288,
+      'T15 verified N bytes 提取字节数', pfp('verified 28288 bytes in 0.01s'))
+    ok(pfp('** Verified OK **').type === 'verify' && pfp('** Verified OK **').bytes === 0,
+      'T15 ** Verified OK ** 识别为校验确认', pfp('** Verified OK **'))
+    ok(pfp('nonsense line') === null && pfp('') === null && pfp(null) === null,
+      'T15 无关行返回 null(静默跳过)')
+
+    const fpg = mod._test.flashProgressOf
+    ok(fpg([]).phase === 'idle', 'T15 空日志 phase=idle', fpg([]))
+    const eraseLogs = ['Info : erased sector 0 3', 'Info : erased sector 4 7']
+    ok(fpg(eraseLogs).phase === 'erase' && fpg(eraseLogs).sectors === 8,
+      'T15 擦除段累计扇区数', fpg(eraseLogs))
+    ok(fpg(eraseLogs.concat(['wrote 139077 bytes from file x'])).phase === 'write'
+      && fpg(eraseLogs.concat(['wrote 139077 bytes from file x'])).bytes === 139077,
+      'T15 写完后 phase=write 且带字节数')
+    ok(fpg(['verified 28288 bytes in 0.01s']).phase === 'verify'
+      && fpg(['verified 28288 bytes in 0.01s']).verified === 28288,
+      'T15 verify_image 形态 phase=verify')
+    ok(fpg(['** Verified OK **']).ok === true && fpg(['** Verified OK **']).phase === 'done',
+      'T15 Verified OK 直接 phase=done', fpg(['** Verified OK **']))
+    // rsp 也算进聚合:有的 openocd 版本把 Verified OK 带回 capture 响应
+    const fpc = mod._test.flashProgressOfCall
+    const fakeCall = { logs: ['wrote 139077 bytes from file x'], rsp: '** Programming Finished **\n** Verified OK **' }
+    ok(fpc(fakeCall).ok === true && fpc(fakeCall).phase === 'done' && fpc(fakeCall).bytes === 139077,
+      'T15 调用级进度把 rsp 计入(logs+rsp 双通道)', fpc(fakeCall))
+    ok(mod._test.isFlashTool('flash_write') && mod._test.isFlashTool('flash_erase_sector')
+      && !mod._test.isFlashTool('read_memory') && !mod._test.isFlashTool(undefined),
+      'T15 isFlashTool 只认烧录两类')
+
+    // T16 调用配对(控制通道串行 → 同 tool 的 cmd 后必跟 rsp/err)
+    const pc = mod._test.pairCalls
+    const mk = (seq, dir, tool, text) => ({ seq, dir, tool, text, ts: '2026-10-06T14:00:0' + (seq % 10) + '.000+08:00', tag: '', len: 1, dtMs: null })
+    const paired = pc([
+      mk(1, 'cmd', 'flash_write', 'program {fw.hex}'),
+      mk(2, 'log', 'backend', 'Info : erased sector 0 3'),
+      mk(3, 'rsp', 'flash_write', '** Verified OK **'),
+    ])
+    ok(paired.length === 1 && paired[0].kind === 'call' && paired[0].state === 'ok'
+      && paired[0].logs.length === 1 && paired[0].cmd === 'program {fw.hex}' && paired[0].rsp.indexOf('Verified') >= 0,
+      'T16 cmd→log→rsp 配对成一次调用(log 归入调用)', paired)
+    const pairedErr = pc([mk(1, 'cmd', 'read_variable', 'mdw 0x20000010 1'), mk(2, 'err', 'read_variable', 'read timed out')])
+    ok(pairedErr.length === 1 && pairedErr[0].state === 'err' && pairedErr[0].rsp === 'read timed out',
+      'T16 err 应答配对为失败调用', pairedErr)
+    const pairedOpen = pc([mk(1, 'cmd', 'flash_write', 'a'), mk(2, 'cmd', 'read_memory', 'b'), mk(3, 'rsp', 'read_memory', 'c')])
+    ok(pairedOpen.length === 2 && pairedOpen[0].state === 'open' && pairedOpen[1].state === 'ok',
+      'T16 未应答调用按 open 先结算,不吞下一条', pairedOpen.map((c) => c.state))
+    const orphan = pc([mk(1, 'rsp', 'read_memory', 'orphan')])
+    ok(orphan.length === 1 && orphan[0].kind === undefined,
+      'T16 孤立 rsp 原样保留(不丢数据)', orphan)
+    ok(pc([]).length === 0 && pc([{ kind: 'gap', seq: 9, count: 3 }]).length === 1,
+      'T16 空流/gap 标记直通', pc([]))
+    const dt = mod._test.callDtMs
+    ok(dt({ ts: '2026-10-06T14:00:01.000+08:00', rspTs: '2026-10-06T14:00:04.250+08:00' }) === 3250,
+      'T16 调用耗时 = rsp - cmd', dt({ ts: '2026-10-06T14:00:01.000+08:00', rspTs: '2026-10-06T14:00:04.250+08:00' }))
+    ok(dt({ ts: 'x', rspTs: 'y' }) === null && dt({ ts: 'x' }) === null,
+      'T16 坏/缺时间戳耗时记 null')
+
+    // T17 会话分隔 / 折叠 / 工具清单 / 最近烧录调用
+    const sep = mk(1, 'sys', 'backend', 'started openocd (pid 1)')
+    ok(mod._test.isSessionSep(sep) && !mod._test.isSessionSep(mk(2, 'sys', 'connect', 'x'))
+      && !mod._test.isSessionSep(mk(3, 'cmd', 'backend', 'y')) && !mod._test.isSessionSep(null),
+      'T17 会话分隔只认 backend 的 sys 事件')
+    const flow = [sep, mk(2, 'cmd', 'flash_write', 'a'), mk(3, 'rsp', 'flash_write', 'b'),
+      mk(4, 'sys', 'backend', 'reused'), mk(5, 'rsp', 'read_memory', 'c')]
+    const runs2 = mod._test.sessionRuns(flow)
+    ok(runs2.get(1) === 2 && runs2.get(4) === 1, 'T17 会话 run 计数(到下一个分隔条前)', [runs2.get(1), runs2.get(4)])
+    const collapsed = mod._test.applyCollapse(flow, new Set([1]))
+    ok(collapsed.length === 3 && collapsed[0].seq === 1 && collapsed[1].seq === 4,
+      'T17 折叠会话:分隔条保留、其余条目隐藏', collapsed.map((e) => e.seq))
+    ok(mod._test.applyCollapse(flow, new Set()).length === 5, 'T17 空折叠集合原样返回')
+    const to = mod._test.toolOptions(flow.concat([{ kind: 'gap', seq: 99, count: 1 }, mk(6, 'cmd', '', 'no-tool')]))
+    ok(to.map((t) => t.name).join(',') === 'backend,flash_write,read_memory',
+      'T17 工具清单按频次降序,跳过 gap/无 tool', to.map((t) => t.name + ':' + t.n))
+    const callsFlow = mod._test.pairCalls(flow.concat([mk(6, 'cmd', 'flash_erase_sector', 'd'), mk(7, 'rsp', 'flash_erase_sector', 'e')]))
+    ok(mod._test.lastFlashCall(callsFlow).tool === 'flash_erase_sector'
+      && mod._test.lastFlashCall([{ kind: 'call', tool: 'read_memory' }]) === null
+      && mod._test.lastFlashCall([]) === null,
+      'T17 最近一次烧录类调用(非烧录流 → null)', mod._test.lastFlashCall(callsFlow).tool)
+
+    // T18 关键行标记(驱动行高亮)
+    const rm = mod._test.rowMark
+    ok(rm({ dir: 'rsp', text: '** Programming Finished **\n** Verified OK **' }) === 'ok',
+      'T18 rsp 带 Verified OK → ok 标记', rm({ dir: 'rsp', text: '** Verified OK **' }))
+    ok(rm({ dir: 'rsp', text: 'verified 28288 bytes in 0.01s' }) === 'ok',
+      'T18 rsp 带 verified N bytes → ok 标记')
+    ok(rm({ dir: 'err', text: 'control channel failed' }) === 'err',
+      'T18 err 方向 → err 标记')
+    ok(rm({ dir: 'log', text: 'Error: unable to find a matching CMSIS-DAP device' }) === 'err',
+      'T18 log 行 Error: 开头 → err 标记')
+    ok(rm({ dir: 'rsp', text: '0x08000000: 20019d28 080002ad' }) === null
+      && rm({ kind: 'gap' }) === null && rm(null) === null,
+      'T18 普通行/gap/空值无标记')
+
+    // T19 链路状态解析(v1.2.1/v1.2.2):探针 / 芯片 / Flash
+    const ppn = mod._test.parseProbeNote
+    // 真实形态:整条文案被括号包着——cfg token 后紧跟 ')' 也不能吞进去
+    const p1 = ppn('started openocd (pid 4711); command port 127.0.0.1:6666 is up (probe auto-detected: CMSIS-DAP -> interface/cmsis-dap.cfg (evidence: 0D28:0204))')
+    ok(p1 && p1.kind === 'CMSIS-DAP' && p1.cfg === 'interface/cmsis-dap.cfg' && p1.evidence === '0D28:0204' && p1.pinned === false,
+      'T19 探针识别文案三要素(kind/cfg/evidence,括号不吞)', p1)
+    const p2 = ppn('started openocd; command port 6666 is up (probe auto-detected: ST-Link -> interface/stlink.cfg)')
+    ok(p2 && p2.kind === 'ST-Link' && p2.cfg === 'interface/stlink.cfg' && p2.evidence === '',
+      'T19 无 evidence 且右括号紧贴 cfg 也解析', p2)
+    // 钉死 interface_cfg(v1.2.2):'…is up (interface: interface/cmsis-dap.cfg)'
+    const p3 = ppn('started openocd; command port 6666 is up (interface: interface/cmsis-dap.cfg)')
+    ok(p3 && p3.pinned === true && p3.kind === '固定配置' && p3.cfg === 'interface/cmsis-dap.cfg' && p3.evidence === '',
+      'T19 固定配置模式(知道脚本名,未识别物理型号)', p3)
+    ok(ppn('using the OpenOCD listener already present on 127.0.0.1:6666') === null
+      && ppn('') === null && ppn(null) === null,
+      'T19 复用后端/空文本返回 null(不显示探针)')
+    const bn = mod._test.baseName
+    ok(bn('interface/cmsis-dap.cfg') === 'cmsis-dap.cfg' && bn('D:\\ocd\\scripts\\interface\\stlink.cfg') === 'stlink.cfg'
+      && bn('plain') === 'plain' && bn('') === '',
+      'T19 baseName 两种分隔符 + 无分隔符', [bn('interface/cmsis-dap.cfg'), bn('a\\b.cfg')])
+
+    const chipRsp = [
+      'chip identity:',
+      '  cpu (CPUID, ARM standard) @ 0xE000ED00: 0x410fc241',
+      '    -> Cortex-M4 r0p1',
+      '  dev_id (vendor register) @ 0xE0042000: 0x10006413',
+      '    -> dev_id 0x413, rev_id 0x1000',
+      '    -> family: AT32F403A',
+      'next: flash_info cross-checks the probed flash size',
+    ].join('\n')
+    const ci = mod._test.parseChipIdentity(chipRsp)
+    ok(ci && ci.core === 'Cortex-M4 r0p1' && ci.devId === '0x413' && ci.revId === '0x1000' && ci.family === 'AT32F403A',
+      'T19 identify_chip 报告四字段(core/dev_id/rev_id/family)', ci)
+    const ci2 = mod._test.parseChipIdentity('chip identity:\n  cpu (CPUID, ARM standard) @ 0xE000ED00: 0x411fc241\n    -> Cortex-M4 r0p0\n    -> family: unknown - add it to "chip_id_map" in ocd.json (key = DEV_ID hex)')
+    ok(ci2 && ci2.core === 'Cortex-M4 r0p0' && /unknown/i.test(ci2.family),
+      'T19 未配 chip_id_map 时 family=unknown 仍解析', ci2)
+    ok(mod._test.parseChipIdentity('') === null && mod._test.parseChipIdentity('garbage') === null,
+      'T19 非芯片报告返回 null')
+
+    const fiRsp = '0 : at32f435zmt7.flash (at32f435xx) at 0x08000000, size 0x00100000, buswidth 2, chipwidth 4\n'
+      + '1 : at32f435zmt7.flash (at32f435xx) at 0x1fffc000, size 0x004000, buswidth 2, chipwidth 4'
+    const fi = mod._test.parseFlashInfo(fiRsp)
+    ok(fi && fi.banks.length === 2 && fi.first.bank === 0 && fi.first.base === '0x08000000' && fi.first.size === 0x100000,
+      'T19 flash_info 双 bank 解析(首 bank + 总数)', fi && fi.banks.map((b) => b.bank))
+    ok(fi && fi.total === 0x104000,
+      'T19 flash_info total = 各 bank 之和(v1.3.1 卡片报合计,不是首 bank)', fi && fi.total)
+    const fiDual = mod._test.parseFlashInfo('0 : at32f403axx.flash (at32f403axx) at 0x08000000, size 0x00080000, buswidth 0, chipwidth 0\n'
+      + '1 : at32f403axx.flash (at32f403axx) at 0x08080000, size 0x00080000, buswidth 0, chipwidth 0')
+    ok(fiDual && fiDual.total === 0x100000 && mod._test.fmtKb(fiDual.total) === '1024 KB',
+      'T19 双 bank 各 512K → total 1024K(at32f403axG 实况)', fiDual && mod._test.fmtKb(fiDual.total))
+    ok(mod._test.parseFlashInfo('no banks here') === null && mod._test.parseFlashInfo('') === null,
+      'T19 非 flash_info 文本返回 null')
+
+    const fs2 = mod._test.fmtSize
+    ok(fs2(0x100000) === '1 MB' && fs2(0x40000) === '256 KB' && fs2(512) === '512 B' && fs2(0) === '0 B'
+      && fs2(null) === '' && fs2(1536 * 1024) === '1.5 MB',
+      'T19 fmtSize 三档(整 MB 不带小数)', [fs2(0x100000), fs2(0x40000), fs2(512), fs2(1536 * 1024)])
+
+    const mkLink = (seq, dir, tool, text) => ({ seq, dir, tool, text, ts: '2026-10-06T15:00:00.000+08:00', tag: '', len: 1, dtMs: null })
+    const linkFlow = [
+      mkLink(1, 'sys', 'backend', 'probe auto-detected: AT-Link -> interface/atlink_dap_v2.cfg (evidence: 0x0B6E:0001)'),
+      mkLink(2, 'rsp', 'flash_info', '0 : at32f403a.flash (at32f403axx) at 0x08000000, size 0x00100000, buswidth 2, chipwidth 4'),
+      mkLink(3, 'rsp', 'identify_chip', 'chip identity:\n  cpu (CPUID, ARM standard) @ 0xE000ED00: 0x410fc241\n    -> Cortex-M4 r0p1\n    -> dev_id 0x410\n    -> family: AT32F403A'),
+      mkLink(4, 'rsp', 'identify_chip', 'chip identity:\n  cpu (CPUID, ARM standard) @ 0xE000ED00: 0x412fc24\n    -> Cortex-M4 r0p0\n    -> dev_id 0x456\n    -> family: AT32F403A'),
+      { kind: 'gap', seq: 9, count: 2 },
+    ]
+    const li = mod._test.deriveLinkInfo(linkFlow)
+    ok(li.probe && li.probe.kind === 'AT-Link' && li.flash && li.flash.first.size === 0x100000
+      && li.chip && li.chip.devId === '0x456' && li.chip.core === 'Cortex-M4 r0p0',
+      'T19 deriveLinkInfo 三项齐(芯片取最近一条)', { probe: li.probe && li.probe.kind, chip: li.chip && li.chip.devId, flash: li.flash && li.flash.first.size })
+    const liEmpty = mod._test.deriveLinkInfo([])
+    ok(liEmpty.probe === null && liEmpty.chip === null && liEmpty.flash === null,
+      'T19 空流三项皆 null')
+    ok(mod._test.deriveLinkInfo([mkLink(1, 'rsp', 'identify_chip', 'garbage')]).chip === null,
+      'T19 解析失败不写坏状态')
+
+    // v1.2.2:钉死 interface_cfg 的探针形态;connect 自动识别的芯片镜像(tool=connect 也认)
+    const liPinned = mod._test.deriveLinkInfo([
+      mkLink(1, 'sys', 'backend', 'started openocd (pid 1234); command port 127.0.0.1:6666 is up (interface: interface/cmsis-dap.cfg)'),
+      mkLink(2, 'rsp', 'connect', 'connected to OpenOCD on 127.0.0.1:6666\ntargets:\n0* py32f002a.cpu (cortex_m, little) running\nchip identity:\n  cpu (CPUID, ARM standard) @ 0xE000ED00: 0x410cc601\n    -> Cortex-M0+ r0p1\n  dev_id (vendor register) @ 0xE0042000: 0x1000abcd\n    -> dev_id 0xbc0, rev_id 0x1000\n    -> family: unknown - add it to "chip_id_map" in ocd.json (key = DEV_ID hex)'),
+    ])
+    ok(liPinned.probe && liPinned.probe.pinned === true && liPinned.probe.cfg === 'interface/cmsis-dap.cfg',
+      'T19 钉死模式:探针段显示接口脚本', liPinned.probe)
+    ok(liPinned.chip && liPinned.chip.core === 'Cortex-M0+ r0p1' && liPinned.chip.devId === '0xbc0' && liPinned.flash === null,
+      'T19 connect 自动识别的芯片镜像(tool=connect 的 rsp 也解析)', liPinned.chip)
+    ok(liPinned.chip.family.indexOf('unknown') === 0, 'T19 family=unknown 原样带出(ocd.json 未配 chip_id_map)')
+
+    // v1.2.3:探针硬件名 / 芯片型号 / Flash KB / 无效 dev 隐藏
+    const fpn = mod._test.friendlyProbeName
+    ok(fpn('interface/cmsis-dap.cfg') === 'CMSIS-DAP'
+      && fpn('cmsis_dap.cfg') === 'CMSIS-DAP'
+      && fpn('D:\\ocd\\scripts\\interface\\jlink.cfg') === 'J-Link'
+      && fpn('interface/stlink-v2-1.cfg') === 'ST-Link'
+      && fpn('interface/atlink_dap_v2.cfg') === 'AT-Link'
+      && fpn('interface/busblaster.cfg') === 'Busblaster'
+      && fpn('') === '' && fpn(null) === '',
+      'T20 接口脚本名 → 烧录器类型名(探针段不再是文件名)', [fpn('interface/cmsis-dap.cfg'), fpn('interface/jlink.cfg'), fpn('interface/stlink-v2-1.cfg'), fpn('interface/atlink_dap_v2.cfg')])
+    const pl = mod._test.probeLabel
+    ok(pl({ pinned: true, cfg: 'interface/cmsis-dap.cfg' }) === 'CMSIS-DAP'
+      && pl({ pinned: false, kind: 'CMSIS-DAP/DAPLink', cfg: 'interface/cmsis-dap.cfg' }) === 'CMSIS-DAP/DAPLink'
+      && pl({ pinned: true, cfg: 'interface/atlink_dap_v2.cfg' }) === 'AT-Link'
+      && pl({ pinned: true, cfg: '' }) === ''
+      && pl(null) === '',
+      'T20 probeLabel:钉死模式映射脚本名,auto 模式用认出的 kind')
+
+    const chipModelRsp = [
+      'chip identity:',
+      '  cpu (CPUID, ARM standard) @ 0xE000ED00: 0x410cc601',
+      '    -> Cortex-M0+ r0p1',
+      '  dev_id (vendor register) @ 0xE0042000: 0xe0042000',
+      '    -> dev_id 0x000, rev_id 0x0000',
+      '    -> family: unknown - add it to "chip_id_map" in ocd.json (key = DEV_ID hex)',
+      '  model (from target_cfg target_py32f002a_lock.cfg): PY32F002A',
+      'next: flash_info cross-checks the probed flash size',
+    ].join('\n')
+    const ci3 = mod._test.parseChipIdentity(chipModelRsp)
+    ok(ci3 && ci3.model === 'PY32F002A' && ci3.modelFrom === 'target_py32f002a_lock.cfg',
+      'T20 identify_chip 新行:model(from target_cfg)两字段', ci3 && [ci3.model, ci3.modelFrom])
+    const cl = mod._test.chipLabel
+    const labModel = cl(ci3)
+    ok(labModel && labModel.text === 'Cortex-M0+ r0p1' && labModel.identified === false,
+      'T20 芯片段:cfg 推定的 model 不上卡(配错就是误导),只报实测内核', labModel)
+    const clUnknown = cl({ core: 'Cortex-M0+ r0p1', family: 'unknown - add it to "chip_id_map" in ocd.json (key = DEV_ID hex)', devId: '0x000', revId: '0x0000' })
+    ok(clUnknown && clUnknown.identified === false && clUnknown.text === 'Cortex-M0+ r0p1',
+      'T20 芯片段:认不出时 identified=false(界面补「型号未识别」)', clUnknown)
+    ok(mod._test.isBogusDev('0x000') === true && mod._test.isBogusDev('0x410') === false
+      && mod._test.isBogusDev('') === true && mod._test.isBogusDev('0xfff') === false,
+      'T20 dev 0x000 判无效(寄存器不存在时读回了地址本身)')
+    const tipUnknown = mod._test.chipTip({ core: 'Cortex-M0+ r0p1', family: 'unknown - add it to "chip_id_map" in ocd.json (key = DEV_ID hex)', devId: '0x000', revId: '0x0000' })
+    ok(!/DEV_ID: /.test(mod._test.chipTip(ci3)) && /target_cfg/.test(mod._test.chipTip(ci3))
+      && /chip_id_map/.test(mod._test.chipTip(ci3))
+      && !/DEV_ID: /.test(tipUnknown) && /chip_id_map/.test(tipUnknown),
+      'T20 芯片 tooltip:无效 dev 不显示,model 标注「仅配置线索」+ 填 chip_id_map 指引', mod._test.chipTip(ci3))
+
+    // v1.2.4:内核名缩写(CPUID 解码串太长,卡片只留「Cortex-M4 r0p1」)
+    const cs = mod._test.coreShort
+    ok(cs("Cortex-M4 (ARMv7-M/v8-M, implementer 'A', r0p1)") === 'Cortex-M4 r0p1'
+      && cs('Cortex-M0+ r0p1') === 'Cortex-M0+ r0p1'
+      && cs("Cortex-M (partno 0xed)") === 'Cortex-M'
+      && cs('') === '' && cs(null) === '',
+      'T21 coreShort:括号里的架构细节进 tooltip,卡片留短名', [cs("Cortex-M4 (ARMv7-M/v8-M, implementer 'A', r0p1)"), cs("Cortex-M (partno 0xed)")])
+    const clLong = cl({ core: "Cortex-M4 (ARMv7-M/v8-M, implementer 'A', r0p1)", devId: '0x344', revId: '0x7005', family: 'unknown - add it to "chip_id_map" in ocd.json (key = DEV_ID hex)', model: 'AT32F403A', modelFrom: 'target_at32f403a.cfg' })
+    ok(clLong && clLong.text === 'Cortex-M4 r0p1 · dev 0x344' && clLong.identified === false,
+      'T21 芯片段:实测内核 + 有效 dev_id;cfg 型号不出现在卡片', clLong)
+    const clFam = cl({ core: 'Cortex-M4 (ARMv7-M/v8-M, implementer ' + "'A'" + ', r0p1)', devId: '0x344', revId: '0x7005', family: 'STM32F334', model: 'AT32F403A' })
+    ok(clFam && clFam.text === 'STM32F334 · Cortex-M4 r0p1' && clFam.identified === true,
+      'T21 芯片段:chip_id_map 命中时 family 才是卡片主值', clFam)
+
+    const fk = mod._test.fmtKb
+    ok(fk(0x100000) === '1024 KB' && fk(0x40000) === '256 KB' && fk(0) === '待探测' && fk(null) === '' && fk(1536) === '2 KB',
+      'T20 fmtKb:Flash 段只写容量(size 0 = 未探测,不显示误导的 0 KB)', [fk(0x100000), fk(0x40000), fk(0)])
+
+    // v1.2.3 端到端:截图同款流量(钉死探针 + dev 无效 + model 推定 + flash_info)
+    const li123 = mod._test.deriveLinkInfo([
+      mkLink(1, 'sys', 'backend', 'started openocd (pid 275); command port 127.0.0.1:6666 is up (interface: interface/cmsis-dap.cfg)'),
+      mkLink(2, 'rsp', 'flash_info', '0 : py32f002a.flash (py32f002axx) at 0x08000000, size 0x00100000, buswidth 2, chipwidth 4'),
+      mkLink(3, 'rsp', 'connect', 'connected to OpenOCD on 127.0.0.1:6666\nchip identity:\n  cpu (CPUID, ARM standard) @ 0xE000ED00: 0xe0042000\n    -> Cortex-M (partno 0xed)\n  dev_id (vendor register) @ 0xE0042000: 0xe0042000\n    -> dev_id 0x000, rev_id 0x0000\n    -> family: unknown - add it to "chip_id_map" in ocd.json (key = DEV_ID hex)\n  model (from target_cfg target_py32f002a_lock.cfg): PY32F002A'),
+    ])
+    ok(mod._test.probeLabel(li123.probe) === 'CMSIS-DAP'
+      && li123.chip && li123.chip.model === 'PY32F002A'
+      && mod._test.fmtKb(li123.flash.first.size) === '1024 KB',
+      'T20 deriveLinkInfo 端到端:探针类型名 + 型号推定 + Flash KB',
+      { probe: mod._test.probeLabel(li123.probe), chip: li123.chip && li123.chip.model, flash: mod._test.fmtKb(li123.flash.first.size) })
+
+    // v1.3.0:target 失配行解析(ocdup v0.4.0 的 identify/connect rsp 末行)
+    const mm = mod._test.parseTargetMismatch
+    const mmText = 'chip identity:\n'
+      + '  cpu (CPUID, ARM standard) @ 0xE000ED00: 0x410fc241\n'
+      + '    -> Cortex-M4 (ARMv7-M/v8-M, implementer ' + "'A'" + ', r0p1)\n'
+      + '  dev_id (vendor register) @ 0xE0042000: 0x70050344\n'
+      + '    -> dev_id 0x344, rev_id 0x7005\n'
+      + '    -> family: AT32F403A\n'
+      + '  target mismatch: identified AT32F403A, current target_cfg: D:/work/Ocdup/target_py32f002a_lock.cfg -> use set_target AT32F403A\n'
+      + 'next: flash_info cross-checks the probed flash size'
+    const m1 = mm(mmText)
+    ok(m1 && m1.family === 'AT32F403A' && m1.action === 'AT32F403A'
+      && m1.current === 'D:/work/Ocdup/target_py32f002a_lock.cfg',
+      'T22 失配行三要素(家族/当前 target/建议动作)', m1)
+    ok(mm('chip identity:\n    -> family: unknown - add it to "chip_id_map" in ocd.json') === null
+      && mm('') === null && mm(null) === null,
+      'T22 无失配行 → null(不显示胶囊)')
+    const liMm = mod._test.deriveLinkInfo([
+      mkLink(1, 'sys', 'backend', 'started openocd; command port 6666 is up (interface: interface/cmsis-dap.cfg)'),
+      mkLink(2, 'rsp', 'connect', 'connected to OpenOCD on 127.0.0.1:6666\nchip identity:\n    -> family: AT32F403A\n  target mismatch: identified AT32F403A, current target_cfg: target_py32f002a_lock.cfg -> use set_target AT32F403A'),
+    ])
+    ok(liMm.mismatch && liMm.mismatch.action === 'AT32F403A' && liMm.chip && liMm.chip.family === 'AT32F403A',
+      'T22 deriveLinkInfo 同时解析失配与芯片(tool=connect 的 rsp 也认)', liMm.mismatch)
+    // 最近一次优先:新流量里没有失配行 → 不显示(即使历史上有)
+    ok(mod._test.deriveLinkInfo([mkLink(1, 'rsp', 'connect', mmText), mkLink(2, 'rsp', 'identify_chip', 'chip identity:\n    -> family: AT32F403A')]).mismatch === null,
+      'T22 失配胶囊按最近一次判定(新 identify 无失配则不显示)')
+
+    // T23 v1.3.2 界面层:方向图例(=方向过滤器)/ 计数文案 / 芯片读数分层
+    const dl = mod._test.dirLegend
+    const legend = dl({ cmd: 69, rsp: 78, sys: 14, log: 159, err: 0 })
+    ok(legend.length === 4 && legend.map((d) => d.key).join(',') === 'cmd,rsp,sys,log'
+      && legend[0].label === 'cmd' && legend[0].color === '#d97706' && legend[0].n === 69
+      && legend[2].label === 'sys',
+      'T23 方向图例:有量的方向按固定顺序成 chip(err=0 不出,sys 不再大写)', legend.map((d) => d.label + d.n))
+    ok(dl(null).length === 0 && dl({ cmd: 0, rsp: 0, sys: 0, log: 0, err: 0 }, 'ALL').length === 0,
+      'T23 无流量/ALL 不产生 chip')
+    const legendActive = dl({ cmd: 0, rsp: 0, sys: 0, log: 0, err: 0 }, 'sys')
+    ok(legendActive.length === 1 && legendActive[0].key === 'sys' && legendActive[0].n === 0,
+      'T23 当前生效的方向即使归零也留着(否则取消不掉该过滤)', legendActive)
+
+    const cl2 = mod._test.counterLabel
+    ok(cl2(300, 320, 320) === '320 条 · 渲染 300', 'T23 计数:未过滤但渲染截断', cl2(300, 320, 320))
+    ok(cl2(120, 120, 320) === '120 / 320 条' && cl2(5000, 5000, 5000) === '5000 条',
+      'T23 计数:过滤后无截断 / 全量单调', [cl2(120, 120, 320), cl2(5000, 5000, 5000)])
+
+    const clHead = mod._test.chipLabel({ core: "Cortex-M4 (ARMv7-M/v8-M, implementer 'A', r0p1)", devId: '0x344', family: 'AT32F403A' })
+    ok(clHead.head === 'AT32F403A' && clHead.tail === 'Cortex-M4 r0p1' && clHead.identified === true
+      && clHead.text === 'AT32F403A · Cortex-M4 r0p1',
+      'T23 芯片读数分层:head=型号(主读数)/tail=内核(窄面板整段隐藏)', clHead)
+    const clHead2 = mod._test.chipLabel({ core: 'Cortex-M4 r0p1', devId: '0x344', family: 'unknown - add it to "chip_id_map"' })
+    ok(clHead2.head === 'Cortex-M4 r0p1' && clHead2.tail === 'dev 0x344' && clHead2.identified === false,
+      'T23 型号未识别:head=内核 / tail=dev id(界面改用警示色图标)', clHead2)
+
+    // T24 面板整体渲染冒烟(stub React 下真跑一遍组件体):改工具栏/链路读数条
+    // 时最容易出的是渲染期异常——这里至少保证空数据 + 有条目两条路径都不炸,
+    // 且改版后的控件语言还在(chip 过滤 / 内嵌正则 / 无旧分隔线)
+    const flatten = (el, out) => {
+      out = out || []
+      if (el === null || el === undefined || el === false) return out
+      if (Array.isArray(el)) { for (const x of el) flatten(x, out); return out }
+      if (typeof el !== 'object') { out.push(el); return out }
+      // 函数组件就地展开(stub React 不调度,这里手动走一层)
+      if (typeof el.type === 'function') return flatten(el.type(Object.assign({}, el.props, { children: el.children })), out)
+      out.push(el)
+      flatten(el.children, out)
+      return out
+    }
+
     // 兜底分支:无 rightbar 服务 → main 槽
     const calls = []
     const registered = {}
@@ -325,7 +662,25 @@ const ok = (cond, label, extra) => {
     ok(calls.some((c) => c[0] === 'register' && c[1] === 'main'), 'T12 兜底分支注册 main 槽')
     ok(!calls.some((c) => c[1] === 'sidebar.right.pane.tab'), 'T12 兜底分支不注册右栏 tab 体')
     ok(/op-row/.test(injectedStyles.text) && /640px/.test(injectedStyles.text)
-      && /@container op-panel/.test(injectedStyles.text), 'T12 一次性样式表注入(含容器查询列降级)', injectedStyles.text)
+      && /@container op-panel/.test(injectedStyles.text)
+      && /op-dir-rsp/.test(injectedStyles.text) && /op-mark-ok/.test(injectedStyles.text)
+      && /op-flow/.test(injectedStyles.text) && /op-session/.test(injectedStyles.text),
+      'T12 一次性样式表注入(容器查询列降级 + rsp 底纹/关键行/进度流光/会话条)', injectedStyles.text)
+    ok(/\.op-colhead\b/.test(injectedStyles.text) && /position: sticky/.test(injectedStyles.text),
+      'T12 列头条样式(sticky 通道表)', injectedStyles.text)
+    // v1.3.2 新皮相:过滤 chip(墨色 engaged)/单行工具条(横滚 + 渐隐)/搜索框内嵌
+    // 正则开关/窄面板隐藏的补充读数——旧的 .op-gsep 分隔线已随布局改版删除
+    ok(/\.op-chip\b/.test(injectedStyles.text) && /\.op-strip\b/.test(injectedStyles.text)
+      && /\.op-affix\b/.test(injectedStyles.text) && /scrollbar-width: none/.test(injectedStyles.text),
+      'T12 chip/单行工具条/正则开关样式', injectedStyles.text)
+    ok(/\.op-chip-core\b/.test(injectedStyles.text) && /620px/.test(injectedStyles.text),
+      'T12 窄面板隐藏链路补充读数(.op-chip-core)', injectedStyles.text)
+    ok(/white-space: nowrap/.test(injectedStyles.text) && /var\(--dsw-alias-label-primary, #222\)/.test(injectedStyles.text),
+      'T12 控件不折行 + engaged 墨色实底(不再用蓝底)', injectedStyles.text)
+    ok(!/\.op-gsep\b/.test(injectedStyles.text) && !/\.op-stats-text\b/.test(injectedStyles.text),
+      'T12 旧版分隔线/胶囊内计数样式已移除', injectedStyles.text)
+    ok(/\.op-switch\b/.test(injectedStyles.text),
+      'T12 失配切换胶囊样式(警示色)', injectedStyles.text)
 
     // 右栏分支:tab 类型 + pane.tab 体 + 图标转发 openTab
     calls.length = 0
@@ -349,6 +704,27 @@ const ok = (cond, label, extra) => {
     ok(calls.some((c) => c[0] === 'register' && c[1] === 'sidebar.right.pane.tab' && c[2] === 'dsh-ocdup-panel'),
       'T12 pane.tab 体以插件 id 为 key 注册')
     ok(!calls.some((c) => c[0] === 'register' && c[1] === 'main'), 'T12 右栏分支不再注册整屏 main')
+
+    // T24 面板整体渲染冒烟(stub React 下真跑一遍组件体):改工具栏/链路读数条时
+    // 最容易出的是渲染期异常——这里至少保证空数据路径不炸,且改版后的控件语言还在
+    const pane = registered['sidebar.right.pane.tab|dsh-ocdup-panel']
+    ok(typeof pane === 'function', 'T24 右栏 pane 体可取到')
+    let tree = null
+    let threw = ''
+    try { tree = pane({}) } catch (e) { threw = e.message }
+    const nodes = flatten(tree)
+    const texts = nodes.filter((n) => typeof n === 'string')
+    const classes = nodes.map((n) => (n && n.props && n.props.className) || '').join(' ')
+    ok(!threw, 'T24 空数据渲染不抛异常', threw)
+    ok(texts.indexOf('流水') >= 0 && texts.indexOf('调用') >= 0 && texts.indexOf('暂停') >= 0 && texts.indexOf('跟随') >= 0,
+      'T24 工具栏控件在位(流水/调用/暂停/跟随)', texts.slice(0, 12))
+    const input = nodes.find((n) => n && n.type === 'input' && n.props && n.props.className === 'op-search')
+    ok(input && input.props.placeholder === '过滤 命令 / 响应',
+      'T24 搜索框占位文案(工具过滤交给 chip 条)', input && input.props.placeholder)
+    ok(classes.indexOf('op-affix') >= 0 && classes.indexOf('op-btn') >= 0,
+      'T24 内嵌正则开关 + 动作按钮在树里')
+    ok(texts.indexOf('全部目标') < 0 && texts.indexOf('链路') < 0,
+      'T24 空数据:目标下拉/链路读数条都不占位')
 
     // 图标点击 → openTab(kind)
     ok(Array.isArray(calls.find((c) => c[0] === 'inject' && c[1] === 'sidebar.panellist')), 'T12 侧边栏图标已注册')

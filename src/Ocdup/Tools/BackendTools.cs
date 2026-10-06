@@ -48,7 +48,7 @@ public static class BackendTools
             : Parsing.TrySummarizeTargets(rawTargets) ?? rawTargets;
 
     [McpServerTool(Name = "connect")]
-    [Description("Connect to the OpenOCD backend on the configured command port, starting openocd from ocd.json (interface_cfg/target_cfg) when nothing is listening yet. Returns the OpenOCD version and the target state. Call this before flash_write/read_memory in a fresh session.")]
+    [Description("Connect to the OpenOCD backend on the configured command port, starting openocd from ocd.json (interface_cfg/target_cfg) when nothing is listening yet. Returns the OpenOCD version, the target state, a best-effort chip identity (CPUID + DEV_ID reads with a short timeout, so a silent target never blocks connecting), the flash layout (best-effort, skipped when the identify reports a target mismatch), and a 'target mismatch' hint when the identified chip family is in \"target_presets\" but the running target_cfg is a different chip (fix it with set_target). Call this before flash_write/read_memory in a fresh session.")]
     public static async Task<string> Connect(CancellationToken ct = default)
     {
         var cfg = ConfigStore.Instance.Current;
@@ -65,11 +65,74 @@ public static class BackendTools
                 sb.AppendLine($"backend: {note}");
             sb.AppendLine("targets:");
             sb.Append(FormatTargets(targets));
+            sb.AppendLine();
+            var identify = await AutoIdentifyAsync(cfg, ct).ConfigureAwait(false);
+            sb.Append(identify);
+            sb.AppendLine();
+            // v0.4.0:连接后顺带探一次 flash 布局(target 配错时跳过并说明)——
+            // 面板的 Flash 段不用再等 AI 显式调 flash_info。镜像 tool=flash_info,同格式。
+            sb.Append(await AutoFlashInfoAsync(cfg, ct,
+                identify.Contains("target mismatch", StringComparison.OrdinalIgnoreCase)).ConfigureAwait(false));
             return sb.ToString();
         }
         catch (BackendException ex)
         {
             return ex.Message;
+        }
+    }
+
+    /// <summary>
+    /// connect 成功后的 best-effort 芯片识别（插上就知道对面是谁）。
+    /// 短超时（3s）+ 全吞异常：目标不应答时只补一行说明，绝不拖垮 connect、
+    /// 不把连接判失败——通道层超时会顺带 invalidate 连接，后续工具调用会自动重 Acquire。
+    /// </summary>
+    private static async Task<string> AutoIdentifyAsync(OcdConfig cfg, CancellationToken ct)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(3));
+        try
+        {
+            return await IdentifyTools.TryIdentifyAsync(cfg, "0xE0042000", timeout.Token).ConfigureAwait(false)
+                ?? "chip identity: unavailable (the target did not answer - check power/SWD wiring; " +
+                   "retry mcp__ocdup__identify_chip once the board answers)";
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or BackendException)
+        {
+            return "chip identity: unavailable (the read timed out or the control channel dropped - " +
+                   "the connection itself is fine; retry mcp__ocdup__identify_chip later)";
+        }
+    }
+
+    /// <summary>
+    /// connect 成功后的 best-effort flash 布局探测（v0.4.0/v0.4.1）：复用 FlashTools 的
+    /// 「逐个 bank probe 后列 banks」——容量自动探测的 target(at32f403axG:FLASH_SIZE=0)
+    /// 必须 probe 过才有真实容量，且双 bank 的 bank1 要显式探(实测 probe 0 不带 bank1)。
+    /// target 失配时跳过(此时 banks 是空的，提示先切换)。全程 best-effort：任何失败
+    /// 只补一行说明，绝不拖垮 connect。
+    /// </summary>
+    private static async Task<string> AutoFlashInfoAsync(OcdConfig cfg, CancellationToken ct, bool targetMismatch)
+    {
+        if (targetMismatch)
+            return "flash layout: skipped - the identify above reports a target mismatch (the running target_cfg does not " +
+                   "match the chip on the board). Switch first - e.g. set_target AT32F403A per the mismatch line - " +
+                   "then flash_info will report real banks.";
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(3));
+        try
+        {
+            var banks = (await FlashTools.BanksAfterProbeAsync(cfg, timeout.Token).ConfigureAwait(false)).Trim();
+            if (banks.Length == 0)
+                return "flash layout: the backend reported no flash banks with the current target_cfg. " +
+                       "SWD reads (identify / read_memory) still work; flashing needs a target cfg with a flash driver - " +
+                       "see \"target_presets\" in ocd.json and set_target (show_config lists what is configured).";
+            return "flash layout:\n" + banks;
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or BackendException)
+        {
+            var first = ex.Message.Split('\n')[0];
+            return $"flash layout: unavailable ({first}) - the connection itself is fine; " +
+                   "retry mcp__ocdup__flash_info later.";
         }
     }
 

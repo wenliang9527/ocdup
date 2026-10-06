@@ -30,17 +30,18 @@
 | 「擦掉 0x080C0000 那个扇区」 | `flash_erase_sector` | 破坏性操作，默认关闭，显式开启才可用 |
 | 「跑这条 TCL：`targets`」 | `run_command` | 原始命令逃生舱，兜底专用工具没覆盖的操作 |
 
-## 🧰 工具一览（18 个）
+## 🧰 工具一览（19 个）
 
 ### 会话与诊断
 
 | 工具 | 作用 | 权限 |
 |---|---|---|
-| `connect` | 连接控制通道；无监听时按 ocd.json 自动拉起 OpenOCD（`interface_cfg: "auto"` 时先识别探针） | — |
+| `connect` | 连接控制通道；无监听时按 ocd.json 自动拉起 OpenOCD（`interface_cfg: "auto"` 时先识别探针）；成功后 best-effort 自动识别芯片（CPUID + DEV_ID,3s 短超时，目标不应答不拖垮连接）+ flash 布局（`flash probe`+`flash banks`，target 失配时跳过）；identify 与 `target_presets` 不符时回报 `target mismatch` 行 | — |
 | `status` | 后端是否运行、版本、target 列表（只读，不启动任何东西） | — |
 | `show_config` | 有效设置与每项来源（`reload=true` 重读 ocd.json） | — |
 | `backend_log` | ocdup 自己拉起的 openocd 近期 stdout/stderr（异步 `Info:` / `Error:` 日志从这里出） | 只读 |
-| `identify_chip` | **连上后确认芯片**：读 CPUID（0xE000ED00，ARM 内核标准）+ 厂商 ID 寄存器（默认 0xE0042000），DEV_ID 按 ocd.json 的 `chip_id_map` 给出家族 | 只读 |
+| `identify_chip` | **连上后确认芯片**：读 CPUID（0xE000ED00，ARM 内核标准）+ 厂商 ID 寄存器（默认 0xE0042000），DEV_ID 按 ocd.json 的 `chip_id_map` 给出家族；家族与当前 `target_cfg` 不符时附失配行 | 只读 |
+| `set_target` | **换芯片不重启会话**：按 ocd.json 的 `target_presets` 注册表切 target_cfg 并重启后端（target 是启动参数，必须重启；只重启 ocdup 自拉的实例；起不来自动回滚） | `read_only` |
 | `set_permissions` | **运行时改权限**（免改 ocd.json；闸 = ocd.json 的 `allow_set_permissions`，默认关；reload/重启丢弃） | 自身的授权闸 |
 
 ### 烧录
@@ -116,8 +117,11 @@ dotnet build Ocdup.sln
 
 ### 3. 配置
 
-复制 `ocd.json.example` 为 `ocd.json` 放在项目根（或用 `OCD_CONFIG` 指向它），
-换板子改 `target_cfg` 一行；权限按需收紧（见[权限与安全](#-权限与安全)）；
+复制 `ocd.json.example` 为 `ocd.json` 放在项目根（或用 `OCD_CONFIG` 指向它）。
+多芯片场景（v0.4.0）：`target_presets` 注册表（家族名 → openocd target cfg）+
+`chip_id_map`（DEV_ID → 家族名）——identify 认出板子与当前 `target_cfg` 不符时
+回报失配行，`set_target <家族名>` 一键切换并重启后端，换板子不用改文件、不用重启
+会话。权限按需收紧（见[权限与安全](#-权限与安全)）；
 联调期把 `elf_path` 指到编译产物 .elf，即可按变量名读写（符号层 L1）。
 
 ## 📱 客户端注册
@@ -251,7 +255,7 @@ reload/重启丢弃）；否则 `show_config` 核对生效权限，改 ocd.json 
 
 | 权限项 | 默认 | 闸住的操作 |
 |---|---|---|
-| `read_only` | false | 总闸：以下全部 |
+| `read_only` | false | 总闸：以下全部（含 `set_target` 的后端重启） |
 | `allow_flash` | true | `flash_write` |
 | `allow_memory_write` | true | `write_memory` |
 | `allow_flash_erase` | **false** | `flash_erase_sector`（破坏性，显式开启） |
@@ -270,7 +274,7 @@ reload/重启丢弃）；否则 `show_config` 核对生效权限，改 ocd.json 
 ## 🧪 开发与测试
 
 ```bash
-dotnet test Ocdup.sln                     # 114 个单测，不需要硬件
+dotnet test Ocdup.sln                     # 140 个单测，不需要硬件
 python tools/e2e_fake_backend.py          # 端到端：假 TCL-RPC 后端 + 真实 MCP 会话
 ```
 
@@ -283,8 +287,22 @@ python tools/e2e_fake_backend.py          # 端到端：假 TCL-RPC 后端 + 真
   不接 UI 就能排障（直接 grep）。
 - **DSH 侧边栏面板**：[tools/dsh-ocdup-panel/](tools/dsh-ocdup-panel/)
   （`deploy.cmd web` 部署 + 重启 DSH），右侧停靠栏实时显示命令/响应/日志/后端
-  事件，五向过滤、目标过滤、正则搜索、导出 JSONL。零依赖行为测试
-  `node test.js core|window|api|client`（71 项断言）；改代码只改真源目录再 `deploy.cmd`。
+  事件，五向过滤、目标过滤、正则搜索、导出 JSONL。**v1.2.0**：调用配对视图
+  （cmd↔rsp 成行、log 归入调用）、烧录进度条（擦除/写入/校验分段）、会话分组、
+  工具 chips 快捷过滤、关键行高亮、键盘导航 ↑/↓/Enter；**v1.2.1**：链路状态区
+  （探针/芯片/Flash 布局常驻工具栏，点击定位来源）；**v1.2.2**：connect 自动识芯后
+  芯片段自动填充，缺段给「复制提问」占位；**v1.2.3**：工具栏/链路行整体美化（统一
+  28px 控件、状态胶囊、小卡片），链路三段说人话——探针显示烧录器类型（CMSIS-DAP /
+  J-Link / ST-Link 而非 .cfg 文件名）、芯片只信实测（`chip_id_map` 命中才显示型号，
+  否则内核 + dev + 「型号未识别」，cfg 文件名推定不上卡）、Flash 只写容量（1024 KB）；
+  **v1.2.4**：「台架仪器」界面改版（工具栏两行化、链路「规格读数条」、列表 sticky
+  列头条、控件统一 28px/6px 圆角 + tabular 数字）；**v1.2.5**：链路三段语义色
+  （探针蓝 / 芯片绿 / Flash 琥珀，与流水方向色同一套语言）；**v1.3.0**：配套 v0.4.0
+  的 target 注册表——链路行出现「⚡ 切换 <家族名>」胶囊（identify 发现板子与
+  target_cfg 不符时，点击复制 `mcp__ocdup__set_target` 调用）；**v1.3.1**：Flash 段报 bank 合计（双 bank 一片多大一眼可见）、工具栏下排分组、stats 方向色图例、调用视图列头条、链路卡左色条；
+  **v1.3.2**：界面精修（按钮/文字/配色）——控件不折行、engaged 态统一墨色实底（不再撞宿主品牌色）、
+  方向过滤改「通道 chip」、工具条单行横滚、链路读数条值/段名层级翻转、搜索框内嵌正则开关。零依赖行为测试
+  `node test.js core|window|api|client`（158 项断言）；改代码只改真源目录再 `deploy.cmd`。
 - **发布**：根目录 `publish.cmd`（单测 Release → publish → 提示重启 DSH；检测到
   ocdup.exe 在跑会拒绝执行）。CI：`.github/workflows/ci.yml`（build + 单测 + e2e）。
 - 若客户端正在运行 ocdup 锁住了 `bin/Debug` 的 exe，测试改用 Release 通道：
@@ -294,7 +312,7 @@ python tools/e2e_fake_backend.py          # 端到端：假 TCL-RPC 后端 + 真
 
 | 里程碑 | 状态 |
 |---|---|
-| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 114 个单测 + 假后端 e2e 覆盖 |
+| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 140 个单测 + 假后端 e2e 覆盖 |
 | S4 真机联调 | ✅ AT32F403AVGT7 + CMSIS-DAP v2（DAPLink `0D28:0204`）+ atopenocd：`connect` → `flash_info` → `flash_write`（擦 25 扇区、写 + Verified OK、reset run）→ `read_memory` 运行态读回向量表 |
 | S5 打包与客户端注册 | 🟡 已注册进 DSH（desktop + web 两个 profile）与 ZCode（`mcp.servers` 条目 + `ocdup-zcode` 插件，均指 `publish/ocdup.exe`） |
 
