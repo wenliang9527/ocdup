@@ -141,10 +141,13 @@ dotnet build Ocdup.sln
 - `cfgs/target_at32f423_key.cfg` — 钥匙板（AT32F423TCU7）。固件在 VBUS 掉电时进
   deepsleep（深睡禁调试、AHB-AP 全堵），裸 attach 必然 `can't assert SRST` /
   `Error connecting DP`；cfg 用 `reset_config connect_assert_srst` 在复位态完成附加。
-- `cfgs/target_py32f002a_lock.cfg` — 锁芯板（PY32F002A，Cortex-M0+）。**烧录不走
-  ocdup**（当前后端 atopenocd 无 PY32 flash 驱动，量产走 Keil+DAPLink / J-Link）；
-  此 cfg 是最小通用 cortex_m 目标（不挂 flash 驱动），供 ocdup 做 halt / 读内存 /
-  dump_memory / 符号读写等调试观察。
+- `cfgs/target_py32f002a_lock.cfg` — 锁芯板（PY32F002A，Cortex-M0+）调试 cfg：
+  最小通用 cortex_m 目标（不挂 flash 驱动），供 halt / 读内存 / dump_memory /
+  符号读写等调试观察。
+- `cfgs/target_py32f002a_flash.cfg` — 锁芯板烧录 cfg：多一行 `flash bank` 挂
+  **puyaf0x** 驱动——该驱动已移植进本机构建的后端二进制（构建全程见
+  [docs/openocd-puya-build.md](docs/openocd-puya-build.md)，v0.4.4）。量产产线
+  仍走 J-Link + prod_burn.py，开发烧录已可在 ocdup 内闭环。
 
 ## 📱 客户端注册
 

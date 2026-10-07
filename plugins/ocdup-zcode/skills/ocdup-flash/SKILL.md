@@ -87,7 +87,9 @@ docstring 与 `show_config` 输出为准，不要凭记忆猜。
   已按此配好。多芯片场景（v0.4.0）：identify 报 `target mismatch` 时按提示
   `set_target <家族名>` 一键切换（不用改文件、不用重启会话）；`set_target list`
   看注册表。仓库 `cfgs/` 里的板级 cfg（钥匙板 AT32F423 / 锁芯板 PY32F002A）
-  已收录进本机 target_presets。
+  已收录进本机 target_presets。PY32F002A 的烧录：v0.4.4 起后端二进制
+  （atopenocd-py32，puyaf0x 驱动）原生支持，`set_target PY32F002A-FLASH` 切过去
+  即可 `flash_write`（构建记录 docs/openocd-puya-build.md）；量产产线仍走 J-Link。
 
 ## 典型会话
 
