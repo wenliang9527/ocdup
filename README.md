@@ -139,8 +139,10 @@ dotnet build Ocdup.sln
 用绝对路径指向它们），cfg 头部注释即排障记录：
 
 - `cfgs/target_at32f423_key.cfg` — 钥匙板（AT32F423TCU7）。固件在 VBUS 掉电时进
-  deepsleep（深睡禁调试、AHB-AP 全堵），裸 attach 必然 `can't assert SRST` /
-  `Error connecting DP`；cfg 用 `reset_config connect_assert_srst` 在复位态完成附加。
+  deepsleep（深睡禁调试、AHB-AP 全堵），裸 attach 必然 `Error connecting DP`；cfg 用
+  `reset_config srst_only srst_nogate connect_assert_srst` 在复位态完成附加。注意
+  `connect_assert_srst` 本身不含 SRST 存在位——缺 `srst_only` 时 openocd 报
+  `BUG: can't assert SRST`、复位拉不住，深睡芯片救不活（2026-10-07 实测踩到）。
 - `cfgs/target_py32f002a_lock.cfg` — 锁芯板（PY32F002A，Cortex-M0+）调试 cfg：
   最小通用 cortex_m 目标（不挂 flash 驱动），供 halt / 读内存 / dump_memory /
   符号读写等调试观察。
