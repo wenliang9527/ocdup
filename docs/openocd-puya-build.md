@@ -79,8 +79,16 @@ scripts 沿用旧 atopenocd 的(OCD_SCRIPTS 不变)。客户端 env `OCD_BIN`
   —— 旧版二进制走的是 HID/libusb0 路径;
 - ✅ 带中文注释的 target cfg 加载执行正常(jimtcl master 修复);
 - ✅ `flash bank ... puyaf0x` 注册、`flash probe` 命令通路正常;
-- ⏳ 待目标上电后闭环:PY32F002A dump→擦→写回→verify→sha 对比(安全测试法:
-  先 dump 整片 20KB 再写回,不破坏现有固件);AT32(F403A/F423)烧录回归。
+- ✅ **PY32F002A 烧录闭环实测通过(2026-10-07)**:整片 20KB dump → 擦+写回
+  (2.3s)→ openocd verify OK → 独立回读 sha256 与备份逐字节一致;页擦单独验证
+  (159 页读回全 0xFF)。测试法=先 dump 后写回,不破坏现有固件;
+- ⚠️ 已知怪癖:擦/写期间 openocd 报 "Failed to write memory at 0x..." ——Puya
+  对 flash AHB 写返回虚假错误(操作实际已生效,README.py32 记录同款现象),
+  以 verify_image/回读为准;ocdup flash_write 会因此报失败,须补 verify_image;
+- ⏳ AT32(F403A/F423)烧录回归:待板子换回后 2 分钟可测;
+- 📖 序列依据:PY32F002A RM V1.4 §4.2.3(本目录 py32f002a_rm.pdf)+ Puya SVD
+  (DFP 1.2.6)双重印证寄存器映射与 PGSTRT 编程模型;注意 PY32 家族寄存器布局
+  存在差异(2025 fork 用 F1 式偏移在 PY32F030 上验证,与 F002A SVD 不同)。
 - ⚠️ 已知坑:本机这根 DAPLink 的 CMSIS-DAP 接口(MI_03)必须保持 **WinUSB**
   驱动绑定;若被 Zadig 改成别的或驱动丢失,v2 路径会 `unable to find a matching
   CMSIS-DAP device`。另外探针被别的 openocd 进程占用时同样报这个错,先杀进程。
