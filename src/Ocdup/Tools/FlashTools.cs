@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
+using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 using Ocdup.Backend;
 using Ocdup.Config;
@@ -76,12 +77,15 @@ public static class FlashTools
         "'programmed + verified' (reset runs), 'programmed but verify FAILED' / 'write failed' (reset is skipped). " +
         "Error text from the program step is advisory only (some drivers emit spurious errors, e.g. PY32's fake AHB error). " +
         "With verify=false the outcome is 'programmed (unverified)' and only that advisory text gates the reset. " +
+        "While running, openocd's log lines (erased sectors / wrote bytes) are forwarded as MCP progress notifications " +
+        "when the caller requested a progress token. " +
         "Gated by read_only / allow_flash / flash_allowed_paths / flash_max_bytes - a BLOCKED answer means the settings forbid it (see show_config).")]
     public static async Task<string> FlashWrite(
         [Description("Path to the image to program (.elf/.hex/.bin).")] string file,
         [Description("Load address for raw .bin images, hex string like '0x08000000'. Ignored for .elf/.hex.")] string? address = null,
         [Description("Verify the written image via read-back (default true).")] bool verify = true,
         [Description("Run 'reset run' after programming (default true).")] bool reset = true,
+        RequestContext<CallToolRequestParams>? context = null,
         CancellationToken ct = default)
     {
         var cfg = ConfigStore.Instance.Current;
@@ -117,86 +121,100 @@ public static class FlashTools
                    "An .elf/.hex image carries its own addresses and needs no address argument.";
         }
 
-        // v0.4.13（P0-2）：program 不再带 verify——校验由下一步独立的 verify_image 承担，
-        // 判据与写相分离：PY32 等驱动会在写相吐虚假 AHB 错误（操作实际已生效），
-        // 「读回是否与镜像一致」才是烧录成功的权威回答（README 实测定案）。
-        var programCommand = new StringBuilder("program ").Append(Tcl.Quote(resolved));
-        if (loadAddress is { } addr) programCommand.Append(' ').Append(Parsing.Hex(addr));
-
-        string programOutput;
+        // P1-4：进度泵——调用方带 progressToken 且是自拉后端时，把 openocd 增量日志行
+        // （擦扇区 / wrote 行）以 progress notification 推回；不带就零开销。
+        var progressPump = FlashProgress.Start(BackendSession.Instance, context?.Server, context?.Params?.Meta);
+        using var pumpCts = new CancellationTokenSource();
+        var pumpTask = progressPump?.RunAsync(pumpCts.Token) ?? Task.CompletedTask;
         try
         {
-            programOutput = (await BackendSession.Instance.ExecuteAsync(cfg, programCommand.ToString(), startIfNeeded: true, ct, op: "flash_write")).Trim();
-        }
-        catch (BackendException ex)
-        {
-            return ex.Message;
-        }
+            // v0.4.13（P0-2）：program 不再带 verify——校验由下一步独立的 verify_image 承担，
+            // 判据与写相分离：PY32 等驱动会在写相吐虚假 AHB 错误（操作实际已生效），
+            // 「读回是否与镜像一致」才是烧录成功的权威回答（README 实测定案）。
+            var programCommand = new StringBuilder("program ").Append(Tcl.Quote(resolved));
+            if (loadAddress is { } addr) programCommand.Append(' ').Append(Parsing.Hex(addr));
 
-        string? verifyProblem = null;
-        if (verify)
-        {
-            var verifyCommand = new StringBuilder("verify_image ").Append(Tcl.Quote(resolved));
-            if (loadAddress is { } vaddr) verifyCommand.Append(' ').Append(Parsing.Hex(vaddr));
-
-            string verifyOutput;
+            string programOutput;
             try
             {
-                verifyOutput = (await BackendSession.Instance.ExecuteAsync(cfg, verifyCommand.ToString(), startIfNeeded: false, ct, op: "flash_write")).Trim();
+                programOutput = (await BackendSession.Instance.ExecuteAsync(cfg, programCommand.ToString(), startIfNeeded: true, ct, op: "flash_write")).Trim();
             }
             catch (BackendException ex)
             {
-                verifyOutput = ex.Message; // 校验通道失败：按存疑判失败（保守），reset 不会执行
+                return ex.Message;
             }
 
-            verifyProblem = InterpretVerifyOutput(verifyOutput);
-        }
+            string? verifyProblem = null;
+            if (verify)
+            {
+                var verifyCommand = new StringBuilder("verify_image ").Append(Tcl.Quote(resolved));
+                if (loadAddress is { } vaddr) verifyCommand.Append(' ').Append(Parsing.Hex(vaddr));
 
-        var verdict = ClassifyFlashWrite(verify, programOutput, verifyProblem);
+                string verifyOutput;
+                try
+                {
+                    verifyOutput = (await BackendSession.Instance.ExecuteAsync(cfg, verifyCommand.ToString(), startIfNeeded: false, ct, op: "flash_write")).Trim();
+                }
+                catch (BackendException ex)
+                {
+                    verifyOutput = ex.Message; // 校验通道失败：按存疑判失败（保守），reset 不会执行
+                }
 
-        var sb = new StringBuilder();
-        sb.AppendLine($"programmed: {resolved} ({image.Length} bytes)");
-        if (loadAddress is { } reported) sb.AppendLine($"load address: {Parsing.Hex(reported)}");
-        sb.AppendLine(programOutput.Length == 0 ? "(the program step produced no output)" : programOutput);
+                verifyProblem = InterpretVerifyOutput(verifyOutput);
+            }
 
-        switch (verdict)
-        {
-            case FlashWriteVerdict.ProgrammedVerified:
-                sb.AppendLine($"verified: {resolved} ({image.Length} bytes) matches the target flash (read-back).");
-                break;
-            case FlashWriteVerdict.ProgrammedButVerifyFailed:
-                sb.AppendLine($"VERIFY FAILED: the program step reported success, but the read-back does not match {resolved} ({image.Length} bytes).");
-                sb.AppendLine($"problem: {verifyProblem}");
-                break;
-            case FlashWriteVerdict.WriteFailed:
-                sb.AppendLine($"WRITE FAILED: the program step reported an error, and the read-back does not confirm the image ({image.Length} bytes).");
-                sb.AppendLine($"problem: {verifyProblem}");
-                break;
-            case FlashWriteVerdict.Unverified:
-                sb.AppendLine("unverified: verify=false skipped the read-back check - run mcp__ocdup__verify_image to confirm what landed.");
-                break;
-        }
+            var verdict = ClassifyFlashWrite(verify, programOutput, verifyProblem);
 
-        if (!reset) return sb.ToString();
+            var sb = new StringBuilder();
+            sb.AppendLine($"programmed: {resolved} ({image.Length} bytes)");
+            if (loadAddress is { } reported) sb.AppendLine($"load address: {Parsing.Hex(reported)}");
+            sb.AppendLine(programOutput.Length == 0 ? "(the program step produced no output)" : programOutput);
 
-        if (!ShouldResetRun(verdict, programOutput))
-        {
-            sb.Append("NOTE: 'reset run' was skipped - the verdict above is not a clean pass. " +
-                      "Check the log above (probe wiring, flash bank, target_cfg), then flash again.");
+            switch (verdict)
+            {
+                case FlashWriteVerdict.ProgrammedVerified:
+                    sb.AppendLine($"verified: {resolved} ({image.Length} bytes) matches the target flash (read-back).");
+                    break;
+                case FlashWriteVerdict.ProgrammedButVerifyFailed:
+                    sb.AppendLine($"VERIFY FAILED: the program step reported success, but the read-back does not match {resolved} ({image.Length} bytes).");
+                    sb.AppendLine($"problem: {verifyProblem}");
+                    break;
+                case FlashWriteVerdict.WriteFailed:
+                    sb.AppendLine($"WRITE FAILED: the program step reported an error, and the read-back does not confirm the image ({image.Length} bytes).");
+                    sb.AppendLine($"problem: {verifyProblem}");
+                    break;
+                case FlashWriteVerdict.Unverified:
+                    sb.AppendLine("unverified: verify=false skipped the read-back check - run mcp__ocdup__verify_image to confirm what landed.");
+                    break;
+            }
+
+            if (!reset) return sb.ToString();
+
+            if (!ShouldResetRun(verdict, programOutput))
+            {
+                sb.Append("NOTE: 'reset run' was skipped - the verdict above is not a clean pass. " +
+                          "Check the log above (probe wiring, flash bank, target_cfg), then flash again.");
+                return sb.ToString();
+            }
+
+            try
+            {
+                var resetOutput = (await BackendSession.Instance.ExecuteAsync(cfg, "reset run", startIfNeeded: false, ct, op: "flash_write")).Trim();
+                sb.AppendLine(resetOutput.Length == 0 ? "reset run: done" : $"reset run: {resetOutput}");
+            }
+            catch (BackendException ex)
+            {
+                sb.AppendLine($"NOTE: the image was programmed, but 'reset run' failed: {ex.Message}");
+            }
+
             return sb.ToString();
         }
-
-        try
+        finally
         {
-            var resetOutput = (await BackendSession.Instance.ExecuteAsync(cfg, "reset run", startIfNeeded: false, ct, op: "flash_write")).Trim();
-            sb.AppendLine(resetOutput.Length == 0 ? "reset run: done" : $"reset run: {resetOutput}");
+            // 进度是尽力而为的旁路：先停泵再收尾，绝不影响主操作的结论。
+            pumpCts.Cancel();
+            try { await pumpTask.ConfigureAwait(false); } catch { /* 泵的收尾 */ }
         }
-        catch (BackendException ex)
-        {
-            sb.AppendLine($"NOTE: the image was programmed, but 'reset run' failed: {ex.Message}");
-        }
-
-        return sb.ToString();
     }
 
     [McpServerTool(Name = "verify_image")]
@@ -278,11 +296,13 @@ public static class FlashTools
     [Description(
         "Erase flash sectors without writing anything. DESTRUCTIVE and OFF by default: gated by read_only and allow_flash_erase " +
         "(default false - set \"allow_flash_erase\": true in the ocd.json permissions block). " +
-        "Parameters: bank (index from flash_info, default 0), first/last (inclusive sector numbers; last may be -1 meaning 'to the end of the bank').")]
+        "Parameters: bank (index from flash_info, default 0), first/last (inclusive sector numbers; last may be -1 meaning 'to the end of the bank'). " +
+        "While running, openocd's log lines are forwarded as MCP progress notifications (when the caller requested a progress token).")]
     public static async Task<string> FlashEraseSector(
         [Description("Flash bank index from flash_info (default 0).")] int bank = 0,
         [Description("First sector to erase (inclusive, default 0).")] int first = 0,
         [Description("Last sector to erase (inclusive; -1 = to the end of the bank, default -1).")] int last = -1,
+        RequestContext<CallToolRequestParams>? context = null,
         CancellationToken ct = default)
     {
         var cfg = ConfigStore.Instance.Current;
@@ -297,6 +317,9 @@ public static class FlashTools
         var lastText = last == -1 ? "last" : last.ToString();
         var command = $"flash erase_sector {bank} {first} {lastText}";
 
+        var progressPump = FlashProgress.Start(BackendSession.Instance, context?.Server, context?.Params?.Meta);
+        using var pumpCts = new CancellationTokenSource();
+        var pumpTask = progressPump?.RunAsync(pumpCts.Token) ?? Task.CompletedTask;
         try
         {
             var output = (await BackendSession.Instance.ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: "flash_erase_sector")).Trim();
@@ -306,6 +329,11 @@ public static class FlashTools
         catch (BackendException ex)
         {
             return ex.Message;
+        }
+        finally
+        {
+            pumpCts.Cancel();
+            try { await pumpTask.ConfigureAwait(false); } catch { /* 泵的收尾 */ }
         }
     }
 

@@ -28,6 +28,8 @@ public sealed class OpenOcdLauncher : IDisposable
     private Process? _process;
     private IntPtr _jobHandle;
     private bool _disposed;
+    /// <summary>累计抽干的行数（P1-4 进度泵的游标基准；单调递增，进程重启不归零）。</summary>
+    private long _totalLines;
 
     public OpenOcdLauncher()
     {
@@ -327,6 +329,7 @@ public sealed class OpenOcdLauncher : IDisposable
                 {
                     _output.Enqueue(line);
                     while (_output.Count > MaxBufferLines) _output.Dequeue();
+                    _totalLines++;
                 }
                 // 异步日志(Info:/Error:/target 事件)同步镜像进流量 JSONL:面板实时可见,
                 // TCL-RPC 响应里永远看不到这些行。Record 自身吞错,不影响抽干循环。
@@ -353,6 +356,44 @@ public sealed class OpenOcdLauncher : IDisposable
             sb.Append(lines[i]);
         }
         return sb.ToString();
+    }
+
+    // ── P1-4：进度泵的行源（差分读环形缓冲）──
+
+    /// <summary>累计抽干的行数（P1-4：进度泵启动时取一次作游标基准）。</summary>
+    public long TotalLinesAppended { get { lock (_sync) { return _totalLines; } } }
+
+    /// <summary>当前是否持有自拉 openocd 的输出捕获（P1-4：复用外部监听时缓冲是陈旧数据，进度泵不开）。</summary>
+    public bool CapturesProcessOutput
+    {
+        get { lock (_sync) { return _process is { HasExited: false }; } }
+    }
+
+    /// <summary>
+    /// 取自 cursor（累计行数水位）以来的新行（P1-4 进度泵用）。环形缓冲只留最近 200 行：
+    /// 落后超过一圈时只回可见的尾部（更早的行已被丢弃），游标推进到当前总量。
+    /// </summary>
+    public IReadOnlyList<string> TakeNewLines(ref long cursor)
+    {
+        lock (_sync)
+        {
+            return SliceNewLines(_output.ToArray(), _totalLines, ref cursor);
+        }
+    }
+
+    /// <summary>
+    /// 差分切片（纯函数，可单测）：snapshot 是环形缓冲的可见窗口，totalLines 是累计行数，
+    /// cursor 是消费方已见水位。返回水位之后对应的可见尾部（落后超圈时就是整个窗口），并推进 cursor。
+    /// </summary>
+    public static IReadOnlyList<string> SliceNewLines(IReadOnlyList<string> snapshot, long totalLines, ref long cursor)
+    {
+        var take = (int)Math.Min(totalLines - cursor, snapshot.Count);
+        if (take <= 0) return Array.Empty<string>();
+        cursor = totalLines;
+        if (take == snapshot.Count) return snapshot;
+        var slice = new string[take];
+        for (var i = 0; i < take; i++) slice[i] = snapshot[snapshot.Count - take + i];
+        return slice;
     }
 
     /// <summary>

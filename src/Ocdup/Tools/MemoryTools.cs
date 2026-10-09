@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
+using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 using Ocdup.Backend;
 using Ocdup.Config;
@@ -139,11 +140,13 @@ public static class MemoryTools
         "because read_memory is capped by memory_read_max_bytes and floods the conversation with text. " +
         "Read-only on the target, but it writes one file on this PC: gated by dump_allowed_paths (default 'dumps/' next to ocd.json) " +
         "and dump_max_bytes (default 64 MB, 0 = unlimited). " +
+        "While running, openocd's log lines are forwarded as MCP progress notifications (when the caller requested a progress token). " +
         "Returns the output path, byte count, a sha256 prefix and the first 64 bytes as hex words.")]
     public static async Task<string> DumpMemory(
         [Description("Output file path; relative paths resolve against the ocd.json directory. Parent directories are created.")] string file,
         [Description("Start address, hex string like '0x08000000'.")] string address,
         [Description("How many bytes to dump (decimal, e.g. 1048576 for 1 MB). Large dumps can take a while - raise command_timeout_seconds if needed.")] long length,
+        RequestContext<CallToolRequestParams>? context = null,
         CancellationToken ct = default)
     {
         var cfg = ConfigStore.Instance.Current;
@@ -176,6 +179,11 @@ public static class MemoryTools
 
         var command = $"dump_image {Tcl.Quote(resolved)} {Parsing.Hex(start)} {length}";
         string output;
+
+        // P1-4：进度泵——大 dump 期间把 openocd 增量日志行以 progress notification 推回（带 token 才发）。
+        var progressPump = FlashProgress.Start(BackendSession.Instance, context?.Server, context?.Params?.Meta);
+        using var pumpCts = new CancellationTokenSource();
+        var pumpTask = progressPump?.RunAsync(pumpCts.Token) ?? Task.CompletedTask;
         try
         {
             output = (await BackendSession.Instance.ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: "dump_memory")).Trim();
@@ -183,6 +191,11 @@ public static class MemoryTools
         catch (BackendException ex)
         {
             return ex.Message;
+        }
+        finally
+        {
+            pumpCts.Cancel();
+            try { await pumpTask.ConfigureAwait(false); } catch { /* 泵的收尾 */ }
         }
 
         if (!File.Exists(resolved))

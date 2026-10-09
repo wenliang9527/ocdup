@@ -216,6 +216,17 @@ public sealed class BackendSession
     /// <summary>自己拉起的 openocd 的近期输出（backend_log 工具的数据源）。</summary>
     public string RecentBackendOutput(int maxLines) => _launcher.RecentOutput(maxLines);
 
+    // ── P1-4：进度泵的行源（launcher 环形缓冲差分读；仅自拉后端有捕获）──
+
+    /// <summary>当前是否持有自拉 openocd 的输出捕获（外部监听时环形缓冲是陈旧数据）。</summary>
+    public bool CapturesProcessOutput => _launcher.CapturesProcessOutput;
+
+    /// <summary>累计抽干的行数（进度泵启动时取一次作游标基准）。</summary>
+    public long TotalLinesAppended => _launcher.TotalLinesAppended;
+
+    /// <summary>取自游标以来的新行（差分读），游标推进到当前总量。</summary>
+    public IReadOnlyList<string> TakeNewLines(ref long cursor) => _launcher.TakeNewLines(ref cursor);
+
     /// <summary>
     /// 断开后端（v0.4.6 的 disconnect 通道）：丢连接 → 杀 ocdup **自己拉起**的 openocd
     /// （外部实例杀不动，stop 是 no-op）→ 等端口释放。**不重新拉起**——探针交还给别的
