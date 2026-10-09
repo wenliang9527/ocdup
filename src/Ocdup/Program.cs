@@ -10,6 +10,10 @@ using Ocdup.Cli;
 if (args.Length > 0 && args[0].Equals("watch", StringComparison.OrdinalIgnoreCase))
     return await WatchCli.RunAsync(args.Skip(1).ToArray());
 
+// `ocdup doctor`：环境体检（P1-6）——五项只读检查，不拉后端、不碰目标。
+if (args.Length > 0 && args[0].Equals("doctor", StringComparison.OrdinalIgnoreCase))
+    return await DoctorCli.RunAsync();
+
 var builder = Host.CreateApplicationBuilder(args);
 
 // stdio 传输:进程的 stdout 属于 MCP 协议,任何控制台日志都会污染协议流。
