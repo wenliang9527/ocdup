@@ -18,6 +18,7 @@
     "AT32F403A": "target/at32f403axx.cfg",
     "STM32F103": "target/stm32f1x.cfg"
   },
+  "//raw_command": "allow_raw_command 默认 false：run_command 是 opt-in 逃生舱；开启后写类命令仍有内容分类（与专用工具同权或重定向专用工具）。",
   "permissions": {
     "read_only": false,
     "allow_memory_write": true,

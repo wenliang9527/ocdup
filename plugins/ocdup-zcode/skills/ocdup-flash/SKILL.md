@@ -9,7 +9,7 @@ Ocdup 是 PC 侧的 OpenOCD 门面（MCP 服务器，stdio），把「连接探�
 按地址读回数据」封装成 MCP 工具。本技能只管**流程与纪律**；参数细节以工具
 docstring 与 `show_config` 输出为准，不要凭记忆猜。
 
-## 工具总览（ZCode 内以 `mcp__ocdup__*` 形式提供；DSH 内为 `mcp__ocdup__<tool>`；共 19 个，随版本演进以实际列表为准）
+## 工具总览（ZCode 内以 `mcp__ocdup__*` 形式提供；DSH 内为 `mcp__ocdup__<tool>`；共 20 个——v0.4.6 起含 disconnect（探针让渡），随版本演进以实际列表为准）
 
 | 工具 | 作用 | 变更目标？ |
 |---|---|---|
@@ -45,6 +45,10 @@ docstring 与 `show_config` 输出为准，不要凭记忆猜。
    0x08000000 起、1MB）。
 3. `flash_write file=<构建产物> [address=<hex>]`——**`.bin` 必须显式给
    address；`.elf`/`.hex` 自带地址不用给**。默认 `verify=true`、`reset=true`。
+   结论由烧录后**独立的 `verify_image` 读回**判定（v0.4.13）：
+   `programmed + verified`（随后 reset run）/ `programmed but verify FAILED`
+   （写声称成功但读回不符，最危险）/ `write failed`；program 阶段的
+   `Error:`/`failed` 文本只是辅助信息（PY32 虚假 AHB 错误不再误跳 reset）。
 4. 读回验证：`read_memory address=0x08000000 count=16 width=32 format=json`
    看向量表（json 免解析 OpenOCD 文本）；要独立确认内容与镜像一致，用
    `verify_image` 再比一次（只读不写）；**运行态读失败** → `halt` → 重读 →
@@ -62,7 +66,8 @@ docstring 与 `show_config` 输出为准，不要凭记忆猜。
   花样绕过**。写类权限一览：`allow_flash` 管 flash_write；
   `allow_flash_erase` 管 flash_erase_sector（默认 false，破坏性显式开）；
   `allow_memory_write` 管 write_memory；`allow_exec` 管 halt/resume/reset
-  （默认 true）；`allow_raw_command` 管 run_command；dump_memory 在
+  （默认 true）；`allow_raw_command` 管 run_command（默认 false，开启后写类
+  命令仍有内容分类——同权或重定向专用工具）；dump_memory 在
   目标侧只读，但 PC 侧落盘受 `dump_allowed_paths`（白名单，默认 `dumps/`）
   与 `dump_max_bytes`（默认 64 MB，0=不限）约束；read_memory 受
   `memory_read_max_bytes`（默认 4096）约束。
@@ -128,8 +133,8 @@ dump_memory file=dumps/flash.bin address=0x08000000 length=1048576
 1. `connect` 失败/超时 → 看返回的 `--- recent openocd output ---` 诊断
    （末 200 行）与 `backend:` 行；常见原因：探针没插、驱动被占用
    （J-Link × SEGGER）、`OCD_SCRIPTS` 指错目录。
-2. `flash_write` 报后端输出含 `Error:`/`failed` → 保守跳过 reset run；先
-   `flash_info` 确认 bank，再用已知好镜像重试；烧录进度/异步 `Info:`/`Error:`
-   → `backend_log`（仅 ocdup 自己拉起的后端有捕获）；疑似版本语义差异 → 记录
-   OpenOCD 版本（`status` 输出）再定位。
+2. `flash_write` 结论不是 `verified`（VERIFY FAILED / WRITE FAILED）→ reset run
+   已自动跳过；先 `flash_info` 确认 bank，再用已知好镜像重试；烧录进度/异步
+   `Info:`/`Error:` → `backend_log`（仅 ocdup 自己拉起的后端有捕获）；疑似版本
+   语义差异 → 记录 OpenOCD 版本（`status` 输出）再定位。
 3. 权限问题 → `show_config`；配置改动后 → `show_config reload=true`。
