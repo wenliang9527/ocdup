@@ -85,4 +85,21 @@ public sealed class ProgressPumpTests
         Assert.Null(FlashProgress.Start(BackendSession.Instance, server: null, meta: null));
         Assert.Null(FlashProgress.Start(BackendSession.Instance, server: null, meta: new JsonObject()));
     }
+
+    // ── 每拍自查（v0.4.18）：没有自拉后端就不报进度 ──
+
+    [Fact]
+    public async Task Pump_StaysSilent_WhileBackendIsNotOcdupsOwn()
+    {
+        // BackendSession.Instance 在本测试会话里没有自拉后端（CapturesProcessOutput=false）：
+        // 冷启动未拉起 / 复用外部监听时环形缓冲是陈旧数据——跑满两拍也不该发出任何通知。
+        var sent = 0;
+        using var cts = new CancellationTokenSource(millisecondsDelay: 1700);
+        var pump = new FlashProgressSession(
+            BackendSession.Instance, (_, _, _) => { sent++; return Task.CompletedTask; });
+
+        await pump.RunAsync(cts.Token);
+
+        Assert.Equal(0, sent);
+    }
 }

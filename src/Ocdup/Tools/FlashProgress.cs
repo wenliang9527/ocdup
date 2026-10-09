@@ -11,8 +11,9 @@ namespace Ocdup.Tools;
 /// 长耗时操作的进度泵（P1-4）：周期性差分读 launcher 环形缓冲的增量行，以 MCP 标准
 /// progress notification（notifications/progress）推回调用方——仅当请求带了 progressToken
 /// 才发（调用方主动要进度；不带就完全静默，零开销）。launcher 的 log→traffic 镜像通道
-/// 不受影响（面板进度条继续吃那条路）。环形缓冲只对 ocdup 自拉的后端有捕获：复用外部
-/// 监听时直接不开泵。进度是尽力而为的旁路：任何发送失败都静默收工，绝不影响主操作。
+/// 不受影响（面板进度条继续吃那条路）。环形缓冲只对 ocdup 自拉的后端有新鲜捕获：外部
+/// 监听时是陈旧数据，由泵每拍自查挡掉（见 <see cref="FlashProgressSession.RunAsync"/>）。
+/// 进度是尽力而为的旁路：任何发送失败都静默收工，绝不影响主操作。
 /// </summary>
 internal static class FlashProgress
 {
@@ -21,13 +22,16 @@ internal static class FlashProgress
     internal const int MaxMessageChars = 200;
 
     /// <summary>
-    /// 三重守卫：要发通知得有 server；要发得有 progressToken（调用方主动要进度，按 MCP 规范
-    /// 是 _meta.progressToken，数字或字符串）；要有真实增量行得是 ocdup 自拉的后端（外部监听
-    /// 的缓冲是陈旧数据）。任一不满足返回 null。
+    /// 双重守卫（v0.4.18 修正，原先三重）：要发通知得有 server；要有 progressToken
+    /// （调用方主动要进度，按 MCP 规范是 _meta.progressToken，数字或字符串）。
+    /// 「后端是不是 ocdup 自拉」刻意不在这里判——冷启动的 flash_write / dump_memory 是
+    /// 在 <see cref="BackendSession.ExecuteAsync"/> 内部才把 openocd 拉起来的，调用这一刻
+    /// 必然还没有捕获，原先的守卫让首次烧录全程没有进度。该检查下沉为泵内每拍自查：
+    /// 既覆盖冷启动（后端就绪后进度自动恢复），也保守挡住外部监听的陈旧环形缓冲。
     /// </summary>
     public static FlashProgressSession? Start(BackendSession session, McpServer? server, JsonObject? meta)
     {
-        if (server is null || !session.CapturesProcessOutput)
+        if (server is null)
             return null;
 
         var token = TryGetToken(meta);
@@ -93,6 +97,11 @@ internal sealed class FlashProgressSession
         {
             try { await Task.Delay(FlashProgress.PollPeriod, ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
+
+            // 每拍自查（v0.4.18）：只有 ocdup 自拉的后端才有新鲜捕获——冷启动未拉起 /
+            // 复用外部监听 / 后端刚退出时，环形缓冲是陈旧数据，本拍不报、继续等。
+            // 冷启动通常一拍内 openocd 就绪，进度随后自动恢复。
+            if (!_session.CapturesProcessOutput) continue;
 
             IReadOnlyList<string> lines;
             try { lines = _session.TakeNewLines(ref _cursor); }

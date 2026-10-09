@@ -12,7 +12,7 @@ namespace Ocdup.Tools;
 public static class BackendTools
 {
     [McpServerTool(Name = "status")]
-    [Description("Report whether an OpenOCD backend is listening on the configured command port (default 127.0.0.1:6666) and, when it is, its version and target list. Read-only: starts nothing and does not disturb the target.")]
+    [Description("Report whether an OpenOCD backend is listening on the configured command port (default 127.0.0.1:6666) and, when it is, its version, target list and the state of the reused control channel (connected / idle seconds). Read-only: starts nothing and does not disturb the target.")]
     public static async Task<string> Status(CancellationToken ct = default)
     {
         var cfg = ConfigStore.Instance.Current;
@@ -23,6 +23,11 @@ public static class BackendTools
 
         try
         {
+            // 通道状态必须在下面的查询**之前**读：version/targets 每次成功都会刷新「最近活动」
+            // 水位，之后再读只会得到 idle≈0 的假数（v0.4.18 复查修正——P1-5 的空闲时长
+            // 因此永远是 0s，那行只剩 connected/not connected 有信息量）。
+            var (channelConnected, channelIdle) = BackendSession.Instance.ChannelState;
+
             var version = (await BackendSession.Instance.ExecuteAsync(cfg, "version", startIfNeeded: false, ct, op: "status")).Trim();
             var targets = (await BackendSession.Instance.ExecuteAsync(cfg, "targets", startIfNeeded: false, ct, op: "status")).Trim();
 
@@ -31,8 +36,7 @@ public static class BackendTools
             sb.AppendLine($"version: {(version.Length == 0 ? "(no version reported)" : version)}");
             if (BackendSession.Instance.LastBackendNote is { Length: > 0 } note)
                 sb.AppendLine($"backend: {note}");
-            // P1-5：顺带报告复用通道的健康状况（连接与否 + 空闲时长）。
-            var (channelConnected, channelIdle) = BackendSession.Instance.ChannelState;
+            // P1-5：顺带报告复用通道的健康状况（连接与否 + 空闲时长，读取时机见上）。
             sb.AppendLine(BackendSession.FormatChannelState(channelConnected, channelIdle));
             sb.AppendLine("targets:");
             sb.Append(FormatTargets(targets));
