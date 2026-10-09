@@ -72,11 +72,15 @@ public static class FlashTools
         "Download an image to the target flash. Parameters: file (path to .elf/.hex/.bin; relative paths resolve against the ocd.json directory), " +
         "address (hex load address like '0x08000000'; required for raw .bin images, ignored for .elf/.hex), verify (default true), " +
         "reset (default true: run 'reset run' after programming). " +
+        "The outcome is decided by a read-back: after 'program', a separate 'verify_image' step is the authoritative verdict - " +
+        "'programmed + verified' (reset runs), 'programmed but verify FAILED' / 'write failed' (reset is skipped). " +
+        "Error text from the program step is advisory only (some drivers emit spurious errors, e.g. PY32's fake AHB error). " +
+        "With verify=false the outcome is 'programmed (unverified)' and only that advisory text gates the reset. " +
         "Gated by read_only / allow_flash / flash_allowed_paths / flash_max_bytes - a BLOCKED answer means the settings forbid it (see show_config).")]
     public static async Task<string> FlashWrite(
         [Description("Path to the image to program (.elf/.hex/.bin).")] string file,
         [Description("Load address for raw .bin images, hex string like '0x08000000'. Ignored for .elf/.hex.")] string? address = null,
-        [Description("Verify the written image (default true).")] bool verify = true,
+        [Description("Verify the written image via read-back (default true).")] bool verify = true,
         [Description("Run 'reset run' after programming (default true).")] bool reset = true,
         CancellationToken ct = default)
     {
@@ -113,43 +117,83 @@ public static class FlashTools
                    "An .elf/.hex image carries its own addresses and needs no address argument.";
         }
 
-        // program 是 OpenOCD 的烧录入口：写 + 可选校验；参数顺序无关（非选项参数视为 offset）。
-        var command = new StringBuilder("program ").Append(Tcl.Quote(resolved));
-        if (verify) command.Append(" verify");
-        if (loadAddress is { } addr) command.Append(' ').Append(Parsing.Hex(addr));
+        // v0.4.13（P0-2）：program 不再带 verify——校验由下一步独立的 verify_image 承担，
+        // 判据与写相分离：PY32 等驱动会在写相吐虚假 AHB 错误（操作实际已生效），
+        // 「读回是否与镜像一致」才是烧录成功的权威回答（README 实测定案）。
+        var programCommand = new StringBuilder("program ").Append(Tcl.Quote(resolved));
+        if (loadAddress is { } addr) programCommand.Append(' ').Append(Parsing.Hex(addr));
 
-        string output;
+        string programOutput;
         try
         {
-            output = (await BackendSession.Instance.ExecuteAsync(cfg, command.ToString(), startIfNeeded: true, ct, op: "flash_write")).Trim();
+            programOutput = (await BackendSession.Instance.ExecuteAsync(cfg, programCommand.ToString(), startIfNeeded: true, ct, op: "flash_write")).Trim();
         }
         catch (BackendException ex)
         {
             return ex.Message;
         }
 
-        var sb = new StringBuilder();
-        sb.AppendLine($"programmed: {resolved} ({image.Length} bytes){(verify ? " with verify" : "")}");
-        if (loadAddress is { } reported) sb.AppendLine($"load address: {Parsing.Hex(reported)}");
-        sb.AppendLine(output.Length == 0 ? "(the backend produced no output)" : output);
-
-        if (LooksLikeFailure(output))
+        string? verifyProblem = null;
+        if (verify)
         {
-            sb.Append("NOTE: the backend output looks like a failure; 'reset run' was skipped. Check the log above (probe wiring, flash bank, target_cfg).");
-            return sb.ToString();
-        }
+            var verifyCommand = new StringBuilder("verify_image ").Append(Tcl.Quote(resolved));
+            if (loadAddress is { } vaddr) verifyCommand.Append(' ').Append(Parsing.Hex(vaddr));
 
-        if (reset)
-        {
+            string verifyOutput;
             try
             {
-                var resetOutput = (await BackendSession.Instance.ExecuteAsync(cfg, "reset run", startIfNeeded: false, ct, op: "flash_write")).Trim();
-                sb.AppendLine(resetOutput.Length == 0 ? "reset run: done" : $"reset run: {resetOutput}");
+                verifyOutput = (await BackendSession.Instance.ExecuteAsync(cfg, verifyCommand.ToString(), startIfNeeded: false, ct, op: "flash_write")).Trim();
             }
             catch (BackendException ex)
             {
-                sb.AppendLine($"NOTE: the image was programmed, but 'reset run' failed: {ex.Message}");
+                verifyOutput = ex.Message; // 校验通道失败：按存疑判失败（保守），reset 不会执行
             }
+
+            verifyProblem = InterpretVerifyOutput(verifyOutput);
+        }
+
+        var verdict = ClassifyFlashWrite(verify, programOutput, verifyProblem);
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"programmed: {resolved} ({image.Length} bytes)");
+        if (loadAddress is { } reported) sb.AppendLine($"load address: {Parsing.Hex(reported)}");
+        sb.AppendLine(programOutput.Length == 0 ? "(the program step produced no output)" : programOutput);
+
+        switch (verdict)
+        {
+            case FlashWriteVerdict.ProgrammedVerified:
+                sb.AppendLine($"verified: {resolved} ({image.Length} bytes) matches the target flash (read-back).");
+                break;
+            case FlashWriteVerdict.ProgrammedButVerifyFailed:
+                sb.AppendLine($"VERIFY FAILED: the program step reported success, but the read-back does not match {resolved} ({image.Length} bytes).");
+                sb.AppendLine($"problem: {verifyProblem}");
+                break;
+            case FlashWriteVerdict.WriteFailed:
+                sb.AppendLine($"WRITE FAILED: the program step reported an error, and the read-back does not confirm the image ({image.Length} bytes).");
+                sb.AppendLine($"problem: {verifyProblem}");
+                break;
+            case FlashWriteVerdict.Unverified:
+                sb.AppendLine("unverified: verify=false skipped the read-back check - run mcp__ocdup__verify_image to confirm what landed.");
+                break;
+        }
+
+        if (!reset) return sb.ToString();
+
+        if (!ShouldResetRun(verdict, programOutput))
+        {
+            sb.Append("NOTE: 'reset run' was skipped - the verdict above is not a clean pass. " +
+                      "Check the log above (probe wiring, flash bank, target_cfg), then flash again.");
+            return sb.ToString();
+        }
+
+        try
+        {
+            var resetOutput = (await BackendSession.Instance.ExecuteAsync(cfg, "reset run", startIfNeeded: false, ct, op: "flash_write")).Trim();
+            sb.AppendLine(resetOutput.Length == 0 ? "reset run: done" : $"reset run: {resetOutput}");
+        }
+        catch (BackendException ex)
+        {
+            sb.AppendLine($"NOTE: the image was programmed, but 'reset run' failed: {ex.Message}");
         }
 
         return sb.ToString();
@@ -269,6 +313,28 @@ public static class FlashTools
     private static bool LooksLikeFailure(string output) =>
         output.Contains("Error:", StringComparison.OrdinalIgnoreCase) ||
         output.Contains("failed", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>flash_write 的结论分类（P0-2，纯函数可单测）：verify 读回是唯一判据；
+    /// program 输出的错误文本降级为辅助信息，用来区分两种失败形态——
+    /// WriteFailed（写步骤已报错，固件很可能没写入/只写入一部分）与
+    /// ProgrammedButVerifyFailed（写声称成功但读回不符，最危险，结论单列）。</summary>
+    internal enum FlashWriteVerdict { ProgrammedVerified, ProgrammedButVerifyFailed, WriteFailed, Unverified }
+
+    internal static FlashWriteVerdict ClassifyFlashWrite(bool verifyEnabled, string programOutput, string? verifyProblem) =>
+        !verifyEnabled ? FlashWriteVerdict.Unverified
+        : verifyProblem is null ? FlashWriteVerdict.ProgrammedVerified
+        : LooksLikeFailure(programOutput) ? FlashWriteVerdict.WriteFailed
+        : FlashWriteVerdict.ProgrammedButVerifyFailed;
+
+    /// <summary>reset run 门控（纯函数，可单测）：读回校验通过才放行；verify=false 时
+    /// 退回文本嗅探（辅助判据——此时没有更好的）。</summary>
+    internal static bool ShouldResetRun(FlashWriteVerdict verdict, string programOutput) =>
+        verdict switch
+        {
+            FlashWriteVerdict.ProgrammedVerified => true,
+            FlashWriteVerdict.Unverified => !LooksLikeFailure(programOutput),
+            _ => false,
+        };
 
     /// <summary>"size 0x0…,"（任意个 0）：容量未探测到的 bank 行（纯函数，便于单测）。</summary>
     private static readonly Regex ZeroSizedBank = new(@"size\s+0x0+\s*,", RegexOptions.IgnoreCase | RegexOptions.Compiled);

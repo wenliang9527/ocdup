@@ -4,7 +4,7 @@
   1. tools/list 把 connect/status/flash_info/flash_write/read_memory/show_config 都注册了
   2. connect 探测到已在监听的后端（不重复拉起），并查回 version/targets
   3. read_memory 发出的 TCL 命令与返回文本
-  4. flash_write 走 program + reset run，权限闸放行合法路径
+  4. flash_write 走 program + 独立 verify_image（读回判据）+ reset run，权限闸放行合法路径
   5. flash_write 被 flash_allowed_paths / read_only 拦截，且文案给出解除指引
   6. read_memory 超出 memory_read_max_bytes 被拦截
   7. show_config(reload=true) 能重读 ocd.json
