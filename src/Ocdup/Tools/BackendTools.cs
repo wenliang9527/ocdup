@@ -180,9 +180,15 @@ public static class BackendTools
 
     [McpServerTool(Name = "run_command")]
     [Description(
-        "Raw TCL escape hatch: run an arbitrary OpenOCD/TCL command through the control channel and return its captured output. " +
+        "Raw TCL escape hatch: run an OpenOCD/TCL command through the control channel and return its captured output. " +
         "For anything the dedicated tools don't cover (odd adapter commands, one-off introspection). " +
-        "Single-line command only. Gated by read_only and allow_raw_command - a BLOCKED answer means the settings forbid it (see show_config).")]
+        "Write-class commands are classified: 'program'/'flash write_image'/'load_image', 'dump_image' and 'shutdown'/'exit' " +
+        "are BLOCKED with a redirect to flash_write / dump_memory / disconnect; 'flash erase_sector'/'erase_address' is gated " +
+        "by allow_flash_erase, 'flash fill*'/protect by allow_flash, 'mww/mwh/mwb' by allow_memory_write and " +
+        "'reset'/'halt'/'resume'/'step' by allow_exec - the same switches their dedicated tools use " +
+        "(';'-separated statements are classified per segment). " +
+        "Single-line command only. Gated by read_only and allow_raw_command (default false) - a BLOCKED answer means the " +
+        "settings forbid it (see show_config).")]
     public static async Task<string> RunCommand(
         [Description("The OpenOCD/TCL command to run, e.g. 'mdb 0x40010800 4' or 'ap0 32 0x00000000'.")] string command,
         CancellationToken ct = default)
@@ -196,6 +202,11 @@ public static class BackendTools
             return "ERROR: command must not be empty.";
         if (command.IndexOf('\n') >= 0 || command.IndexOf('\r') >= 0)
             return "ERROR: single-line command only (strip newlines; run each statement separately).";
+
+        // P0-1：内容分类——raw 通道与专用工具同权（erase/fill/mww/reset 走对应闸），
+        // 带路径/体积维度或动后端的（program/dump_image/shutdown）重定向专用工具。
+        if (RawCommandPolicy.Evaluate(cfg, command) is { } classified)
+            return classified;
 
         try
         {

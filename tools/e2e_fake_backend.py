@@ -15,6 +15,7 @@
    12. set_target：list / 未知名 / 切换（假后端是外部实例 → 警告 + 配置已换）/ 重复切换空转 / read_only 拦截
    13. halt 后 best-effort 回读核心寄存器（pc/lr/sp/xpsr；reset halt 同样带回）
    14. disconnect: external listener -> "cannot stop it"; read_only -> BLOCKED (panel button path)
+   15. run_command 内容分类（v0.4.12）：只读 mdb 透传；program -> BLOCKED 并重定向 flash_write
 """
 import json
 import os
@@ -229,6 +230,7 @@ def write_config(work, **permissions):
         "permissions": {
             "read_only": False,
             "allow_flash": True,
+            "allow_raw_command": True,  # 代码默认 false（v0.4.12 收紧）；e2e 显式开以测逃生舱透传
             "allow_set_permissions": True,
             "flash_allowed_paths": ["build/"],
             "flash_max_bytes": 1048576,
@@ -337,8 +339,11 @@ def main():
         banner("flash_erase_sector (allow_flash_erase defaults to false -> BLOCKED)")
         print(mcp.call("flash_erase_sector", {}))
 
-        banner("run_command (escape hatch, echo passthrough)")
+        banner("run_command (escape hatch, echo passthrough; allow_raw_command explicitly on in e2e config)")
         print(mcp.call("run_command", {"command": "mdb 0x40010800 4"}))
+
+        banner("run_command write-class (content policy: program -> BLOCKED, redirect flash_write)")
+        print(mcp.call("run_command", {"command": "program build/fw.bin verify"}))
 
         banner("halt -> read -> resume (exec control, allow_exec defaults to true)")
         print(mcp.call("halt", {}))

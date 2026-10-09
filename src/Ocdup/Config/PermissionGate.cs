@@ -49,6 +49,16 @@ public static class PermissionGate
             ? null
             : Blocked("flash erase", "allow_flash_erase", "set \"allow_flash_erase\": true in the ocd.json permissions block"));
 
+    /// <summary>
+    /// 无文件实参的 flash 写/保护类操作（flash fill* / flash protect，run_command 分类映射用）：
+    /// 没有「路径/大小」维度可校验，但至少要求与专用 flash 工具同级的人类授权（allow_flash）。
+    /// </summary>
+    public static string? CheckFlashOp(OcdConfig cfg, string op = "flash write") =>
+        CheckAnyWrite(cfg, op) ??
+        (cfg.AllowFlash
+            ? null
+            : Blocked(op, "allow_flash", "set \"allow_flash\": true in the ocd.json permissions block"));
+
     /// <summary>原始命令逃生舱（工具层后续接入）。</summary>
     public static string? CheckRawCommand(OcdConfig cfg) =>
         CheckAnyWrite(cfg, "run_command") ??

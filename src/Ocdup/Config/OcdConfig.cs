@@ -56,7 +56,12 @@ public sealed class OcdConfig
 
     /// <summary>执行控制(halt/resume/reset):改变目标执行状态,与写操作同级设防。默认允许。</summary>
     public bool AllowExec { get; private set; } = true;
-    public bool AllowRawCommand { get; private set; } = true;
+
+    /// <summary>
+    /// 原始命令逃生舱。默认 false（P0-1 定案）：run_command 的内容分类只能保证「已知写类命令
+    /// 与专用工具同权」，清单之外的命令仍会透传，所以通道本身收紧为 opt-in 的显式授权能力。
+    /// </summary>
+    public bool AllowRawCommand { get; private set; }
 
     /// <summary>
     /// set_permissions 的闸(默认 false):放宽权限是人的决定,模型只有在 ocd.json 里被显式

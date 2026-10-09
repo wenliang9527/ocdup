@@ -35,6 +35,7 @@ public sealed class OcdConfigTests : IDisposable
         Assert.Equal(6666, cfg.Port);
         Assert.False(cfg.ReadOnly);
         Assert.True(cfg.AllowFlash);
+        Assert.False(cfg.AllowRawCommand); // P0-1 定案：逃生舱默认收紧为 opt-in
         Assert.Equal("(default)", cfg.Sources["port"]);
     }
 
