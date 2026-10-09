@@ -5,8 +5,8 @@
 //  运行(在插件目录下):
 //    node test.js core     # 增量/半行/切片/批量裁剪/轮转/清空/方法守卫/方向归一化
 //    node test.js window   # 首次挂载只读尾部窗口(大日志不全量读入)
-//    node test.js api      # Δt/compact/导出/help(需要 MAX_ENTRIES≥40)
-//    node test.js client   # client.js 注册结构冒烟 + 纯函数契约(stub React,不起浏览器)
+//    node test.js api      # Δt/compact/导出/help/轮转续接+rotated路由(需要 MAX_ENTRIES≥40)
+//    node test.js client   # client.js 注册结构冒烟 + 纯函数契约 + 渲染冒烟(stub React,不起浏览器)
 //
 //  各模式需要的插件常量(如 MAX_ENTRIES/FIRST_TAIL)由 test.js 按 mode 自行设置,
 //  日志默认落临时目录——上面那行零配置可跑;手动设 env 可覆盖,压别的边界用。
@@ -265,16 +265,145 @@ const ok = (cond, label, extra) => {
       && /api\/ocdup-log/.test(rHelp.body), 'T11b help 路由返回接口说明', { s: rHelp.status })
     const rHelp405 = await call('/api/ocdup-log/help', { method: 'POST', url: '/' })
     ok(rHelp405.ok === false && /GET only/.test(rHelp405.error), 'T11b help 拒绝 POST')
+
+    // T12 v1.3.6 轮转续接(用户截图:重启后历史全空,footer 却写「轮转文件已生成」):
+    //   活动文件消失/收缩 且 .1 刚换过 → ocdup 轮转,把 .1 尾部接进环(不白屏);
+    //   .1 没动 → 面板清空/外部截断,照旧全清,旧历史不回流
+    const rotLines = []
+    for (let i = 1; i <= 6; i++) rotLines.push(line(300 + i, i % 2 ? 'cmd' : 'rsp', 'rot-' + i))
+    fs.writeFileSync(logFile, rotLines.join('\n') + '\n')
+    await sleep(600)
+    let rRot = await call('/api/ocdup-log', { method: 'GET', url: '/?since=0' })
+    ok(rRot.entries.length === 6, 'T12 前置:轮转前 6 条在环里', rRot.entries.length)
+
+    // 模拟 ocdup 轮转:活动文件整体移成 .1(mtime 保留),宿主该判定轮转并救援尾部
+    fs.renameSync(logFile, logFile + '.1')
+    await sleep(600)
+    fs.writeFileSync(logFile, line(400, 'SYS', 'after-rotate') + '\n')
+    await sleep(600)
+    rRot = await call('/api/ocdup-log', { method: 'GET', url: '/?since=0' })
+    const rotTexts = rRot.entries.map((e) => e.text)
+    ok(rRot.stats.rotated === true && rRot.stats.rotSize > 0 && typeof rRot.stats.rotMtimeMs === 'number',
+      'T12 stats 暴露 .1 的大小/时间', { rotated: rRot.stats.rotated, rotSize: rRot.stats.rotSize })
+    ok(rotTexts.indexOf('rot-6') >= 0 && rotTexts.indexOf('rot-1') >= 0,
+      'T12 轮转后 .1 尾部被接进环(看着的人不白屏)', rotTexts)
+    ok(rotTexts.indexOf('after-rotate') > rotTexts.indexOf('rot-6'),
+      'T12 新周期条目接在 .1 尾部之后(时序正确)', rotTexts)
+
+    // .1 没变时的收缩 = 清空/外部截断:全清,不把 .1 又捞回来
+    fs.writeFileSync(logFile, line(401, 'rsp', 'post-clear') + '\n')
+    await sleep(600)
+    rRot = await call('/api/ocdup-log', { method: 'GET', url: '/?since=0' })
+    ok(rRot.entries.length === 1 && rRot.entries[0].text === 'post-clear',
+      'T12 .1 未变时的收缩按清空处理(旧历史不回流)', rRot.entries.map((e) => e.text))
+
+    // /rotated 路由:自动续接已记住这份 .1 → 再点「加载」不二次灌入(防翻倍)
+    rRot = await call('/api/ocdup-log/rotated', { method: 'POST', url: '/' })
+    ok(rRot.ok && rRot.note === 'already loaded' && rRot.entries.length === 0,
+      'T12 自动续接过的 .1 再点加载返回 already loaded(不翻倍)', { note: rRot.note })
+
+    // 直接换 .1 内容(活动文件不动 → 不触发自动续接)→ /rotated 真加载
+    fs.writeFileSync(logFile + '.1', [
+      line(500, 'cmd', 'man-1'), line(501, 'rsp', 'man-2'), line(502, 'log', 'man-3'),
+    ].join('\n') + '\n')
+    await sleep(600)
+    rRot = await call('/api/ocdup-log/rotated', { method: 'POST', url: '/' })
+    ok(rRot.ok && rRot.note === 'loaded' && rRot.entries.length === 3,
+      'T12 新 .1 经 POST /rotated 补进环(3 条)', { note: rRot.note, n: rRot.entries.length })
+    ok(rRot.stats.cmd === 1 && rRot.stats.rsp === 2 && rRot.stats.log === 1,
+      'T12 /rotated 后 stats 计入补入的条目', { cmd: rRot.stats.cmd, rsp: rRot.stats.rsp, log: rRot.stats.log })
+    rRot = await call('/api/ocdup-log/rotated', { method: 'POST', url: '/' })
+    ok(rRot.ok && rRot.note === 'already loaded' && rRot.entries.length === 0,
+      'T12 同一份 .1 重复加载返回 already loaded', { note: rRot.note })
+    rRot = await call('/api/ocdup-log/rotated', { method: 'GET', url: '/' })
+    ok(rRot.ok === false && /POST only/.test(rRot.error), 'T12 /rotated 拒绝 GET')
+
+    // v1.3.7:清空后同一份 .1 还能再加载(clear 重置 rotLoaded)。不清的话
+    // 「加载过 → 清空 → 再点加载」会被 already loaded 挡住,而环里其实已空
+    rRot = await call('/api/ocdup-log/clear', { method: 'POST', url: '/' })
+    ok(rRot.ok && rRot.stats.kept === 0, 'T12 clear 路由重置内存环', { kept: rRot.stats.kept })
+    await sleep(500)
+    rRot = await call('/api/ocdup-log/rotated', { method: 'POST', url: '/' })
+    ok(rRot.ok && rRot.note === 'loaded' && rRot.entries.length === 3,
+      'T12 清空后同一份 .1 仍可再加载(rotLoaded 已重置)', { note: rRot.note, n: rRot.entries.length })
+
+    // T12b v1.3.8 POST /api/ocdup-target(失配胶囊一键切换):经 ctx.tools.execute
+    // 调 mcp__ocdup__set_target——MCP 工具在 Host 侧就是普通工具,v1.3.4 的后端
+    // 路由同款路径。fresh 实例 + tools 桩,不碰真实探针。
+    const fresh3 = require(path.join(__dirname, 'index.js'))
+    const r3 = {}
+    const toolCalls = []
+    const ctx3 = {
+      get: (n) => (n === 'webServer' ? { register: (r) => { r3[r.path] = r.handler } }
+        : n === 'tools' ? {
+          execute: async (a) => {
+            toolCalls.push(a)
+            return toolCalls.length === 1
+              ? { isError: false, value: "target switched to 'AT32F403A' -> target/at32f403axG.cfg" }
+              : { isError: true, value: 'BLOCKED: read_only session' }
+          },
+        } : undefined),
+      effect: (fn) => fn(),
+    }
+    dispose2 = fresh3.apply(ctx3)
+    const call3 = (route, method, bodyObj) => new Promise((resolve) => {
+      const res = { writeHead() {}, end: (t) => resolve(JSON.parse(t)) }
+      const req = {
+        method, url: '/',
+        on: (ev, fn) => {
+          if (ev === 'data' && bodyObj !== undefined) fn(Buffer.from(JSON.stringify(bodyObj)))
+          if (ev === 'end') fn()
+        },
+      }
+      r3[route](req, res)
+    })
+    let rT = await call3('/api/ocdup-target', 'GET')
+    ok(rT.ok === false && /POST only/.test(rT.error), 'T12b /api/ocdup-target 拒绝 GET')
+    rT = await call3('/api/ocdup-target', 'POST')
+    ok(rT.ok === false && /preset/.test(rT.error), 'T12b 缺 preset → 400', rT.error)
+    rT = await call3('/api/ocdup-target', 'POST', { preset: 'AT32F403A' })
+    ok(rT.ok && rT.action === 'set_target' && rT.preset === 'AT32F403A'
+      && /at32f403axG/.test(rT.text || ''),
+      'T12b 正常路径:ok + 回显 preset + 工具返回文本', rT)
+    ok(toolCalls.length === 1 && toolCalls[0].name === 'mcp__ocdup__set_target'
+      && toolCalls[0].arguments && toolCalls[0].arguments.name === 'AT32F403A',
+      'T12b 经 tools.execute 调 mcp__ocdup__set_target {name:preset}', toolCalls)
+    rT = await call3('/api/ocdup-target', 'POST', { preset: 'AT32F403A' })
+    ok(rT.ok === false && /BLOCKED/.test(rT.error || ''),
+      'T12b 工具 isError(如只读会话被拦)→ 502 + 原文错误', rT)
   }
 
   if (mode === 'client') {
     // T12 client.js 注册结构冒烟:stub 模块环境,验证两条注册分支不跑浏览器
+    // v1.3.6:useState 支持按调用次序覆盖初始值(T26 用位置 1 注入 stats)。
+    // v1.3.7:升级成带 hook 作用域的迷你 React——每个函数组件一份 hooks,
+    // 主组件作用域跨重渲染保留,于是「点按钮 → setState → 重渲染 → 看树」
+    // 能真跑(用户那个「条目被清空、加载备注还在」的自相矛盾画面就是这么抓的)。
+    const scopeStack = []
+    const newScope = () => ({ hooks: [], idx: 0, overrides: [] })
     const ReactStub = {
       createElement: (type, props, ...children) => ({ type, props, children }),
       memo: (f) => f,
-      useState: (v) => [typeof v === 'function' ? v() : v, () => {}],
+      useState: (v) => {
+        const s = scopeStack[scopeStack.length - 1]
+        const i = s.idx++
+        if (!(i in s.hooks)) {
+          s.hooks[i] = (i < s.overrides.length && s.overrides[i] !== undefined)
+            ? s.overrides[i]
+            : (typeof v === 'function' ? v() : v)
+        }
+        const setter = (arg) => {
+          s.hooks[i] = typeof arg === 'function' ? arg(s.hooks[i]) : arg
+        }
+        return [s.hooks[i], setter]
+      },
       useEffect: () => {},
-      useRef: (v) => ({ current: v }),
+      useRef: (v) => {
+        const s = scopeStack[scopeStack.length - 1]
+        const i = s.idx++
+        if (!(i in s.hooks)) s.hooks[i] = { current: v }
+        return s.hooks[i]
+      },
       useMemo: (f) => f(),
     }
     let loaded = null
@@ -289,8 +418,8 @@ const ok = (cond, label, extra) => {
     require(path.join(__dirname, 'client.js'))
     ok(loaded && typeof loaded.factory === 'function', 'T12 模块经 __ModuleLoader__.load 注册')
     const mod = loaded.factory(() => ReactStub)
-    ok(Array.isArray(mod.inject) && mod.inject.includes('slots') && mod.inject.includes('sidebarRightTabs')
-      && mod.inject.includes('sidebarRight'), 'T12 inject 声明含 slots + rightbar 服务', mod.inject)
+    ok(Array.isArray(mod.inject) && mod.inject.includes('slots'), 'T12 inject 声明 slots',
+      mod.inject)
 
     // 纯函数契约(_test 导出)
     const hi = mod._test.highlight('hello world hello', 'hello')
@@ -301,7 +430,7 @@ const ok = (cond, label, extra) => {
     ok(mod._test.fmtDt(null) === '—' && mod._test.fmtDt(500) === '500ms' && mod._test.fmtDt(1500) === '1.50s', 'T13 fmtDt 三档格式')
     ok(mod._test.hueOf('127.0.0.1:6666') === mod._test.hueOf('127.0.0.1:6666') && Number.isInteger(mod._test.hueOf('127.0.0.1:6666')), 'T13 hueOf 稳定')
 
-    // T14 匹配器/正则高亮/徽章共享态
+    // T14 匹配器/正则高亮
     const cm = mod._test.compileMatcher
     ok(cm('ABC', false) === 'abc', 'T14 子串模式小写化', cm('ABC', false))
     const re = cm('^mdw', true)
@@ -318,19 +447,7 @@ const ok = (cond, label, extra) => {
     ok(hr2.length === 4 && hr2[1].type === 'mark' && hr2[1].children[0] === '1'
       && hr2[3].children[0] === '2', 'T14 正则高亮包裹数字命中(非 g 正则不死循环)', hr2.map((x) => (typeof x === 'string' ? x : x.children)))
 
-    const bs = mod._test.badgeStore
-    const events = []
-    const un = bs.subscribe(() => events.push(bs.unread()))
-    bs.markSeen(10)
-    bs.update(15)
-    ok(events.length === 2 && events[0] === false && events[1] === true, 'T14 badgeStore markSeen→update 依次通知', events)
-    bs.markSeen(15)
-    ok(events.length === 3 && events[2] === false && bs.unread() === false, 'T14 markSeen 推进已读水位并清零', events)
-    bs.update(15)
-    ok(events.length === 3, 'T14 seq 不前进不重复通知')
-    un()
-    bs.update(20)
-    ok(events.length === 3, 'T14 退订后不再通知')
+    // v1.3.4:左侧图标与未读徽章已随入口改版移除,badgeStore 及其断言一并删除
 
     // T15 烧录进度解析(openocd 0.11/0.12 与 atopenocd 实测文案)
     const pfp = mod._test.parseFlashProgress
@@ -654,32 +771,109 @@ const ok = (cond, label, extra) => {
     ok(clHead2.head === 'Cortex-M4 r0p1' && clHead2.tail === 'dev 0x344' && clHead2.identified === false,
       'T23 型号未识别:head=内核 / tail=dev id(界面改用警示色图标)', clHead2)
 
+    // v1.3.4 后端状态派生(链路行第四段「后端」断开/恢复):backend SYS 行 → stopped/running
+    const bs2 = mod._test.backendStateOf
+    const mkBackend = (seq, text) => ({ seq, dir: 'sys', tool: 'backend', text, ts: '2026-10-08T12:00:00.000+08:00', tag: '', len: 1, dtMs: null })
+    ok(bs2([mkBackend(1, 'started openocd (pid 4711); command port 127.0.0.1:6666 is up')]) === 'running',
+      'T23 后端状态:started openocd → running')
+    ok(bs2([mkBackend(1, 'using the OpenOCD listener already present on 127.0.0.1:6666')]) === 'running',
+      'T23 后端状态:复用已有监听 → running')
+    ok(bs2([mkBackend(1, 'started openocd'), mkBackend(2, 'backend stopped - the probe behind 127.0.0.1:6666 is released')]) === 'stopped',
+      'T23 后端状态:disconnect 的 SYS 行 → stopped(取最近一条)')
+    ok(bs2([mkBackend(1, 'started openocd'), mkBackend(2, 'backend was not running (nothing on 127.0.0.1:6666) - nothing to disconnect.')]) === 'stopped',
+      'T23 后端状态:「本来就没跑」也是 stopped(不能回退读成已连接)')
+    ok(bs2([mkBackend(1, 'backend stopped - released'), mkBackend(2, 'started openocd (pid 99)')]) === 'running',
+      'T23 后端状态:重新 connect 后又回 running')
+    ok(bs2([]) === null && bs2([mkBackend(1, 'unrelated chatter')]) === null,
+      'T23 后端状态:没有 backend 行 → null(界面显示「未知」)')
+
+    // v1.3.5 结论压缩:卡片只放一个词,完整文案进 tooltip / 流水镜像
+    const bv = mod._test.backendVerdict
+    ok(bv('disconnect', true, 'backend stopped - the probe behind 127.0.0.1:6666 is released for other software.').label === '已断开'
+      && bv('disconnect', true, 'backend stopped').tone === 'ok',
+      'T23 断开结论:真断了 → 已断开', bv('disconnect', true, 'backend stopped'))
+    ok(bv('disconnect', true, 'backend was not running (nothing on 127.0.0.1:6666) - nothing to disconnect.').label === '未运行'
+      && bv('disconnect', true, 'backend was not running').tone === 'warn',
+      'T23 断开结论:本来就没跑 → 未运行(警示色,不是「已断开」)')
+    ok(bv('disconnect', true, 'backend on 127.0.0.1:6666 is still running and ocdup cannot stop it').label === '未释放'
+      && bv('disconnect', true, 'still running').tone === 'warn',
+      'T23 断开结论:外部实例杀不动 → 未释放(不能说成已断开)')
+    ok(bv('connect', true, 'connected to OpenOCD on 127.0.0.1:6666\nversion: ...').label === '已连接',
+      'T23 恢复结论:connect 成功 → 已连接')
+    ok(bv('disconnect', false, '失败:the host tools service is unavailable').label === '失败'
+      && bv('disconnect', false, 'x').tone === 'err',
+      'T23 路由/工具调用失败 → 失败(危险色)')
+
     // T24 面板整体渲染冒烟(stub React 下真跑一遍组件体):改工具栏/链路读数条
     // 时最容易出的是渲染期异常——这里至少保证空数据 + 有条目两条路径都不炸,
     // 且改版后的控件语言还在(chip 过滤 / 内嵌正则 / 无旧分隔线)
+    // 树序列化:函数组件就地展开(v1.3.7 起每个函数组件拿一份自己的 hook
+    // 作用域,子组件重渲染不污染主组件的 hooks)
     const flatten = (el, out) => {
       out = out || []
       if (el === null || el === undefined || el === false) return out
       if (Array.isArray(el)) { for (const x of el) flatten(x, out); return out }
       if (typeof el !== 'object') { out.push(el); return out }
       // 函数组件就地展开(stub React 不调度,这里手动走一层)
-      if (typeof el.type === 'function') return flatten(el.type(Object.assign({}, el.props, { children: el.children })), out)
+      if (typeof el.type === 'function') {
+        scopeStack.push(newScope())
+        const expanded = el.type(Object.assign({}, el.props, { children: el.children }))
+        scopeStack.pop()
+        return flatten(expanded, out)
+      }
       out.push(el)
       flatten(el.children, out)
       return out
     }
+    const btnTexts = (n) => flatten(n).filter((x) => typeof x === 'string').join('')
 
-    // 兜底分支:无 rightbar 服务 → main 槽
+    // T25 注册契约(v1.3.4:右侧停靠 tab,左侧图标移除):
+    //   * ctx.sidebarRightTabs.register({ id, kind, multiple, title, keepMounted,
+    //     guide }) 声明 tab 类型(照 ui-sidebar-terminal 模板,guide 不需要 commandId)
+    //   * body 注册在 sidebar.right.pane.tab,**key = 同一个 id**
+    //   * 左侧 sidebar.panellist 一个都不注册(用户不要左侧入口)
+    //   * 宿主没有右栏服务时退回 main 全局面板(v1.3.3 形态,id 同值)
     const calls = []
     const registered = {}
+    const tabDefs = []
     const slotsApi = {
       inject: (name, fn) => { calls.push(['inject', name]); fn() },
       register: (spec, comp) => { calls.push(['register', spec.name, spec.key || spec.id]); registered[spec.name + '|' + (spec.key || spec.id)] = comp },
     }
-    const ctxNoRight = { get: (n) => (n === 'slots' ? slotsApi : undefined), effect: (fn) => fn() }
-    mod.apply(ctxNoRight)
-    ok(calls.some((c) => c[0] === 'register' && c[1] === 'main'), 'T12 兜底分支注册 main 槽')
-    ok(!calls.some((c) => c[1] === 'sidebar.right.pane.tab'), 'T12 兜底分支不注册右栏 tab 体')
+    const ctxRight = {
+      get: (n) => (n === 'slots' ? slotsApi
+        : n === 'sidebarRightTabs' ? { register: (d) => tabDefs.push(d) }
+          : n === 'sidebarRight' ? { openTab: () => {} }
+            : undefined),
+      effect: (fn) => fn(),
+    }
+    mod.apply(ctxRight)
+    const TAB_ID = 'dsh-ocdup-panel'
+    ok(Array.isArray(mod.inject) && mod.inject.includes('slots')
+      && mod.inject.includes('sidebarRight') && mod.inject.includes('sidebarRightTabs'),
+      'T25 inject 声明 slots + 两个右栏服务', mod.inject)
+    ok(tabDefs.length === 1 && tabDefs[0].id === TAB_ID && tabDefs[0].kind === 'ocdup-log'
+      && tabDefs[0].multiple === false && tabDefs[0].keepMounted === true,
+      'T25 右栏 tab 类型(id/kind/单例/keepMounted)', tabDefs[0])
+    ok(Array.isArray(tabDefs[0].guide) && tabDefs[0].guide.length === 1
+      && tabDefs[0].guide[0].id === 'new' && typeof tabDefs[0].guide[0].title === 'function'
+      && typeof tabDefs[0].guide[0].icon === 'function',
+      'T25 guide 入口卡(无 commandId,terminal 同款)', tabDefs[0].guide)
+    ok(!!registered['sidebar.right.pane.tab|' + TAB_ID],
+      'T25 pane.tab body 的 key 与 tab id 同值(openTab 认 kind,body 认 id)', Object.keys(registered))
+    ok(!calls.some((c) => c[1] === 'sidebar.panellist'), 'T25 左侧图标不再注册(用户不要左侧入口)')
+    ok(!calls.some((c) => c[0] === 'register' && c[1] === 'main'), 'T25 右栏分支不注册 main')
+
+    // 兜底:宿主没有右栏服务 → main 全局面板(key 与图标 id 同值)
+    const pane = registered['sidebar.right.pane.tab|dsh-ocdup-panel']   // 先取引用,下面要清空重放
+    calls.length = 0
+    for (const k of Object.keys(registered)) delete registered[k]
+    mod.apply({ get: (n) => (n === 'slots' ? slotsApi : undefined), effect: (fn) => fn() })
+    ok(!!registered['main|ocdup-log'], 'T25 无右栏服务时退回 main 全局面板(id 同值)', Object.keys(registered))
+    ok(!calls.some((c) => c[1] === 'sidebar.right.pane.tab'), 'T25 兜底分支不注册右栏 body')
+
+    ok(/\.op-link-grow\b/.test(injectedStyles.text) && /560px/.test(injectedStyles.text),
+      'T12 窄面板收回芯片卡 grow(链路行不被撑成 3 行)', injectedStyles.text)
     ok(/op-row/.test(injectedStyles.text) && /640px/.test(injectedStyles.text)
       && /@container op-panel/.test(injectedStyles.text)
       && /op-dir-rsp/.test(injectedStyles.text) && /op-mark-ok/.test(injectedStyles.text)
@@ -701,32 +895,9 @@ const ok = (cond, label, extra) => {
     ok(/\.op-switch\b/.test(injectedStyles.text),
       'T12 失配切换胶囊样式(警示色)', injectedStyles.text)
 
-    // 右栏分支:tab 类型 + pane.tab 体 + 图标转发 openTab
-    calls.length = 0
-    const tabDefs = []
-    const opened = []
-    const ctxRight = {
-      get: (n) => {
-        if (n === 'slots') return slotsApi
-        if (n === 'sidebarRightTabs') return { register: (d) => tabDefs.push(d) }
-        if (n === 'sidebarRight') return { openTab: (k) => opened.push(k) }
-        return undefined
-      },
-      effect: (fn) => fn(),
-    }
-    mod.apply(ctxRight)
-    ok(tabDefs.length === 1 && tabDefs[0].id === 'dsh-ocdup-panel' && tabDefs[0].kind === 'ocdup-log'
-      && tabDefs[0].keepMounted === true, 'T12 右栏 tab 类型注册(id/kind/keepMounted)', tabDefs[0])
-    ok(Array.isArray(tabDefs[0].guide) && tabDefs[0].guide.length === 1
-      && tabDefs[0].guide[0].kind === 'ocdup-log' && typeof tabDefs[0].guide[0].icon === 'function',
-    'T12 guide 入口卡声明', tabDefs[0].guide)
-    ok(calls.some((c) => c[0] === 'register' && c[1] === 'sidebar.right.pane.tab' && c[2] === 'dsh-ocdup-panel'),
-      'T12 pane.tab 体以插件 id 为 key 注册')
-    ok(!calls.some((c) => c[0] === 'register' && c[1] === 'main'), 'T12 右栏分支不再注册整屏 main')
-
     // T24 面板整体渲染冒烟(stub React 下真跑一遍组件体):改工具栏/链路读数条时
     // 最容易出的是渲染期异常——这里至少保证空数据路径不炸,且改版后的控件语言还在
-    const pane = registered['sidebar.right.pane.tab|dsh-ocdup-panel']
+    // T24 面板整体渲染冒烟:链路行「后端」段(断开/恢复)也要在树里
     ok(typeof pane === 'function', 'T24 右栏 pane 体可取到')
     let tree = null
     let threw = ''
@@ -742,16 +913,228 @@ const ok = (cond, label, extra) => {
       'T24 搜索框占位文案(工具过滤交给 chip 条)', input && input.props.placeholder)
     ok(classes.indexOf('op-affix') >= 0 && classes.indexOf('op-btn') >= 0,
       'T24 内嵌正则开关 + 动作按钮在树里')
-    ok(texts.indexOf('全部目标') < 0 && texts.indexOf('链路') < 0,
-      'T24 空数据:目标下拉/链路读数条都不占位')
+    ok(texts.indexOf('全部目标') < 0,
+      'T24 空数据:目标下拉不占位')
+    // v1.3.7:链路行常驻——空数据也有「后端」开关(用户:这个界面没有控制后端的开关嘛?)
+    ok(texts.indexOf('链路') >= 0 && texts.indexOf('后端') >= 0 && texts.indexOf('未知') >= 0,
+      'T24 空数据链路行常驻:「后端」开关在(状态未知)', texts.slice(0, 10))
+    ok(texts.indexOf('探针') < 0 && texts.indexOf('芯片') < 0 && texts.indexOf('Flash') < 0,
+      'T24 空数据不摆三张链路占位卡')
 
-    // 图标点击 → openTab(kind)
-    ok(Array.isArray(calls.find((c) => c[0] === 'inject' && c[1] === 'sidebar.panellist')), 'T12 侧边栏图标已注册')
-    const outer = registered['sidebar.panellist|ocdup-log']({})
-    const iconEl = outer.type(outer.props)
-    ok(iconEl && typeof iconEl.props.onClick === 'function', 'T12 图标渲染为可点击元素')
-    iconEl.props.onClick({})
-    ok(opened.length === 1 && opened[0] === 'ocdup-log', 'T12 图标点击转发 openTab(kind)', opened)
+    // v1.3.4:左侧图标已移除(用户不要),入口改为右栏 guide 卡。
+    // 带数据渲染一遍,确认「后端」段(断开/恢复)在树里且带状态点。
+    const paneWithData = (() => {
+      let captured = null
+      const slots3 = { inject: (n, fn) => fn(), register: (spec, comp) => { if (spec.name === 'sidebar.right.pane.tab') captured = comp } }
+      mod.apply({ get: (n) => (n === 'slots' ? slots3 : n === 'sidebarRightTabs' ? { register: () => {} } : n === 'sidebarRight' ? { openTab: () => {} } : undefined), effect: (fn) => fn() })
+      return captured
+    })()
+    ok(typeof paneWithData === 'function', 'T24 右栏 pane 体可重复取到(重复 apply 不炸)')
+
+    // T26 v1.3.6 轮转空态(用户截图:重启后面板全空,footer 却写着「轮转文件
+    // 已生成」——2MB 历史一行都看不到):有 .1 时给大小/时间 + 「加载」入口,
+    // 没有 .1 时入口不出现;点击走 POST /api/ocdup-log/rotated
+    // v1.3.7:主组件 hook 作用域跨重渲染保留 → 能「点按钮→重渲染→看树」
+    // 覆盖数组按主组件 hook 次序寻址(useRef 也占位):
+    //   idx0 = tabVisibleRef, idx1 = entries, idx2 = stats
+    const mainScope = newScope()
+    const PanelComp = pane({}).type
+    let lastNodes = []
+    const renderNodes = (overrides) => {
+      mainScope.hooks = []
+      mainScope.idx = 0
+      mainScope.overrides = overrides || []
+      scopeStack.push(mainScope)
+      const tree = PanelComp({})
+      scopeStack.pop()
+      lastNodes = flatten(tree)
+      return lastNodes
+    }
+    const rerender = () => {
+      mainScope.idx = 0 // hooks 保留、位号归零:否则第二次跑会从尾继续数,全部重新初始化
+      scopeStack.push(mainScope)
+      const tree = PanelComp({})
+      scopeStack.pop()
+      lastNodes = flatten(tree)
+      return lastNodes
+    }
+    const findBtn = (nodes, text) => nodes.find((n) => n && n.type === 'button'
+      && typeof (n.props && n.props.onClick) === 'function' && btnTexts(n) === text)
+    const rotStats = {
+      cmd: 0, rsp: 0, sys: 0, err: 0, log: 0, bytes: 0, lastAt: null, exists: true,
+      kept: 0, lastSeq: 0, badLines: 0, logSize: 0, logMtimeMs: 1, rotated: true,
+      rotSize: 2097171, rotMtimeMs: Date.parse('2026-10-07T07:22:32+08:00'),
+    }
+    const nodes26 = renderNodes([undefined, undefined, rotStats])
+    const texts26 = nodes26.filter((n) => typeof n === 'string')
+    ok(texts26.some((t) => t.indexOf('已轮转到 .1') >= 0), 'T26 空态提示 .1 的存在',
+      texts26.filter((t) => t.indexOf('轮转') >= 0))
+    ok(texts26.indexOf('加载 .1 尾部') >= 0, 'T26 「加载 .1 尾部」按钮在空态里')
+    ok(texts26.some((t) => t.indexOf('2.0 MB') >= 0 && t.indexOf('10/7') >= 0),
+      'T26 提示带 .1 体积与最后写入时间', texts26.filter((t) => t.indexOf('2.0 MB') >= 0))
+    const btn26 = findBtn(nodes26, '加载 .1 尾部')
+    ok(!!btn26, 'T26 加载按钮可被定位(带 onClick)')
+    const fetchCalls = []
+    globalThis.fetch = (url, opts) => {
+      fetchCalls.push({ url: String(url), method: opts && opts.method })
+      return Promise.resolve({
+        json: () => Promise.resolve({
+          ok: true, note: 'loaded',
+          entries: [{ seq: 1, dir: 'cmd', tool: 'read_memory', text: 'rot-1', tag: '', len: 1, dtMs: null, ts: 'x' }],
+          stats: rotStats,
+        }),
+      })
+    }
+    btn26.props.onClick()
+    await sleep(30)
+    ok(fetchCalls.length === 1 && fetchCalls[0].url === '/api/ocdup-log/rotated' && fetchCalls[0].method === 'POST',
+      'T26 点击加载 → POST /api/ocdup-log/rotated', fetchCalls)
+    delete globalThis.fetch
+
+    const texts26b = renderNodes([undefined, undefined, Object.assign({}, rotStats, { rotated: false, rotSize: 0, rotMtimeMs: null })])
+      .filter((n) => typeof n === 'string')
+    ok(texts26b.indexOf('加载 .1 尾部') < 0 && texts26b.some((t) => t.indexOf('已轮转到 .1') < 0),
+      'T26 没有 .1 时空态不出现加载入口')
+    ok(texts26b.some((t) => t.indexOf('.1 无') >= 0), 'T26 footer 轮转列无 .1 时显示「.1 无」',
+      texts26b.filter((t) => t.indexOf('.1') >= 0))
+
+    const fst = mod._test.fmtStamp
+    ok(/^\d{1,2}\/\d{1,2} \d{2}:\d{2}$/.test(fst(Date.parse('2026-10-07T07:22:32+08:00'))),
+      'T26 fmtStamp:M/D HH:mm 形状(本地时区无关)', fst(Date.parse('2026-10-07T07:22:32+08:00')))
+    ok(fst(null) === '' && fst(undefined) === '' && fst('x') === '' && fst(NaN) === '',
+      'T26 fmtStamp:非时间输入回空串')
+
+    // T27 v1.3.7 空态的后端开关(用户截图问「这个界面没有控制后端的开关嘛?」):
+    // 链路行常驻,没流量时也有「后端」卡;点它真去 POST /api/ocdup-backend,
+    // 结论回填卡片(没信息时先断开——本来就没跑会如实说「未运行」)
+    renderNodes([undefined, undefined, null])
+    const backendBtn = findBtn(lastNodes, '后端未知')
+    ok(!!backendBtn, 'T27 空态有「后端」开关卡(值=未知)', btnTexts(lastNodes.find((n) => n && n.type === 'button' && btnTexts(n).indexOf('后端') >= 0) || {}))
+    const beCalls = []
+    globalThis.fetch = (url, opts) => {
+      beCalls.push({ url: String(url), method: opts && opts.method, body: opts && opts.body })
+      return Promise.resolve({
+        json: () => Promise.resolve({ ok: true, text: 'backend was not running (nothing on 127.0.0.1:6666) - nothing to disconnect.' }),
+      })
+    }
+    backendBtn.props.onClick()
+    await sleep(30)
+    ok(beCalls.length === 1 && beCalls[0].url === '/api/ocdup-backend' && beCalls[0].method === 'POST'
+      && JSON.parse(beCalls[0].body).action === 'disconnect',
+      'T27 空态点「后端」→ POST /api/ocdup-backend(无信息时先断开)', beCalls)
+    rerender()
+    const texts27 = lastNodes.filter((n) => typeof n === 'string')
+    ok(texts27.indexOf('未运行') >= 0, 'T27 断开结论回填到卡片(本来就没跑 → 未运行)',
+      texts27.filter((t) => t === '未运行' || t === '已断开' || t === '已连接'))
+    delete globalThis.fetch
+
+    // T28 v1.3.7 端到端复现用户那个自相矛盾画面:加载 .1 → 条目进列表;
+    // 再两段式清空 → 条目和「已加载 N 条」备注一起消失(旧版备注留着说谎)
+    renderNodes([undefined, undefined, rotStats])
+    const loadBtn = findBtn(lastNodes, '加载 .1 尾部')
+    ok(!!loadBtn, 'T28 加载按钮在空态里')
+    const inc = []
+    for (let i = 1; i <= 1470; i++) {
+      inc.push({ seq: i, dir: i % 2 ? 'cmd' : 'rsp', tool: 'read_memory', text: 'x' + i, tag: '127.0.0.1:6666', len: 1, dtMs: null, ts: '2026-10-07T07:00:0' + (i % 10) + '.000+08:00' })
+    }
+    globalThis.fetch = () => Promise.resolve({
+      json: () => Promise.resolve({ ok: true, note: 'loaded', entries: inc, stats: Object.assign({}, rotStats, { kept: 1470, lastSeq: 1470 }) }),
+    })
+    loadBtn.props.onClick()
+    await sleep(50)
+    rerender()
+    const texts28 = lastNodes.filter((n) => typeof n === 'string')
+    ok(texts28.indexOf('已加载 .1 尾部 1470 条') >= 0, 'T28 加载后备注显示条数')
+    ok(texts28.indexOf('日志已连接,等待 AI 调用 ocdup 工具…') < 0 && texts28.indexOf('1470 条 · 渲染 300') >= 0,
+      'T28 加载后空态让位给列表(计数 1470 条 · 渲染 300)——用户截图里缺的就是这一步',
+      texts28.filter((t) => t.indexOf('条') >= 0))
+    // 两段式清空:第一击进确认态,第二击真清
+    globalThis.fetch = () => Promise.resolve({ json: () => Promise.resolve({ ok: true, stats: rotStats }) })
+    findBtn(lastNodes, '清空').props.onClick()
+    await sleep(10)
+    rerender()
+    const confirmBtn = findBtn(lastNodes, '确认清空')
+    ok(!!confirmBtn, 'T28 清空第一击进入确认态(按钮变「确认清空」)')
+    confirmBtn.props.onClick()
+    await sleep(30)
+    rerender()
+    const texts28b = lastNodes.filter((n) => typeof n === 'string')
+    ok(texts28b.indexOf('已加载 .1 尾部 1470 条') < 0,
+      'T28 清空后「已加载 N 条」备注一起清(旧版条目没了备注还在,自相矛盾)')
+    ok(texts28b.indexOf('日志已连接,等待 AI 调用 ocdup 工具…') >= 0,
+      'T28 清空后回到空态')
+    ok(texts28b.indexOf('后端') >= 0, 'T28 清空后「后端」开关还在(链路行常驻)')
+    delete globalThis.fetch
+
+    // T29 v1.3.8 失配胶囊一键切换(用户实测:403 板插着、cfg 钉在 423 钥匙板上
+    // → connect 每次崩 openocd,表现为「连上就自己断开」;换对 cfg 后双 bank
+    // 1MB 全通)。胶囊从「复制 set_target 命令」升级为直调,成功后自动重连。
+    // 注意:胶囊是子组件,harness 的子作用域每次渲染都是新的(只有主组件跨重渲染
+    // 保留 hooks),所以这里断言 fetch 契约(路由/body/链式),不靠 rerender 看翻词。
+    const mm29 = 'connected to OpenOCD on 127.0.0.1:6666\nchip identity:\n'
+      + '  cpu (CPUID, ARM standard) @ 0xE000ED00: 0x410fc241\n'
+      + '    -> Cortex-M4 (ARMv7-M/v8-M, implementer ' + "'A'" + ', r0p1)\n'
+      + '  dev_id (vendor register) @ 0xE0042000: 0x70050344\n'
+      + '    -> dev_id 0x344, rev_id 0x7005\n'
+      + '    -> family: AT32F403A\n'
+      + '  target mismatch: identified AT32F403A, current target_cfg: D:/work/Ocdup/cfgs/target_at32f423_key.cfg -> use set_target AT32F403A'
+    const entries29 = [
+      { seq: 1, dir: 'sys', tool: 'backend', text: 'started D:\\ARMGCCTool\\atopenocd-py32\\bin\\openocd.exe (pid 12140); command port 127.0.0.1:6666 is up (interface: interface/cmsis-dap.cfg)', tag: '127.0.0.1:6666', len: 131, dtMs: null, ts: '2026-10-08T14:43:45.154+08:00' },
+      { seq: 2, dir: 'rsp', tool: 'connect', text: mm29, tag: '127.0.0.1:6666', len: mm29.length, dtMs: 35, ts: '2026-10-08T14:43:45.189+08:00' },
+    ]
+    const stats29 = {
+      cmd: 0, rsp: 1, sys: 1, err: 0, log: 0, bytes: 0, lastAt: null, exists: true,
+      kept: 2, lastSeq: 2, badLines: 0, logSize: 0, logMtimeMs: 1, rotated: false, rotSize: 0, rotMtimeMs: null,
+    }
+    renderNodes([undefined, entries29, stats29])
+    const swBtn = findBtn(lastNodes, '切换 AT32F403A')
+    ok(!!swBtn, 'T29 失配胶囊在链路行里(文案仍是 切换 <家族>)',
+      lastNodes.filter((n) => n && n.type === 'button').map((n) => btnTexts(n)))
+    const tgCalls = []
+    globalThis.fetch = (url, opts) => {
+      tgCalls.push({ url: String(url), method: opts && opts.method, body: opts && opts.body })
+      return Promise.resolve({
+        json: () => Promise.resolve({ ok: true, text: "target switched to 'AT32F403A' -> target/at32f403axG.cfg" }),
+      })
+    }
+    swBtn.props.onClick()
+    await sleep(30)
+    ok(tgCalls.length === 2
+      && tgCalls[0].url === '/api/ocdup-target' && tgCalls[0].method === 'POST'
+      && JSON.parse(tgCalls[0].body).preset === 'AT32F403A'
+      && tgCalls[1].url === '/api/ocdup-backend' && tgCalls[1].method === 'POST'
+      && JSON.parse(tgCalls[1].body).action === 'connect',
+      'T29 点胶囊 → POST /api/ocdup-target {preset} → 成功后自动 connect 刷新链路行', tgCalls)
+    // 失败路径(如只读会话被 ocdup 拦成 BLOCKED):只发一次 target 请求,不自动重连
+    const tgCalls2 = []
+    globalThis.fetch = (url, opts) => {
+      tgCalls2.push({ url: String(url), method: opts && opts.method, body: opts && opts.body })
+      return Promise.resolve({ json: () => Promise.resolve({ ok: false, error: 'BLOCKED: read_only session' }) })
+    }
+    swBtn.props.onClick()
+    await sleep(30)
+    ok(tgCalls2.length === 1 && tgCalls2[0].url === '/api/ocdup-target',
+      'T29 切换失败不自动重连(只发一次 target 请求)', tgCalls2)
+    delete globalThis.fetch
+
+    // T30 v1.3.9 轮询自愈:fetchWithTimeout 正常/超时两条路径。
+    // 背景(用户实测):一个挂起的轮询请求把整条链永久楔住(inFlightRef 永远 true,
+    // 之后每一拍都被挡在 fetch 之外,连 visibilitychange 都救不回来),视图冻死
+    // 3 分钟——现在 10s abort 落回 catch/finally,下一拍自动恢复。
+    const fwt = mod._test.fetchWithTimeout
+    ok(typeof fwt === 'function' && mod._test.POLL_FETCH_TIMEOUT_MS === 10000,
+      'T30 fetchWithTimeout 已导出且超时为 10s', mod._test.POLL_FETCH_TIMEOUT_MS)
+    let sawSignal = false
+    globalThis.fetch = (url, opts) => { sawSignal = !!(opts && opts.signal); return Promise.resolve({ ok: true }) }
+    const r30 = await fwt('/api/ocdup-log?since=1', { cache: 'no-store' }, 1000)
+    ok(r30.ok && sawSignal, 'T30 正常路径:透传 AbortSignal 并原样解析')
+    globalThis.fetch = (url, opts) => new Promise((resolve, reject) => {
+      opts.signal.addEventListener('abort', () => reject(new Error('aborted by timeout')))
+    })
+    let threw30 = ''
+    try { await fwt('/api/ocdup-log?since=1', {}, 30) } catch (e) { threw30 = e && e.message ? e.message : String(e) }
+    ok(/abort/i.test(threw30), 'T30 超时路径:挂起的 fetch 在 ms 后 abort 抛出(轮询链能落回 catch)', threw30)
+    delete globalThis.fetch
 
     delete globalThis.window
     delete globalThis.document
@@ -762,4 +1145,4 @@ const ok = (cond, label, extra) => {
   if (typeof dispose2 === 'function') dispose2()
   console.log('\nALL PASS (' + checks + ' checks, mode=' + mode + ')')
   fs.rmSync(tmp, { recursive: true, force: true })
-})().catch((e) => { console.error(e.message); process.exit(1) })
+})().catch((e) => { console.error(e.stack || e.message); process.exit(1) })

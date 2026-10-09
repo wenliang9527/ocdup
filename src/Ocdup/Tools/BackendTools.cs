@@ -41,6 +41,32 @@ public static class BackendTools
         }
     }
 
+    /// <summary>
+    /// 断开后端（v0.4.6）：停掉 ocdup **自己拉起**的 openocd 并释放探针，MCP 门面不断。
+    /// 用途：探针是独占资源，DSH 不用时交给别的 agent 软件（Claude Code / ZCode …）用；
+    /// 之后任何硬件工具都会失败，直到 connect（或任何一次会自动拉起的调用）。
+    /// read_only 会话拦截——停机属于改变后端状态（与 set_target 同一先例）。
+    /// 面板的「断开」按钮走的是同一条通道（Host 侧 ctx.tools.execute）。
+    /// </summary>
+    [McpServerTool(Name = "disconnect")]
+    [Description(
+        "Stop the OpenOCD backend that ocdup itself started and release the probe, without dropping the MCP connection " +
+        "(this facade stays alive; every hardware tool fails until connect). Use it when another agent program needs the " +
+        "probe - the command port is a shared exclusive resource. Idempotent: disconnecting an already-stopped backend is " +
+        "a no-op with an explanation. A listener started outside ocdup is reported, not stopped. Read-only sessions are blocked.")]
+    public static async Task<string> Disconnect(CancellationToken ct = default)
+    {
+        var cfg = ConfigStore.Instance.Current;
+
+        // 停机 = 改变后端状态：过 read_only 总闸（与 set_target 同一先例）
+        if (cfg.ReadOnly)
+            return "BLOCKED: 'disconnect' stops the OpenOCD backend, which read_only forbids. " +
+                   "To release the probe, set \"read_only\": false in ocd.json (top level or inside the permissions block), " +
+                   "or start ocdup with OCD_READONLY unset. See show_config.";
+
+        return await BackendSession.Instance.StopAsync(ct).ConfigureAwait(false);
+    }
+
     /// <summary>targets 输出优先用一行式摘要（省 token）；解析失败回退原始表格。</summary>
     private static string FormatTargets(string rawTargets) =>
         rawTargets.Length == 0

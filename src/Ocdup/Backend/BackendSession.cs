@@ -149,4 +149,51 @@ public sealed class BackendSession
 
     /// <summary>自己拉起的 openocd 的近期输出（backend_log 工具的数据源）。</summary>
     public string RecentBackendOutput(int maxLines) => _launcher.RecentOutput(maxLines);
+
+    /// <summary>
+    /// 断开后端（v0.4.6 的 disconnect 通道）：丢连接 → 杀 ocdup **自己拉起**的 openocd
+    /// （外部实例杀不动，stop 是 no-op）→ 等端口释放。**不重新拉起**——探针交还给别的
+    /// 软件用；调 connect 随时拉回来。
+    /// 幂等：本来就没在跑也回可读文案，不抛。占着 _connectGate：断开不能和一次正在
+    /// 进行的 Acquire 交叉（否则可能刚断开又被顺手拉起来）。
+    /// </summary>
+    public async Task<string> StopAsync(CancellationToken ct = default)
+    {
+        var cfg = ConfigStore.Instance.Current;
+        await _connectGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var wasUp = Volatile.Read(ref _client) is not null
+                || await OpenOcdLauncher.ProbePortAsync(cfg.Host, cfg.Port, 300, ct).ConfigureAwait(false);
+
+            Invalidate();
+            _launcher.Stop();
+
+            // 端口 linger：Kill+WaitForExit 后通常已释放，最多再等 2s
+            for (var i = 0; i < 20 && await OpenOcdLauncher.ProbePortAsync(cfg.Host, cfg.Port, 100, ct).ConfigureAwait(false); i++)
+                await Task.Delay(100, ct).ConfigureAwait(false);
+
+            var message = StopVerdict(wasUp,
+                await OpenOcdLauncher.ProbePortAsync(cfg.Host, cfg.Port, 300, ct).ConfigureAwait(false),
+                $"{cfg.Host}:{cfg.Port}");
+            _traffic.Record("backend", "SYS", message, $"{cfg.Host}:{cfg.Port}");
+            return message;
+        }
+        finally
+        {
+            _connectGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// 断开结果的文案（纯函数，可单测）：区分「真断了」/「本来就没跑」/「端口上不是
+    /// 我们起的实例，杀不动」三种——第三种必须说清楚，否则用户会以为探针已经释放。
+    /// </summary>
+    internal static string StopVerdict(bool wasUp, bool stillUp, string endpoint) =>
+        stillUp
+            ? $"backend on {endpoint} is still running and ocdup cannot stop it: that listener was started outside ocdup. " +
+              "Stop that openocd yourself (or its owner) to free the probe."
+            : wasUp
+                ? $"backend stopped - the probe behind {endpoint} is released for other software. Call connect to bring it back."
+                : $"backend was not running (nothing on {endpoint}) - nothing to disconnect.";
 }

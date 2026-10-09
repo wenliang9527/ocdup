@@ -1,6 +1,35 @@
 'use strict'
 // ============================================================
-//  dsh-ocdup-panel — Host 半区(永久 cordis 插件)  v1.3.2
+//  dsh-ocdup-panel — Host 半区(永久 cordis 插件)  v1.3.9
+//
+//  v1.3.9:纯 Client 侧(轮询链自愈:fetch 超时 + kick),数据层与路由契约无变化;
+//  仅版本号随插件整体 bump。
+//
+//  v1.3.8:新增 POST /api/ocdup-target(target 失配一键切换)——identify 认出
+//  的家族与当前 target_cfg 不符时,面板胶囊从「复制 set_target 命令给会话」
+//  升级为经 ctx.tools.execute 直调 mcp__ocdup__set_target(用户实测场景:403
+//  板插着、cfg 钉在 423 钥匙板上 → DEV_ID 读 0 → flash probe 断言崩 openocd,
+//  表现为「连上就自己断开」;换对 cfg 后双 bank 1MB 全通)。
+//
+//  v1.3.7:清空路由补重置 rotLoaded——「加载过 .1 → 清空 → 再点加载」不该被
+//  already loaded 挡住(环里其实已经空了);其余路由契约不变。
+//
+//  v1.3.6:轮转不再丢视野 —— 尾随发现活动文件消失/收缩且 .1 刚换过时,先把
+//  .1 的尾部窗口接进内存环再继续跟新文件(清空路由自己 reset,.1 没动,不会
+//  误判成轮转);新增 POST /api/ocdup-log/rotated 按需补载;stats 增
+//  rotSize/rotMtimeMs。
+//
+//  v1.3.5:纯 Client 侧界面修正(后端段结论压缩 + 链路行 2×2 网格),数据层与
+//  路由契约无变化;仅版本号随插件整体 bump。
+//
+//  v1.3.4:新增 POST /api/ocdup-backend(断开/恢复后端)——inject 增加 'tools',
+//  经 ctx.tools.execute 调 mcp__ocdup__disconnect / mcp__ocdup__connect
+//  (MCP 工具在 Host 侧就是普通工具;10s 超时 + AbortController)。
+//  纯增量:数据层无变化,尾随/路由契约不变。
+//
+//  v1.3.3:修「侧边栏图标点了没反应」——注册契约对齐宿主 0.2.0-rc.2
+//  (panellist id 与 main key 严格同值、inject 只留 slots)。纯 Client 侧,
+//  数据层无变化,Host 继续哑管道;仅版本号随插件整体 bump。
 //
 //  v1.3.2:界面精修(按钮/文字/配色:控件不折行、engaged 墨色实底、方向通道
 //  chip 取代下拉、工具条单行横滚、链路读数条层级翻转)——纯 Client 侧,
@@ -40,6 +69,10 @@
 //   1. 尾随 %LOCALAPPDATA%\Ocdup\mcp-traffic.jsonl —— ocdup MCP 服务器的
 //      TrafficLog 把 AI 每条 OpenOCD 交互镜像到这个共享 JSONL(逐条落盘,
 //      超 2MB 轮转到 .1;面板清空 = 截断,ocdup 侧检测收缩会自动重开)。
+//      v1.3.6:轮转不再丢视野 —— 活动文件收缩且 .1 刚换过时,先把 .1 的尾部
+//      窗口接进内存环再继续跟新文件(清空路由自己 reset,不会误判成轮转);
+//      POST /api/ocdup-log/rotated 按需把 .1 尾部补进环(空态「加载」按钮),
+//      重启后的历史不会只因轮转就从面板上消失。
 //      行结构与 acccom 的 mcp-traffic.jsonl 同一套,本文件几乎是
 //      dsh-serial-panel Host 半区的换数据源移植。
 //   2. 经 webServer.register 挂同源私有路由 /api/ocdup-log,把增量行喂给
@@ -61,8 +94,15 @@ const path = require('path')
 
 const ROUTE = '/api/ocdup-log'
 const ROUTE_CLEAR = '/api/ocdup-log/clear'
+const ROUTE_ROTATED = '/api/ocdup-log/rotated'
 const ROUTE_EXPORT = '/api/ocdup-log/export'
 const ROUTE_HELP = '/api/ocdup-log/help'
+const ROUTE_BACKEND = '/api/ocdup-backend'
+const ROUTE_TARGET = '/api/ocdup-target' // v1.3.8:失配胶囊一键切 target_cfg
+// 面板动作 → ocdup MCP 工具名(serverName=ocdup → mcp__ocdup__<tool>)
+const BACKEND_ACTION_TOOL = { disconnect: 'mcp__ocdup__disconnect', connect: 'mcp__ocdup__connect' }
+const TARGET_TOOL = 'mcp__ocdup__set_target' // v1.3.8
+const BACKEND_CALL_TIMEOUT_MS = 10000 // stdio 往返 + 杀 openocd + 等端口释放(≤2s)
 
 /** 正整数环境变量读取(非法值回落默认)。 */
 function intEnv(name, fallback) {
@@ -123,17 +163,43 @@ const HELP_MD = [
   '- `GET /api/ocdup-log?stats=1` — 零条目仅统计(徽章/存活检查)',
   '- `GET /api/ocdup-log?since=<seq>&compact=1&max=<n>` — 单字段 payload 截断(≤4096)',
   '- `POST /api/ocdup-log/clear` — 截断共享日志并重置内存环',
+  '- `POST /api/ocdup-log/rotated` — 把 .1(轮转备份)尾部窗口补进内存环并返回新增条目;同一份 .1 重复加载返回空 + note(轮转时的自动续接走同一条读取路径)',
+  '- `POST /api/ocdup-backend` body `{action:"disconnect"|"connect"}` — 面板「后端」段按钮:经 Host `ctx.tools.execute` 调 `mcp__ocdup__disconnect` / `mcp__ocdup__connect`(断开=停掉 ocdup 自拉的 openocd 释放探针,MCP 门面不断;只读会话会被 ocdup 拦成 BLOCKED)',
+  '- `POST /api/ocdup-target` body `{preset:"AT32F403A"}` — 面板失配胶囊的一键切换:经 Host `ctx.tools.execute` 调 `mcp__ocdup__set_target`(切换=用新 target_cfg 重启 ocdup 自拉的 openocd;preset 名见 ocd.json 的 `target_presets`,传 `"list"` 可列出;只读会话被拦成 BLOCKED)',
   '- `GET /api/ocdup-log/export?format=jsonl|csv` — 导出内存环为附件',
   '- direction:`cmd`(TCL 命令)/`rsp`(响应)/`sys`(后端生命周期)/`err`(通道错误)',
   '- tool:发起的 MCP 工具名(flash_write/read_memory/…),`backend` = 生命周期事件',
 ].join('\n')
 
+/** 读取 POST 的 JSON body(空体/坏 JSON → 空对象,由调用方校验字段)。 */
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    let size = 0
+    req.on('data', (c) => {
+      size += c.length
+      if (size > 64 * 1024) { reject(new Error('body too large')); req.destroy(); return }
+      chunks.push(c)
+    })
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8').trim()
+      if (!raw) { resolve({}); return }
+      try { resolve(JSON.parse(raw)) } catch (e) { resolve({}) }
+    })
+    req.on('error', reject)
+  })
+}
+
 module.exports = {
   name: 'dsh-ocdup-panel',
-  inject: ['webServer'],
+  inject: ['webServer', 'tools'],
   apply(ctx) {
     const webServer = ctx.get('webServer')
     if (!webServer || typeof webServer.register !== 'function') return
+    // v0.4.6:断开/恢复探针的通道。MCP 工具在 Host 侧就是普通工具(mcp__ocdup__*,
+    // dsh-mcp-client 注册在 ctx.tools 上),所以面板按钮不必「复制提问让 AI 调」,
+    // 直接走 ctx.tools.execute —— 宿主文档明确这种直接调用只是不受 agent 提醒跟踪。
+    const tools = ctx.get('tools')
 
     const file = logPath()
     let offset = 0          // 已读字节偏移
@@ -141,8 +207,10 @@ module.exports = {
     let firstRead = true    // 是否尚未读过(决定能否启用尾部窗口)
     let seq = 0             // 单调递增序号(不随 clear/轮转重置,客户端 since 依赖它)
     let prevTsMs = null     // 上一条记录的毫秒时间戳(Δt 用;坏时间戳不更新基准)
+    let rotSeen = null      // 上一轮轮询时 .1 的 {size,mtimeMs}(变了=刚发生过轮转)
+    let rotLoaded = null    // 已经补进环的那份 .1(同一份不重复加载)
     const entries = []      // { seq, id, tool, dir, text, tag, ts, len, dtMs },seq 递增
-    const stats = { cmd: 0, rsp: 0, sys: 0, err: 0, log: 0, bytes: 0, lastAt: null, exists: false, badLines: 0, logSize: 0, logMtimeMs: null, rotated: false }
+    const stats = { cmd: 0, rsp: 0, sys: 0, err: 0, log: 0, bytes: 0, lastAt: null, exists: false, badLines: 0, logSize: 0, logMtimeMs: null, rotated: false, rotSize: 0, rotMtimeMs: null }
 
     const reset = () => {
       offset = 0
@@ -209,6 +277,41 @@ module.exports = {
       }
     }
 
+    /**
+     * v1.3.6:读 .1 的尾部窗口并消费进内存环,返回新增条目(供轮转救援与
+     * /rotated 路由共用)。丢窗口首部的半行——与首次挂载同一套语义。
+     */
+    const ingestRotated = (rot) => {
+      const mark = entries.length
+      try {
+        const from = Math.max(0, rot.size - FIRST_TAIL_BYTES)
+        const fd = fs.openSync(file + '.1', 'r')
+        try {
+          const buf = Buffer.allocUnsafe(rot.size - from)
+          const read = fs.readSync(fd, buf, 0, buf.length, from)
+          let text = buf.toString('utf8', 0, read)
+          // 只有从中段开窗才需要丢半行(from=0 时窗口起点就是行边界,丢了会
+          // 把第一条完整行当半行干掉);整个窗口都是半行则整段丢
+          if (from > 0) {
+            const nl = text.indexOf('\n')
+            text = nl >= 0 ? text.slice(nl + 1) : ''
+          }
+          if (text) consume(text)
+        } finally {
+          try { fs.closeSync(fd) } catch (e) { /* ignore */ }
+        }
+      } catch (e) { /* .1 读不了(刚删/权限):环保持原样,下一轮再看 */ }
+      return entries.slice(mark)
+    }
+
+    // 轮转救援:重置环 → 接进 .1 尾部 → 记住这份 .1(否则用户再点空态「加载」
+    // 按钮会把同一份 .1 二次灌进环,条目翻倍)
+    const salvageRotated = (rot) => {
+      reset()
+      ingestRotated(rot)
+      rotLoaded = rot
+    }
+
     const tail = () => {
       try {
         let st = null
@@ -216,9 +319,30 @@ module.exports = {
         stats.exists = !!st
         if (st) { stats.logSize = st.size; stats.logMtimeMs = st.mtimeMs }
         else { stats.logSize = 0; stats.logMtimeMs = null }
-        try { stats.rotated = fs.existsSync(file + '.1') } catch (e) { stats.rotated = false }
-        if (!st) { if (offset !== 0) reset(); return }
-        if (st.size < offset) reset() // 面板清空(截断)或 ocdup 轮转成新文件
+        let rot = null
+        try {
+          const rst = fs.statSync(file + '.1')
+          rot = { size: rst.size, mtimeMs: rst.mtimeMs }
+        } catch (e) { rot = null }
+        stats.rotated = !!rot
+        stats.rotSize = rot ? rot.size : 0
+        stats.rotMtimeMs = rot ? rot.mtimeMs : null
+        // 轮转判定:活动文件消失/收缩 且 .1 刚换过 → ocdup 轮转(把 .1 尾部接进来,
+        // 看着面板的人不白屏);.1 没动 → 面板清空或外部截断,照旧全清。
+        const rotChanged = !!rot && (!rotSeen || rot.size !== rotSeen.size || rot.mtimeMs !== rotSeen.mtimeMs)
+        rotSeen = rot
+        if (!st) {
+          if (offset !== 0) {
+            if (rotChanged) salvageRotated(rot)
+            else reset()
+          }
+          return
+        }
+        if (st.size < offset) {
+          // 面板清空(截断)或 ocdup 轮转成新文件
+          if (rotChanged) salvageRotated(rot)
+          else reset()
+        }
         if (st.size === offset) return
 
         let from = offset
@@ -257,6 +381,7 @@ module.exports = {
       kept: entries.length, lastSeq: seq, logPath: file,
       badLines: stats.badLines, logSize: stats.logSize,
       logMtimeMs: stats.logMtimeMs, rotated: stats.rotated,
+      rotSize: stats.rotSize, rotMtimeMs: stats.rotMtimeMs,
     })
 
     /**
@@ -322,12 +447,138 @@ module.exports = {
             fs.writeFileSync(file, '')
           } catch (e) { /* 文件尚不存在时无需截断 */ }
           reset()
+          // 清空后仍允许重新加载同一份 .1:否则「加载」按钮会被 already loaded
+          // 挡住,而环里其实已经空了(加载过→清空→再点,按钮没反应)
+          rotLoaded = null
           jsonResponse(res, 200, { ok: true, stats: view() })
         } catch (error) {
           jsonResponse(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) })
         }
       },
     }), 'dsh-ocdup-panel: ' + ROUTE_CLEAR)
+
+    // v1.3.6:按需把 .1(轮转备份)尾部窗口补进内存环。空态「加载」按钮走这里;
+    // 轮转时的自动续接(见 tail)走同一条 ingestRotated 读取路径,不复制逻辑。
+    ctx.effect(() => webServer.register({
+      kind: 'exact',
+      path: ROUTE_ROTATED,
+      async handler(req, res) {
+        try {
+          if (req.method !== 'POST') {
+            jsonResponse(res, 405, { ok: false, error: 'POST only' })
+            return
+          }
+          let rot = null
+          try {
+            const rst = fs.statSync(file + '.1')
+            rot = { size: rst.size, mtimeMs: rst.mtimeMs }
+          } catch (e) { rot = null }
+          if (!rot || rot.size <= 0) {
+            jsonResponse(res, 200, { ok: true, entries: [], note: 'no rotated file', stats: view() })
+            return
+          }
+          if (rotLoaded && rotLoaded.size === rot.size && rotLoaded.mtimeMs === rot.mtimeMs) {
+            jsonResponse(res, 200, { ok: true, entries: [], note: 'already loaded', stats: view() })
+            return
+          }
+          const added = ingestRotated(rot)
+          rotLoaded = rot
+          jsonResponse(res, 200, { ok: true, entries: added, note: 'loaded', stats: view() })
+        } catch (error) {
+          jsonResponse(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) })
+        }
+      },
+    }), 'dsh-ocdup-panel: ' + ROUTE_ROTATED)
+
+    // 断开/恢复后端(面板「后端」段的按钮):POST {action:'disconnect'|'connect'}
+    // → ctx.tools.execute 调 mcp__ocdup__<disconnect|connect>。动作本身会被
+    // ocdup 的 TrafficLog 镜像成 cmd/rsp + backend SYS 行,面板流水里可见可追溯。
+    let callSeq = 0
+    const callOcpTool = async (name, args) => {
+      if (!tools || typeof tools.execute !== 'function') {
+        return { ok: false, error: 'the host tools service is unavailable in this DSH build' }
+      }
+      const ctl = new AbortController()
+      const timer = setTimeout(() => ctl.abort(), BACKEND_CALL_TIMEOUT_MS)
+      try {
+        const result = await tools.execute({
+          callId: 'ocdup-panel-' + (++callSeq),
+          name,
+          arguments: args || {},
+          signal: ctl.signal,
+        })
+        // ToolExecutionResult: { isError, value, content } —— content 是 ContentBlock[]
+        const blocks = Array.isArray(result && result.content) ? result.content : []
+        const text = (typeof result && result.value === 'string' ? result.value : '')
+          || blocks.map((b) => (b && typeof b.text === 'string' ? b.text : '')).filter(Boolean).join('\n')
+          || (typeof result && result.value != null ? JSON.stringify(result.value) : '')
+        return result && result.isError
+          ? { ok: false, error: text || 'the tool call failed' }
+          : { ok: true, text }
+      } catch (error) {
+        const aborted = error && error.name === 'AbortError'
+        return {
+          ok: false,
+          error: aborted
+            ? `timed out after ${BACKEND_CALL_TIMEOUT_MS / 1000}s calling ${name} (the MCP server may be busy)`
+            : (error instanceof Error ? error.message : String(error)),
+        }
+      } finally {
+        clearTimeout(timer)
+      }
+    }
+
+    ctx.effect(() => webServer.register({
+      kind: 'exact',
+      path: ROUTE_BACKEND,
+      async handler(req, res) {
+        try {
+          if (req.method !== 'POST') {
+            jsonResponse(res, 405, { ok: false, error: 'POST only' })
+            return
+          }
+          const body = await readJsonBody(req)
+          const action = body && typeof body.action === 'string' ? body.action : ''
+          const name = BACKEND_ACTION_TOOL[action]
+          if (!name) {
+            jsonResponse(res, 400, { ok: false, error: "action must be 'disconnect' or 'connect'" })
+            return
+          }
+          const out = await callOcpTool(name, {})
+          jsonResponse(res, out.ok ? 200 : 502, Object.assign({ ok: out.ok, action }, out.ok ? { text: out.text } : { error: out.error }))
+        } catch (error) {
+          jsonResponse(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) })
+        }
+      },
+    }), 'dsh-ocdup-panel: ' + ROUTE_BACKEND)
+
+    // v1.3.8:一键切换 target_cfg(target 失配胶囊):POST {preset:'AT32F403A'}
+    // → ctx.tools.execute 调 mcp__ocdup__set_target。切换 = 用新 target_cfg
+    // 重启 ocdup 自拉的 openocd(preset 名见 ocd.json 的 target_presets,传
+    // 'list' 可列出);只读会话被 ocdup 拦成 BLOCKED。胶囊切换成功后 client
+    // 会顺手 connect 一次刷新链路行,所以这条路由只负责切换本身,不链式调用。
+    ctx.effect(() => webServer.register({
+      kind: 'exact',
+      path: ROUTE_TARGET,
+      async handler(req, res) {
+        try {
+          if (req.method !== 'POST') {
+            jsonResponse(res, 405, { ok: false, error: 'POST only' })
+            return
+          }
+          const body = await readJsonBody(req)
+          const preset = body && typeof body.preset === 'string' ? body.preset.trim() : ''
+          if (!preset) {
+            jsonResponse(res, 400, { ok: false, error: "preset must be a non-empty string (see ocd.json target_presets)" })
+            return
+          }
+          const out = await callOcpTool(TARGET_TOOL, { name: preset })
+          jsonResponse(res, out.ok ? 200 : 502, Object.assign({ ok: out.ok, action: 'set_target', preset }, out.ok ? { text: out.text } : { error: out.error }))
+        } catch (error) {
+          jsonResponse(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) })
+        }
+      },
+    }), 'dsh-ocdup-panel: ' + ROUTE_TARGET)
 
     // 导出 Host 内存环(≤MAX_ENTRIES 条,非完整磁盘日志)为 jsonl/csv 附件
     ctx.effect(() => webServer.register({

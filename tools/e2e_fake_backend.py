@@ -14,6 +14,7 @@
    11. connect 后后 best-effort 自动识别芯片 + flash 布局；target 失配时回报失配行
    12. set_target：list / 未知名 / 切换（假后端是外部实例 → 警告 + 配置已换）/ 重复切换空转 / read_only 拦截
    13. halt 后 best-effort 回读核心寄存器（pc/lr/sp/xpsr；reset halt 同样带回）
+   14. disconnect: external listener -> "cannot stop it"; read_only -> BLOCKED (panel button path)
 """
 import json
 import os
@@ -274,6 +275,10 @@ def main():
         banner("show_config")
         print(mcp.call("show_config"))
 
+        banner("disconnect (fake backend is an external listener -> reported, not stopped)")
+        print(mcp.call("disconnect", {}))
+        print(mcp.call("status", {}))
+
         banner("status")
         print(mcp.call("status"))
 
@@ -368,6 +373,7 @@ def main():
         print(mcp.call("write_memory", {"address": "0x20000000", "values": ["0x1"]}))
         print(mcp.call("halt", {}))
         print(mcp.call("set_target", {"name": "AT32F403A"}))
+        print(mcp.call("disconnect", {}))
 
         banner("backend commands observed")
         for c in backend.commands:

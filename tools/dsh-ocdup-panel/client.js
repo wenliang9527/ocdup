@@ -1,6 +1,84 @@
 'use strict'
 // ============================================================
-//  dsh-ocdup-panel — Client 半区(浏览器面板,永久 cordis 插件)  v1.3.2
+//  dsh-ocdup-panel — Client 半区(浏览器面板,永久 cordis 插件)  v1.3.9
+//
+//  v1.3.9:轮询链自愈(用户实测:面板视图冻死 3 分钟不刷新,卡片停在旧状态):
+//   * fetch 走 fetchWithTimeout(10s AbortController 超时)——以前一个挂起的
+//     请求会把整条 setTimeout 链永久楔住(inFlightRef 永远 true,之后每一拍都被
+//     `if (inFlightRef.current)` 挡在 fetch 之外,连 visibilitychange 的立即
+//     刷新也救不回来);现在超时 abort 落回 catch/finally,下一拍自动恢复;
+//   * kick():切回本标签(tabVisible false→true)/ 窗口重新聚焦(focus 事件)/
+//     visibilitychange 都立即补一拍——后台这些拍可能整段没收到(挂起/节流),
+//     回到前台不该还看着旧状态;
+//   * fetchWithTimeout 与 POLL_FETCH_TIMEOUT_MS 进 _test(T30 覆盖正常/超时两条路径)。
+//
+//  v1.3.8:失配胶囊从「复制命令」升级为「一键切换」(用户实测:403 板插着、
+//  cfg 钉在 423 钥匙板上 → connect 每次崩 openocd,「连上就自己断开」):
+//   * SwitchTargetBtn 点击 → POST /api/ocdup-target → Host 经 ctx.tools.execute
+//     直调 mcp__ocdup__set_target(v1.3.0 时面板还不能调 MCP,只能复制命令让
+//     用户/Agent 粘回会话);切换=重启 ocdup 自拉的 openocd
+//   * 切换成功后父组件顺手 connect 一次:链路行当场刷新,胶囊随新 identify
+//     (无失配行)自动消失——否则 set_target 重启后端后「后端」卡显示已连接、
+//     链路行却还是旧报告,再点「后端」反而变成断开
+//   * 烧录进行中(flashCall open)要二次确认(3s 窗口):重启后端会打断 AI 的
+//     烧录,v1.3.5 同款教训
+//
+//  v1.3.7:空态也要能控后端(用户截图问「这个界面没有控制后端的开关嘛?」——
+//  重启后没流量,链路行整行不渲染,「后端」断开/恢复开关跟着消失):
+//   * 链路行**常驻**:不再要求 probe/chip/flash 至少有一项。一条链路读数都
+//     没有时只留「后端」一张卡(探针/芯片/Flash 占位卡说的是「日志里缺这项」,
+//     空态是「还没有日志」,摆三张未识别只是添乱)
+//   * 修两个自家 bug:① 清空只清 entries 不清 rotNote——「已加载 .1 尾部
+//     1470 条」在条目被清掉后继续说谎(用户就是这么看到自相矛盾的空态);
+//     ② Host 清空不重置 rotLoaded——加载过→清空→再点「加载」被 already
+//     loaded 挡住,而环里其实已经空了
+//
+//  v1.3.6:轮转的历史不再从面板上消失(用户截图:重启后面板全空,footer 却写着
+//  「轮转文件已生成」——2MB 历史一行都看不到):
+//   * Host:活动文件收缩且 .1 刚换过 → 判定为 ocdup 轮转(不是清空),先把 .1
+//     尾部窗口接进内存环再继续跟新文件——正在看的面板不白屏;清空路由自己
+//     reset,.1 没动,不会误判。stats 新增 rotSize/rotMtimeMs
+//   * 新增 POST /api/ocdup-log/rotated:按需把 .1 尾部补进环(空态「加载」
+//     按钮),同一份 .1 重复加载返回 note=already loaded
+//   * 空态:有 .1 时显示「更早的 x 已轮转(时间)」+ 加载按钮,加载结果以一次
+//     性备注反馈;footer 轮转列改显 .1 大小与时间(原来只说「已生成」)
+//
+//  v1.3.5:后端段反馈压缩 + 链路行 2×2(用户截图:一整句英文结论铺在卡片外,
+//  把链路行撑爆;窄停留下「后端」还独自占一行):
+//   * 卡片只显示一个词(backendVerdict:已断开/未运行/未释放/已连接/失败),
+//     完整文案进 tooltip + 流水镜像(断开动作本来就会留下 cmd/rsp/SYS 行)
+//   * 状态机补「was not running」→ stopped(旧逻辑跳过该行、回退读到更早的
+//     started openocd,把「没跑」显示成「已连接」);没有 backend 行时显示「未知」
+//   * 「后端」段调到段首(这一行唯一能动手的开关,前置=最易点),段名带
+//     .op-seg-label:≤560px 隐藏;补中性左色条(不抢三条数据通道色)
+//   * 链路行改 .op-linkrow class 承载布局(内联 style 会压过容器查询):
+//     ≤620px 换 2×2 网格、刻度标签横跨两列——flex 贪心打包会排出「4+1」
+//     这种一行挤满、一行只剩一张卡的不均衡两行
+//
+//  v1.3.4:右侧停靠回归 + 「后端」断开/恢复开关:
+//   * 入口改版:左侧 panellist 图标整体移除(用户:没有使用体验),改注册右栏
+//     tab(ctx.sidebarRightTabs.register + sidebar.right.pane.tab body,key=同一个
+//     id,照 ui-sidebar-terminal 模板;guide 卡不需要 commandId)。宿主没有右栏
+//     服务时退回 main 全局面板(v1.3.3 形态),两条路都通
+//   * 链路行新增第四段「后端」:状态从 backend SYS 行派生(backendStateOf),
+//     点击断开/恢复 —— 断开把探针让给别的 agent 软件(MCP 门面不断),动作经
+//     Host 路由 POST /api/ocdup-backend → ctx.tools.execute → mcp__ocdup__disconnect
+//     / mcp__ocdup__connect(ocdup v0.4.6 新增 disconnect 工具)。烧录进行中
+//     断开要二次确认(3s 窗口,危险色);动作结果以一次性反馈显示,并镜像进流水
+//   * 芯片卡的 grow 改 class(.op-link-grow),≤560px 收回自然宽——窄停留下
+//     四张卡不再被撑成 3 行
+//   * 随左侧图标一起移除:PanelIcon 组件与 badgeStore(未读徽章)死代码
+//
+//  v1.3.3:修「侧边栏图标点了没反应」(宿主 0.2.0-rc.2 注册契约):
+//   根因:新版 ui-sidebar 的 PanelRow 自己绑 onClick → ctx.layout.selectPanel(id),
+//   而 selectPanel 只认「main keyed slot 里同一个 id」的注册项,缺 key 直接抛错
+//   并保持原面板;同时侧栏图标已不归右栏 tab 管(右栏是 chat/browser/document 那类
+//   session 级内容)。旧版把 body 注册在 sidebar.right.pane.tab(key=插件 id)、点击
+//   却调 selectPanel(另一个 id),两个 rightbar 服务又都在 → 永远不进兜底分支,
+//   main 槽一个都没注册 → selectPanel 抛错 → 静默无反应。
+//   修法:无条件按「全局面板」注册——panellist id 与 main key 严格同值,
+//   inject 只声明 slots;PanelIcon 的 onClick 退为老宿主兜底(传 panelId)。
+//   顺带:openTab('ocdup-log') 那个参数本来就是错的(body key 是插件 id),已删除。
 //
 //  v1.3.2:界面精修(按钮/文字/配色,frontend-design 定向,仍只动 Client 皮相):
 //   * 修崩坏:所有控件 nowrap + flex:0 0 auto——旧版窄面板把「暂停/跟随」挤成
@@ -124,12 +202,20 @@ window.__ModuleLoader__.load({
 
     const ROUTE = '/api/ocdup-log'
     const ROUTE_CLEAR = '/api/ocdup-log/clear'
+    const ROUTE_ROTATED = '/api/ocdup-log/rotated'
+    const ROUTE_BACKEND = '/api/ocdup-backend'
+    const ROUTE_TARGET = '/api/ocdup-target' // v1.3.8:失配胶囊一键切 target_cfg
     const LS = 'dsh-ocdup-panel/prefs/v1'
 
     const POLL_ACTIVE_MS = 700   // 刚拿到数据:贴近写入端节奏
     const POLL_IDLE_MS = 2500    // 空闲退避
     const POLL_HIDDEN_MS = 2000  // 面板不可见
     const POLL_PAUSED_MS = 1500  // 用户暂停
+    // v1.3.9:单次轮询 fetch 的超时。没有它,一个挂起的请求会把整条轮询链永久
+    // 楔住(inFlightRef 永远 true,之后每一拍都被 `if (inFlightRef.current)`
+    // 挡在 fetch 之外,连 visibilitychange 的立即刷新也救不回来)——用户实测
+    // 视图冻死 3 分钟。abort 后照旧落进 catch/finally,下一拍自动恢复。
+    const POLL_FETCH_TIMEOUT_MS = 10000
     const MAX_ROWS_KEPT = 5000   // 与 Host MAX_ENTRIES 对齐
     const MAX_RENDER_ROWS = 300  // 单次实际挂载的行数
     const ROW_PAYLOAD_MAX = 4000 // 行内 payload 显示上限(详情区不受限)
@@ -143,6 +229,13 @@ window.__ModuleLoader__.load({
 
     const shortTime = (ts) => (typeof ts === 'string' && ts.length >= 23 ? ts.slice(11, 23) : ts || '')
     const fmtBytes = (n) => (n >= 1024 ? (n / 1024).toFixed(1) + 'K' : String(n | 0))
+    // v1.3.6:轮转文件(.1)的最后修改时间,本地时间短格式 M/D HH:mm
+    const fmtStamp = (ms) => {
+      if (ms == null || !Number.isFinite(ms)) return ''
+      const d = new Date(ms)
+      const p = (n) => (n < 10 ? '0' + n : '' + n)
+      return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
+    }
 
     const DIR_COLOR = { cmd: '#d97706', rsp: '#059669', sys: '#2563eb', err: '#ef4444', log: '#64748b' }
     // v1.3.2:统一小写(sys 不再大写)——大写混排是排版噪声,通道身份由颜色承担
@@ -168,6 +261,33 @@ window.__ModuleLoader__.load({
       const base = visible < total ? visible + ' / ' + total + ' 条' : total + ' 条'
       return rendered < visible ? base + ' · 渲染 ' + rendered : base
     }
+
+    // v1.3.4 后端(openocd)状态:从 backend SYS 行派生——ocdup 的 AcquireAsync 写
+    // 「started openocd …」/「using the listener already present …」,RestartAsync 写
+    // 「backend restarted」,StopAsync(disconnect)写「backend stopped …」或
+    // 「backend was not running …」(本来就没跑,同样是断开态)。
+    // 面板不碰硬件,这里只是把「AI 已经做过的事」镜像成一眼状态。
+    const backendStateOf = (entries) => {
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const e = entries[i]
+        if (!e || e.kind === 'gap' || e.tool !== 'backend') continue
+        const t = e.text || ''
+        if (/backend stopped|was not running/i.test(t)) return 'stopped'
+        if (/started openocd|already present|restarted/i.test(t)) return 'running'
+      }
+      return null
+    }
+
+    // v1.3.5 断开/恢复的结论压缩成一个词:卡片只放得下一个词,完整文案进 tooltip
+    // (流水里同样有镜像)。纯函数,可单测。
+    const backendVerdict = (action, ok, text) => {
+      const t = String(text || '')
+      if (!ok) return { label: '失败', tone: 'err' }
+      if (action === 'connect') return { label: '已连接', tone: 'ok' }
+      if (/was not running/i.test(t)) return { label: '未运行', tone: 'warn' }
+      if (/still running/i.test(t)) return { label: '未释放', tone: 'warn' }
+      return { label: '已断开', tone: 'ok' }
+    }
     // 链路三段各一个语义色(v1.2.5):探针=连接/后端(sys 蓝)、芯片=寄存器读回
     // (rsp 绿)、Flash=擦写(cmd 琥珀)——与流水行方向色同一套仪器语言
     const LINK_TONE = { probe: '#2563eb', chip: '#059669', flash: '#d97706' }
@@ -176,18 +296,6 @@ window.__ModuleLoader__.load({
     const TONE_WARN = 'var(--dsw-alias-state-warn-primary, #f59e0b)'
     const TONE_ERR = 'var(--dsw-alias-state-error-primary, #ef4444)'
     const MARK_STYLE = { background: 'rgba(245, 158, 11, 0.35)', color: 'inherit', borderRadius: 2, padding: '0 1px' }
-
-    // ---- 流量徽章共享态:图标轮询推进 lastSeq,面板可见时标记已读 ----
-    const badgeStore = {
-      lastSeq: 0,
-      lastSeenSeq: 0,
-      subs: new Set(),
-      update(seq) { if (seq > this.lastSeq) { this.lastSeq = seq; this.notify() } },
-      markSeen(seq) { if (seq > this.lastSeenSeq) { this.lastSeenSeq = seq; this.notify() } },
-      unread() { return this.lastSeq > this.lastSeenSeq },
-      notify() { for (const fn of this.subs) { try { fn() } catch (e) { /* 订阅者异常不扩散 */ } } },
-      subscribe(fn) { this.subs.add(fn); return () => this.subs.delete(fn) },
-    }
 
     // 搜索匹配器:正则开关开启且表达式合法 → RegExp;否则小写子串(空查询 → null)
     const compileMatcher = (query, useRegex) => {
@@ -273,6 +381,9 @@ window.__ModuleLoader__.load({
           '.op-stat:hover { border-color: var(--dsw-alias-border-l3, #c9c9c9); }',
           // 链路读数卡:段色只在左色条与图标,hover 走中性加深
           '.op-link { border: 1px solid var(--dsw-alias-border-l2, #e6e6e6); background: var(--dsw-alias-bg-layer-3, #fff); color: var(--dsw-alias-label-secondary, #666); transition: background-color .12s ease, border-color .12s ease; }',
+          // 芯片卡在宽面板吃掉余量(身份是主读数);窄面板收回自然宽,否则它一「长胖」
+          // 就把 Flash/后端 挤到下一行,链路行从 2 行变 3 行
+          '.op-link-grow { flex: 1 1 auto; min-width: 0; }',
           '.op-link:hover { border-color: var(--dsw-alias-border-l3, #bdbdbd); background: var(--dsw-alias-bg-layer-4, #f5f5f5); }',
           '.op-link:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #4f6bed); outline-offset: 1px; }',
           // target 失配胶囊(v1.3.0):警示色实底感,链路行里唯一「要你操作」的东西
@@ -286,10 +397,16 @@ window.__ModuleLoader__.load({
           // 容器查询跟随面板实际宽度(停靠栏拖拽时列降级实时生效)
           '@container op-panel (max-width: 640px) { .op-tag { display: none; } }',
           '@container op-panel (max-width: 620px) { .op-chip-core { display: none; } }',
+          '@container op-panel (max-width: 560px) { .op-link-grow { flex: 0 1 auto; } .op-seg-label { display: none; } }',
           '@container op-panel (max-width: 560px) { .op-len { display: none; } }',
           '@container op-panel (max-width: 520px) { .op-dt { display: none; } }',
           '@container op-panel (max-width: 460px) { .op-tool { display: none; } }',
-          // v1.2.4 列头条:吸顶通道表(与行的列宽/隐藏类严格对齐)
+          // 窄停靠:链路行换 2×2 网格(刻度标签横跨两列)——flex 贪心打包会排出
+          // 「4+1」这种一行挤满、一行只剩一张卡的不均衡两行;
+          // v1.3.7:整行只有一张卡时(空态,只剩「后端」开关)让它吃满整行——
+          // 半张卡配右半空白看着像渲染坏了,而它那时是这一行唯一的控件
+          '.op-linkrow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }',
+          '@container op-panel (max-width: 620px) { .op-linkrow { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 8px; align-items: center; } .op-linkrow > .op-tick { grid-column: 1 / -1; } .op-linkrow > .op-link:only-of-type { grid-column: 1 / -1; } }',
           '.op-colhead { position: sticky; top: 0; z-index: 2; display: flex; align-items: baseline; gap: 8px; padding: 5px 10px 4px; border-bottom: 1px solid var(--dsw-alias-border-l2, #e8e8e8); background: var(--dsw-alias-bg-layer-2, #fff); font-size: 10px; line-height: 1.4; color: var(--dsw-alias-label-tertiary, #999); font-variant-numeric: tabular-nums; user-select: none; }',
           '@media (max-width: 640px) { .op-tag { display: none; } }',
           '@media (max-width: 560px) { .op-len { display: none; } }',
@@ -720,6 +837,15 @@ window.__ModuleLoader__.load({
       }
     }
 
+    // v1.3.9:带超时的 fetch(轮询/刷新用)。超时即 abort,promise 以 AbortError
+    // 回落,调用方的 catch/finally 能把状态机复位——轮询链因此可自愈。
+    const fetchWithTimeout = (url, opts, ms) => {
+      const ctl = new AbortController()
+      const to = setTimeout(() => ctl.abort(), ms)
+      return fetch(url, Object.assign({}, opts, { signal: ctl.signal }))
+        .finally(() => clearTimeout(to))
+    }
+
     // 当前过滤视图 → JSONL 下载(Blob 本地生成;gap 标记不是数据,剔除;
     // 调用项(kind=call)归一化成 {cmd,rsp,logs} 记录后再序列化)
     const exportForDownload = (items) => items
@@ -767,7 +893,7 @@ window.__ModuleLoader__.load({
 
     // stats 浅比较:Host 每轮都回一个全新对象,不比较就会每轮触发重渲染
     const STATS_KEYS = ['cmd', 'rsp', 'sys', 'err', 'log', 'bytes', 'lastAt', 'exists', 'kept', 'lastSeq',
-      'badLines', 'logSize', 'logMtimeMs', 'rotated']
+      'badLines', 'logSize', 'logMtimeMs', 'rotated', 'rotSize', 'rotMtimeMs']
     const sameStats = (a, b) => {
       if (!a || !b) return false
       for (let i = 0; i < STATS_KEYS.length; i++) {
@@ -828,6 +954,13 @@ window.__ModuleLoader__.load({
       width: 10, height: 10, viewBox: '0 0 10 10', fill: 'none', stroke: 'currentColor',
       strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true, style: iconBox,
     }, h('path', { d: 'M2.4 3.9 5 6.5l2.6-2.6' }))
+    // 电源/插头(后端段图标):圆弧 + 竖线,断没断开一眼可辨
+    const PowerGlyph = () => h('svg', {
+      width: 12, height: 12, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor',
+      strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true, style: iconBox,
+    },
+      h('path', { d: 'M8 1.8v5.4' }),
+      h('path', { d: 'M4.3 3.9a4.6 4.6 0 1 0 7.4 0' }))
 
     // ---- 组件:链路占位项(v1.2.2:缺哪项就提示哪项) ----
     // 面板不能给 AI 发消息:点一下把提问复制到剪贴板,用户粘贴到会话即可。
@@ -854,22 +987,56 @@ window.__ModuleLoader__.load({
       }, done ? '已复制' : label + ' 未识别 · 复制提问')
     }
 
-    // ---- 组件:target 失配切换胶囊(v1.3.0) ----
-    // identify 认出家族与当前 target_cfg 不符时出现:点了把 MCP 调用复制到剪贴板,
-    // 用户/Agent 粘回会话即可(面板不能调 MCP;set_target 会重启 ocdup 自拉的后端)
-    const SwitchTargetBtn = ({ mismatch }) => {
-      const [done, setDone] = React.useState(false)
+    // ---- 组件:target 失配切换胶囊(v1.3.0 复制 → v1.3.8 直连) ----
+    // identify 认出家族与当前 target_cfg 不符时出现。v1.3.8 起点了直接经 Host
+    // POST /api/ocdup-target 调 mcp__ocdup__set_target(切换=用新 cfg 重启
+    // ocdup 自拉的后端);成功后 onSwitched() 让父组件 connect 一次刷新链路行。
+    // 烧录进行中要二次确认:重启后端会打断 AI 的烧录(v1.3.5 同款教训)。
+    const SwitchTargetBtn = ({ mismatch, flashOpen, onSwitched }) => {
+      const [st, setSt] = React.useState('idle') // idle|confirm|busy|done|err
+      const [err, setErr] = React.useState('')
       const timerRef = React.useRef(null)
       React.useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])
+      const flash = (s, ms) => {
+        if (timerRef.current) clearTimeout(timerRef.current)
+        timerRef.current = setTimeout(() => setSt(s), ms)
+      }
+      const label = st === 'confirm' ? '确认切换?' : st === 'busy' ? '切换中…'
+        : st === 'done' ? '已切换' : st === 'err' ? '失败' : '切换 ' + mismatch.action
       return h('button', {
         type: 'button', className: 'op-chip op-link op-switch',
         title: 'identify 识别为 ' + mismatch.family + ',但当前 target_cfg 是 ' + mismatch.current
-          + '\n点击:复制 mcp__ocdup__set_target ' + mismatch.action + '(粘回会话执行,后端自动重启)',
+          + '\n点击:直接切换 target_cfg 到 ' + mismatch.action + '(set_target 会重启 ocdup 自拉的后端,随后自动重连刷新)'
+          + (flashOpen ? '\n⚠ 有烧录正在进行,切换会中断它(需再点一次确认)' : '')
+          + (err ? '\n上次失败:' + err : ''),
         onClick: async () => {
-          if (!(await copyText('mcp__ocdup__set_target ' + mismatch.action))) return
-          setDone(true)
-          if (timerRef.current) clearTimeout(timerRef.current)
-          timerRef.current = setTimeout(() => setDone(false), 1500)
+          if (st === 'busy') return
+          if (flashOpen && st !== 'confirm') {
+            setSt('confirm')
+            flash('idle', 3000)
+            return
+          }
+          setSt('busy')
+          setErr('')
+          try {
+            const r = await fetch(ROUTE_TARGET, {
+              method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ preset: mismatch.action }),
+            })
+            const j = await r.json()
+            if (j && j.ok) {
+              setSt('done')
+              flash('idle', 1500)
+              if (onSwitched) onSwitched()
+            } else {
+              setErr((j && j.error) || ('HTTP ' + r.status))
+              setSt('err')
+              flash('idle', 6000)
+            }
+          } catch (e) {
+            setErr(e && e.message ? e.message : String(e))
+            setSt('err')
+            flash('idle', 6000)
+          }
         },
         style: {
           appearance: 'none', cursor: 'pointer', fontSize: 11,
@@ -877,7 +1044,7 @@ window.__ModuleLoader__.load({
           height: 26, padding: '0 8px', borderRadius: 4,
           font: 'inherit', fontWeight: 600, whiteSpace: 'nowrap',
         },
-      }, done ? '已复制' : '切换 ' + mismatch.action)
+      }, label)
     }
 
     // ---- 组件:行条目(memo:引用未变的行不重渲染) ----
@@ -1064,7 +1231,12 @@ window.__ModuleLoader__.load({
       const tabInfo = useTabInfoSafe()
       const tabVisible = !(tabInfo && tabInfo.tab && tabInfo.tab.visible === false)
       const tabVisibleRef = React.useRef(tabVisible)
-      React.useEffect(() => { tabVisibleRef.current = tabVisible }, [tabVisible])
+      React.useEffect(() => {
+        tabVisibleRef.current = tabVisible
+        // v1.3.9:切回本标签立即补一拍——后台这些拍可能整段没收到(挂起/节流),
+        // 回来时不该还看着旧状态;kick 会清掉排队中的定时器直接 tick。
+        if (tabVisible && kickRef.current) kickRef.current()
+      }, [tabVisible])
       const [entries, setEntries] = React.useState([])
       const [stats, setStats] = React.useState(null)
       const [connected, setConnected] = React.useState(false)
@@ -1079,8 +1251,16 @@ window.__ModuleLoader__.load({
       const [autoSuspended, setAutoSuspended] = React.useState(false)
       const [newCount, setNewCount] = React.useState(0)
       const [confirmClear, setConfirmClear] = React.useState(false)
+      // v1.3.4 后端段:busy / 一次性反馈 / 烧录中的二次确认
+      const [backendBusy, setBackendBusy] = React.useState(false)
+      const [backendMsg, setBackendMsg] = React.useState(null)
+      const [confirmBackend, setConfirmBackend] = React.useState(false)
+      const backendTimerRef = React.useRef(null)
       const [search, setSearch] = React.useState('')
       const [selected, setSelected] = React.useState(null)
+      // v1.3.6:加载轮转文件(.1)的一次性备注(成功条数 / 已加载过 / 失败原因)
+      const [rotNote, setRotNote] = React.useState(null)
+      const rotTimerRef = React.useRef(null)
       const lastSeqRef = React.useRef(0)
       const pausedRef = React.useRef(paused)
       const listRef = React.useRef(null)
@@ -1089,13 +1269,23 @@ window.__ModuleLoader__.load({
       const confirmTimerRef = React.useRef(null)
       const inFlightRef = React.useRef(false)
       const autoSuspendedRef = React.useRef(false)
+      // v1.3.9:轮询 effect 暴露的「立即补一拍」——切回本标签/窗口聚焦时调用
+      const kickRef = React.useRef(null)
 
       React.useEffect(() => { pausedRef.current = paused }, [paused])
       React.useEffect(() => { autoSuspendedRef.current = autoSuspended }, [autoSuspended])
       React.useEffect(() => { savePrefs({ dir, follow, port, useRegex, view }) }, [dir, follow, port, useRegex, view])
-      React.useEffect(() => () => { if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current) }, [])
+      React.useEffect(() => () => {
+        if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current)
+        if (backendTimerRef.current) clearTimeout(backendTimerRef.current)
+        if (rotTimerRef.current) clearTimeout(rotTimerRef.current)
+      }, [])
 
       // ---- 自适应增量轮询(单条 setTimeout 链,避免固定间隔空转) ----
+      // v1.3.9 两个自愈补丁(用户实测:视图冻死 3 分钟不刷新):
+      //   ① fetch 走 fetchWithTimeout(10s abort)——挂起的请求不再把链永久楔住;
+      //   ② kick():切回本标签 / 窗口重新聚焦 / visibilitychange 都立即补一拍,
+      //      不等下一拍(后台拍可能整段没收到,回来时不该还看旧状态)。
       React.useEffect(() => {
         let alive = true
         let timer = null
@@ -1116,7 +1306,7 @@ window.__ModuleLoader__.load({
           let got = false
           inFlightRef.current = true
           try {
-            const r = await fetch(ROUTE + '?since=' + lastSeqRef.current, { cache: 'no-store' })
+            const r = await fetchWithTimeout(ROUTE + '?since=' + lastSeqRef.current, { cache: 'no-store' }, POLL_FETCH_TIMEOUT_MS)
             const j = await r.json()
             if (!alive) return
             setConnected(!!(j && j.ok))
@@ -1148,18 +1338,28 @@ window.__ModuleLoader__.load({
           schedule(got ? POLL_ACTIVE_MS : POLL_IDLE_MS)
         }
 
-        const onVis = () => {
-          if (document.visibilityState !== 'visible' || !alive) return
+        // 立即补一拍:清掉排队中的定时器直接 tick(tick 自己尊重 hidden/paused/inFlight)
+        const kick = () => {
+          if (!alive) return
           if (timer !== null) { clearTimeout(timer); timer = null }
           tick()
         }
+        const onVis = () => {
+          if (document.visibilityState !== 'visible' || !alive) return
+          kick()
+        }
+        const onFocus = () => { if (alive) kick() }
         document.addEventListener('visibilitychange', onVis)
+        window.addEventListener('focus', onFocus)
+        kickRef.current = kick
         tick()
 
         return () => {
           alive = false
+          kickRef.current = null
           if (timer !== null) clearTimeout(timer)
           document.removeEventListener('visibilitychange', onVis)
+          window.removeEventListener('focus', onFocus)
         }
       }, [])
 
@@ -1199,10 +1399,46 @@ window.__ModuleLoader__.load({
           const r = await fetch(ROUTE_CLEAR, { method: 'POST' })
           const j = await r.json()
           if (j && j.ok) {
-            setEntries([]); setSelected(null); setCollapsed(new Set())
+            // rotNote 一起清:它说的是「已加载 N 条」,条目没了这句话就是谎话
+            setEntries([]); setSelected(null); setCollapsed(new Set()); setRotNote(null)
             if (j.stats) { setStats(j.stats); lastSeqRef.current = j.stats.lastSeq || 0 }
           }
         } catch (e) { /* 忽略 */ }
+      }
+
+      // ---- v1.3.6:加载轮转文件 .1 的尾部窗口(空态按钮;Host 同路径也被轮转
+      // 自动续接复用)。合并规则与轮询增量一致:seq 断档插 gap 标记、归零整体替换
+      const showRotNote = (text) => {
+        setRotNote(text)
+        if (rotTimerRef.current) clearTimeout(rotTimerRef.current)
+        rotTimerRef.current = setTimeout(() => setRotNote(null), 6000)
+      }
+      const loadRotated = async () => {
+        try {
+          const r = await fetch(ROUTE_ROTATED, { method: 'POST', cache: 'no-store' })
+          const j = await r.json()
+          if (j && j.ok) {
+            const inc = j.entries || []
+            if (inc.length) {
+              const prevLast = lastSeqRef.current
+              const firstSeq = inc[0].seq
+              lastSeqRef.current = inc[inc.length - 1].seq
+              setEntries((prev) => {
+                let next
+                if (firstSeq <= prevLast) next = inc.slice()
+                else if (firstSeq > prevLast + 1) {
+                  next = prev.concat([{ kind: 'gap', seq: firstSeq, count: firstSeq - prevLast - 1 }], inc)
+                } else next = prev.concat(inc)
+                return next.length > MAX_ROWS_KEPT ? next.slice(next.length - MAX_ROWS_KEPT) : next
+              })
+              showRotNote('已加载 .1 尾部 ' + inc.length + ' 条')
+            } else {
+              showRotNote(j.note === 'already loaded' ? '这份 .1 已经加载过了' : (j.note || '.1 没有可加载的内容'))
+            }
+          } else {
+            showRotNote('加载失败:' + ((j && j.error) || 'unknown'))
+          }
+        } catch (e) { showRotNote('加载失败:' + (e && e.message ? e.message : String(e))) }
       }
 
       // ---- 目标(host:port)清单(用于下拉;选中项被裁出窗口时保留该选项防值失效) ----
@@ -1334,7 +1570,8 @@ window.__ModuleLoader__.load({
           : null)
 
       // 小刻度标签(分组名,弱化到不抢数据)
-      const tick = (text) => h('span', {
+      const tick = (text, cls) => h('span', {
+        className: cls || undefined,
         style: { flex: '0 0 auto', fontSize: 11, color: 'var(--dsw-alias-label-tertiary, #767676)' },
       }, text)
 
@@ -1554,8 +1791,8 @@ window.__ModuleLoader__.load({
       // Flash)退成弱标签,段色只留在左色条 + 图标——旧版把段名做成彩色粗体、
       // 值做成灰字,读起来是「探针 探针 CMSIS-DAP」这种本末倒置
       const link = React.useMemo(() => deriveLinkInfo(entries), [entries])
-      const linkSeg = (icon, label, value, title, onClick, grow, tone) => h('button', {
-        type: 'button', className: 'op-link', onClick, title,
+      const linkSeg = (icon, label, value, title, onClick, grow, tone, labelClass) => h('button', {
+        type: 'button', className: 'op-link' + (grow ? ' op-link-grow' : ''), onClick, title,
         style: {
           appearance: 'none', cursor: 'pointer', fontSize: 11,
           display: 'inline-flex', alignItems: 'center', gap: 6, maxWidth: '100%', minWidth: 0,
@@ -1564,13 +1801,13 @@ window.__ModuleLoader__.load({
           borderLeft: tone ? '2px solid ' + tone : undefined,
           background: 'var(--dsw-alias-bg-layer-3, #fff)',
           color: 'var(--dsw-alias-label-secondary, #666)',
-          ...(grow ? { flex: '1 1 auto' } : { flex: '0 0 auto' }),
+          ...(grow ? {} : { flex: '0 0 auto' }),
         },
       },
         icon
           ? h('span', { style: { display: 'inline-flex', flex: '0 0 auto', color: tone || 'var(--dsw-alias-label-tertiary, #999)' } }, icon)
           : null,
-        h('span', { style: { flex: '0 0 auto', color: 'var(--dsw-alias-label-tertiary, #767676)' } }, label),
+        h('span', { style: { flex: '0 0 auto', color: 'var(--dsw-alias-label-tertiary, #767676)' }, className: labelClass || undefined }, label),
         h('span', {
           style: {
             minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis',
@@ -1580,51 +1817,143 @@ window.__ModuleLoader__.load({
           },
         }, value))
       const chipSeg = link.chip ? chipLabel(link.chip) : null
-      const linkRow = (link.probe || link.chip || link.flash) ? h('div', {
+
+      // ---- v1.3.4/v1.3.5 后端段:断开 / 恢复 ----
+      // 状态机:stopped / running / null(没信息)。烧录进行中必须先确认:
+      // 断开会中断 AI 的烧录。v1.3.5:结论只显示一个词(backendVerdict),
+      // 完整文案进 tooltip + 流水镜像——卡片里铺长句会把链路行撑爆。
+      const backendState = backendStateOf(entries)
+      const backendRunning = backendState !== 'stopped'
+      const backendAct = async (action) => {
+        setBackendBusy(true)
+        try {
+          const r = await fetch(ROUTE_BACKEND, {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action }),
+          })
+          const j = await r.json()
+          const ok = !!(j && j.ok)
+          const text = ok ? (j.text || '') : ('失败:' + ((j && j.error) || ('HTTP ' + r.status)))
+          setBackendMsg({ action, ok, text })
+        } catch (e) {
+          setBackendMsg({ action, ok: false, text: '失败:' + (e && e.message ? e.message : String(e)) })
+        } finally {
+          setBackendBusy(false)
+          if (backendTimerRef.current) clearTimeout(backendTimerRef.current)
+          backendTimerRef.current = setTimeout(() => setBackendMsg(null), 6000)
+        }
+      }
+      const onBackendClick = () => {
+        if (backendBusy) return
+        if (!backendRunning) { backendAct('connect'); return }
+        // 断开:烧录进行中要二次确认(3s 窗口),其余一键
+        if (flashCall && flashCall.state === 'open' && !confirmBackend) {
+          setConfirmBackend(true)
+          if (backendTimerRef.current) clearTimeout(backendTimerRef.current)
+          backendTimerRef.current = setTimeout(() => setConfirmBackend(false), 3000)
+          return
+        }
+        setConfirmBackend(false)
+        backendAct('disconnect')
+      }
+      const VERDICT_TONE = { ok: TONE_OK, warn: TONE_WARN, err: TONE_ERR }
+      const verdict = backendMsg ? backendVerdict(backendMsg.action, backendMsg.ok, backendMsg.text) : null
+      const backendValue = verdict
+        ? [
+          h('span', { key: 'd', style: { width: 6, height: 6, borderRadius: 999, flex: '0 0 auto', background: VERDICT_TONE[verdict.tone] } }),
+          h('span', { key: 't', style: { color: VERDICT_TONE[verdict.tone], fontWeight: 700 } }, verdict.label),
+        ]
+        : confirmBackend
+          ? [h('span', { key: 'c', style: { color: TONE_ERR, fontWeight: 700 } }, '确认断开?')]
+          : [
+            h('span', {
+              key: 'd',
+              style: {
+                width: 6, height: 6, borderRadius: 999, flex: '0 0 auto',
+                background: backendState === null
+                  ? 'var(--dsw-alias-label-tertiary, #767676)'
+                  : backendRunning ? TONE_OK : 'var(--dsw-alias-label-tertiary, #767676)',
+              },
+            }),
+            h('span', { key: 't' }, backendBusy ? '处理中…' : backendState === null ? '未知' : backendRunning ? '已连接' : '已断开'),
+          ]
+      const backendTip = (verdict ? '上一步:' + backendMsg.text + '\n\n' : '')
+        + (backendRunning
+          ? '后端 openocd(命令端口由 ocd.json 决定)\n点击:断开并释放探针——别的 agent 软件(Claude Code / ZCode…)就能用\n'
+            + 'MCP 门面不断,之后 connect 或任何硬件调用会自动拉回来'
+            + (flashCall && flashCall.state === 'open' ? '\n⚠ 有烧录正在进行,断开会中断它(需再点一次确认)' : '')
+          : backendState === null
+            ? '还没有从流水里读到过后端事件(连接/断开都会留一行)\n点击:断开(本来就没跑时会如实说)或恢复'
+            : '后端已断开(探针已释放)\n点击:重新 connect 拉回后端')
+      // 中性左色条:前三段是数据通道色,这一段是面板控的开关,不抢通道色。
+      // 段名带 .op-seg-label:≤560px 隐藏(窄停留下四张卡靠它省 28px 排进两行)
+      const backendSeg = linkSeg(h(PowerGlyph), '后端', backendValue, backendTip,
+        onBackendClick, false, confirmBackend ? TONE_ERR : 'var(--dsw-alias-border-l3, #cacaca)', 'op-seg-label')
+
+      // v1.3.7:链路行**常驻**——不再要求 probe/chip/flash 至少有一项。空态
+      // (重启后还没流量、或刚清空)时这一行只剩「后端」开关,而那恰恰是最该在
+      // 手边的时候:探针要不要让给别的 agent 软件,不必等 AI 先跑一轮。
+      const linkRow = h('div', {
+        // 布局(display/gap/align/换行)全在 .op-linkrow class 里:内联 style 会压过
+        // 容器查询的 grid 覆盖(窄停靠 2×2),这里只留与布局无关的皮相
+        className: 'op-linkrow',
         style: {
-          display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap',
           padding: '8px 12px', borderBottom: '1px solid var(--dsw-alias-border-l2, #e6e6e6)',
         },
       },
-        tick('链路'),
-        link.probe ? linkSeg(h(ProbeGlyph), '探针', probeLabel(link.probe),
-          (link.probe.pinned
-            ? 'interface: ' + link.probe.cfg + '(固定配置,未自动识别物理型号——auto 模式才会认 USB 探针)'
-            : 'probe auto-detected: ' + link.probe.kind + ' -> ' + link.probe.cfg
-            + (link.probe.evidence ? '(evidence: ' + link.probe.evidence + ')' : ''))
-          + '\n点击:搜索 ' + (link.probe.pinned ? 'interface:' : 'probe auto-detected') + ' 定位这条记录',
-          () => setSearch(link.probe.pinned ? 'interface:' : 'probe auto-detected'), false, LINK_TONE.probe)
-          : h(LinkPromptBtn, { label: '探针', tone: LINK_TONE.probe }),
-        link.chip ? linkSeg(h(ChipGlyph, { size: 12 }), '芯片',
-          chipSeg
-            ? [
-              h('span', { key: 'h' }, chipSeg.head),
-              // 补充读数(内核 / dev id)与「型号未识别」都在窄面板整段隐藏:
-              // 半词截断比少一行更难读
-              chipSeg.tail ? h('span', {
-                key: 't', className: 'op-chip-core',
-                style: { fontWeight: 400, color: 'var(--dsw-alias-label-tertiary, #767676)' },
-              }, '· ' + chipSeg.tail) : null,
-              chipSeg.identified ? null : h('span', {
-                key: 'u', className: 'op-chip-core',
-                style: { fontWeight: 400, color: TONE_WARN },
-              }, '型号未识别'),
-            ]
-            : '已连接',
-          chipTip(link.chip),
-          // 型号未识别时图标转警示色:窄面板看不到文字也能一眼看出「这片只认到内核」
-          () => { setView('calls'); setTool('identify_chip') }, true,
-          chipSeg && chipSeg.identified === false ? TONE_WARN : LINK_TONE.chip)
-          : h(LinkPromptBtn, { label: '芯片', tone: LINK_TONE.chip }),
-        link.flash ? linkSeg(h(FlashGlyph), 'Flash', fmtKb(link.flash.total),
-          'flash_info:' + link.flash.banks.map((b) => '\nbank ' + b.bank + ' @ ' + b.base + ' size ' + fmtSize(b.size)).join('')
-          + (link.flash.banks.length > 1 ? '\n合计: ' + fmtSize(link.flash.total) : '')
-          + '\n点击:调用视图只看 flash_info',
-          () => { setView('calls'); setTool('flash_info') }, false, LINK_TONE.flash)
-          : h(LinkPromptBtn, { label: 'Flash', tone: LINK_TONE.flash }),
-        // v1.3.0:target 失配 → 切换胶囊(复制 set_target 调用)
-        link.mismatch ? h(SwitchTargetBtn, { mismatch: link.mismatch }) : null,
-      ) : null
+        tick('链路', 'op-tick'),
+        // 「后端」排在第一:它是这一行唯一能动手的开关(前置=最易点),后面三张
+        // 是「板子上有什么」的数据读数;窄停留下也正好两行排下(实测 340px:
+        // 后端104+探针160 一行 / 芯片157+Flash138 一行)
+        backendSeg,
+        // 一条链路读数都没有时(重启后还没流量 / 刚清空)只留「后端」开关:
+        // 三张占位卡说的是「日志里缺这项」,而空态是「还没有日志」——摆三张
+        // 「未识别 · 复制提问」只是添乱,后端开关才是这时候真有用的东西
+        (link.probe || link.chip || link.flash || link.mismatch)
+          ? [
+            link.probe ? linkSeg(h(ProbeGlyph), '探针', probeLabel(link.probe),
+              (link.probe.pinned
+                ? 'interface: ' + link.probe.cfg + '(固定配置,未自动识别物理型号——auto 模式才会认 USB 探针)'
+                : 'probe auto-detected: ' + link.probe.kind + ' -> ' + link.probe.cfg
+                + (link.probe.evidence ? '(evidence: ' + link.probe.evidence + ')' : ''))
+              + '\n点击:搜索 ' + (link.probe.pinned ? 'interface:' : 'probe auto-detected') + ' 定位这条记录',
+              () => setSearch(link.probe.pinned ? 'interface:' : 'probe auto-detected'), false, LINK_TONE.probe)
+              : h(LinkPromptBtn, { label: '探针', tone: LINK_TONE.probe }),
+            link.chip ? linkSeg(h(ChipGlyph, { size: 12 }), '芯片',
+              chipSeg
+                ? [
+                  h('span', { key: 'h' }, chipSeg.head),
+                  // 补充读数(内核 / dev id)与「型号未识别」都在窄面板整段隐藏:
+                  // 半词截断比少一行更难读
+                  chipSeg.tail ? h('span', {
+                    key: 't', className: 'op-chip-core',
+                    style: { fontWeight: 400, color: 'var(--dsw-alias-label-tertiary, #767676)' },
+                  }, '· ' + chipSeg.tail) : null,
+                  chipSeg.identified ? null : h('span', {
+                    key: 'u', className: 'op-chip-core',
+                    style: { fontWeight: 400, color: TONE_WARN },
+                  }, '型号未识别'),
+                ]
+                : '已连接',
+              chipTip(link.chip),
+              // 型号未识别时图标转警示色:窄面板看不到文字也能一眼看出「这片只认到内核」
+              () => { setView('calls'); setTool('identify_chip') }, true,
+              chipSeg && chipSeg.identified === false ? TONE_WARN : LINK_TONE.chip)
+              : h(LinkPromptBtn, { label: '芯片', tone: LINK_TONE.chip }),
+            link.flash ? linkSeg(h(FlashGlyph), 'Flash', fmtKb(link.flash.total),
+              'flash_info:' + link.flash.banks.map((b) => '\nbank ' + b.bank + ' @ ' + b.base + ' size ' + fmtSize(b.size)).join('')
+              + (link.flash.banks.length > 1 ? '\n合计: ' + fmtSize(link.flash.total) : '')
+              + '\n点击:调用视图只看 flash_info',
+              () => { setView('calls'); setTool('flash_info') }, false, LINK_TONE.flash)
+              : h(LinkPromptBtn, { label: 'Flash', tone: LINK_TONE.flash }),
+            // v1.3.0:target 失配 → 切换胶囊;v1.3.8 起点了直接切(见组件注释)
+            link.mismatch ? h(SwitchTargetBtn, {
+              mismatch: link.mismatch,
+              flashOpen: !!(flashCall && flashCall.state === 'open'),
+              onSwitched: () => backendAct('connect'),
+            }) : null,
+          ]
+          : null,
+      )
 
       // 空态:API 地址(agent 可直接 curl)+ 链路状态;
       // 「有条目但被过滤空」单独一支(排除折叠导致的情况)
@@ -1649,6 +1978,29 @@ window.__ModuleLoader__.load({
               ? h('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-tertiary, #999)' } },
                   '让 Agent 调 mcp__ocdup__connect 试试(连接探针后就有流量)')
               : null,
+            // v1.3.6:有轮转备份 .1 时,空态给一个人能点的入口(大小 + 最后写入
+            // 时间)。轮转后的历史不该只因「当前周期没流量」就从面板上消失
+            stats && stats.rotated && stats.rotSize > 0
+              ? h('div', {
+                  style: {
+                    fontSize: 11, color: 'var(--dsw-alias-label-tertiary, #999)',
+                    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
+                  },
+                },
+                  h('div', null, '更早的 ' + fmtSize(stats.rotSize) + ' 已轮转到 .1('
+                    + fmtStamp(stats.rotMtimeMs) + ')— 当前周期还没有新流量'),
+                  h('button', {
+                    type: 'button', onClick: loadRotated,
+                    title: '把 .1 的尾部窗口补进面板(Host: POST /api/ocdup-log/rotated);同一份 .1 只会加载一次',
+                    style: {
+                      appearance: 'none', cursor: 'pointer', fontSize: 11, padding: '3px 10px',
+                      borderRadius: 6, border: '1px solid var(--dsw-alias-border-l2, #ddd)',
+                      background: 'var(--dsw-alias-bg-layer-3, #fff)',
+                      color: 'var(--dsw-alias-label-secondary, #666)', font: 'inherit',
+                    },
+                  }, '加载 .1 尾部'),
+                )
+              : null,
             h('div', { style: { fontSize: 11, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '3px 10px', borderRadius: 999, border: '1px solid var(--dsw-alias-border-l2, #eee)', color: 'var(--dsw-alias-label-tertiary, #999)' } },
               'API:',
               h('span', { style: { fontFamily: 'Consolas, Menlo, monospace' } }, apiFull),
@@ -1656,7 +2008,7 @@ window.__ModuleLoader__.load({
             stats && stats.exists && typeof stats.logSize === 'number'
               ? h('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-tertiary, #999)' } },
                   '日志 ' + fmtBytes(stats.logSize) + 'B · 坏行 ' + (stats.badLines || 0)
-                  + ' · 轮转文件' + (stats.rotated ? '已生成' : '未生成'))
+                  + ' · .1 ' + (stats.rotated ? fmtSize(stats.rotSize) + ' ' + fmtStamp(stats.rotMtimeMs) : '无'))
               : null,
           )
 
@@ -1843,10 +2195,18 @@ window.__ModuleLoader__.load({
         if (rootRef.current) rootRef.current.focus()
       }
 
-      // 面板可见且未暂停未挂起 = 正在实时看 → 标记已读
-      React.useEffect(() => {
-        if (tabVisible && !paused && !autoSuspended && stats) badgeStore.markSeen(stats.lastSeq || 0)
-      }, [tabVisible, paused, autoSuspended, stats])
+      // v1.3.4:面板可见且未暂停未挂起 = 正在实时看(左图标与未读徽章已随入口改版移除)
+
+      // v1.3.7:加载 .1 的反馈备注独立一行(6s 自清)。放在空态里的话,条目一
+      // 加载上来空态整块消失,备注闪一下就没了;独立成行则空态/列表都看得见
+      const rotNoteBar = rotNote ? h('div', {
+        style: {
+          flex: '0 0 auto', fontSize: 11, padding: '4px 12px',
+          color: 'var(--dsw-alias-label-tertiary, #767676)',
+          borderBottom: '1px solid var(--dsw-alias-border-l2, #e6e6e6)',
+          background: 'var(--dsw-alias-bg-layer-3, #fff)',
+        },
+      }, rotNote) : null
 
       return h('div', {
         ref: rootRef, tabIndex: -1, onKeyDown, onMouseDown,
@@ -1859,88 +2219,55 @@ window.__ModuleLoader__.load({
           color: 'var(--dsw-alias-label-primary, #222)',
         },
       },
-        toolbar, linkRow, chipsRow, flashBar, listWrap, detail,
-      )
-    }
-
-    // ---- 组件:侧边栏面板入口(点击打开面板;优先右栏 tab,兜底整屏) ----
-    const PanelIcon = (props) => {
-      const [unread, setUnread] = React.useState(badgeStore.unread())
-      React.useEffect(() => badgeStore.subscribe(() => setUnread(badgeStore.unread())), [])
-      React.useEffect(() => {
-        let alive = true
-        let timer = null
-        const tick = async () => {
-          timer = null
-          if (!alive) return
-          if (document.visibilityState === 'hidden') { timer = setTimeout(tick, 8000); return }
-          try {
-            const r = await fetch(ROUTE + '?stats=1', { cache: 'no-store' })
-            const j = await r.json()
-            if (alive && j && j.ok && j.stats) badgeStore.update(j.stats.lastSeq || 0)
-          } catch (e) { /* Host 未起:静默 */ }
-          if (alive) timer = setTimeout(tick, 5000)
-        }
-        tick()
-        return () => { alive = false; if (timer !== null) clearTimeout(timer) }
-      }, [])
-      const onClick = (e) => {
-        if (props && typeof props.onOpen === 'function') { props.onOpen(e); return }
-        if (props && typeof props.onClick === 'function') { props.onClick(e); return }
-        try {
-          const layout = ctxRef && ctxRef.get && ctxRef.get('layout')
-          if (layout && typeof layout.selectPanel === 'function') layout.selectPanel('ocdup-log')
-        } catch (e2) { /* layout 服务缺席时静默 */ }
-      }
-      return h('span', {
-        title: props && props.title ? props.title : 'OCDUP 调试面板',
-        onClick,
-        style: { position: 'relative', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', lineHeight: 1 },
-      },
-        h(ChipGlyph, { size: 16 }),
-        unread ? h('span', {
-          title: '有新的 ocdup 流量',
-          style: {
-            position: 'absolute', top: -3, right: -5, width: 7, height: 7,
-            borderRadius: 999,
-            background: 'var(--dsw-alias-state-error-primary, #ef4444)',
-            border: '1px solid var(--dsw-alias-bg-layer-2, #fff)',
-          },
-        }) : null,
+        toolbar, linkRow, chipsRow, flashBar, rotNoteBar, listWrap, detail,
       )
     }
 
     return {
+      // v1.3.3:只要有 slots 就够(不再依赖 sidebarRight/sidebarRightTabs——
+      // 那两个服务在新宿主仍在,但侧栏图标已经不归它们管了)
+      // v1.3.4:右栏 tab 路线回归(用户要右侧停靠),但入口不再押注左侧图标:
+      // inject 需要 slots + 两个右栏服务;左侧 panellist 注册整体移除。
       inject: ['slots', 'sidebarRight', 'sidebarRightTabs'],
       // 纯函数仅供 test.js client 模式断言,生产逻辑不依赖
       _test: {
-        highlight, highlightRe, compileMatcher, matcherHit, hueOf, fmtDt, sameStats, badgeStore,
+        highlight, highlightRe, compileMatcher, matcherHit, hueOf, fmtDt, sameStats,
         parseFlashProgress, flashProgressOf, flashProgressOfCall, pairCalls, callDtMs, isSessionSep,
         sessionRuns, applyCollapse, toolOptions, rowMark, lastFlashCall, isFlashTool,
         fmtSize, parseProbeNote, parseChipIdentity, parseFlashInfo, deriveLinkInfo, baseName,
         friendlyProbeName, probeLabel, isBogusDev, chipLabel, chipTip, fmtKb, coreShort,
-        parseTargetMismatch, dirLegend, counterLabel,
+        parseTargetMismatch, dirLegend, counterLabel, backendStateOf, backendVerdict,
+        fmtStamp, fetchWithTimeout, POLL_FETCH_TIMEOUT_MS,
       },
       apply: function (ctx) {
         const slots = ctx.get('slots')
         if (slots === undefined) return
         ctxRef = ctx
 
+        // v1.3.4:右侧停靠栏 tab(用户要的形态)+ 左侧图标整体移除。
+        // 契约(读宿主 app.asar 的 ui-sidebar-terminal / ui-sidebar-browser 确认):
+        //   * ctx.sidebarRightTabs.register({ id, kind, multiple, priority, title,
+        //     keepMounted, guide:[{id,order,title,description,icon}] }) 声明 tab 类型;
+        //     guide 项**不需要** commandId(terminal 就没挂)——右栏 guide 卡点一下即开
+        //   * body 注册在 sidebar.right.pane.tab,**key = 上面同一个 id**
+        //   * openTab 认的是 **kind**(id 与 kind 可以不同名:浏览器 id=包名/kind='browser')
+        // 宿主没有右栏服务(老版本/缺服务)→ 退回 main 全局面板(v1.3.3 形态),
+        // 保证任何宿主下都至少有一个入口能把面板开出来。
         const rightTabs = ctx.get('sidebarRightTabs')
         const right = ctx.get('sidebarRight')
         const hasRightbar = !!(rightTabs && typeof rightTabs.register === 'function'
           && right && typeof right.openTab === 'function')
 
         if (hasRightbar) {
-          // 主路径:右侧停靠栏 tab —— 对话始终可见;keepMounted 让轮询跨切换/收起存活
           ctx.effect(() => rightTabs.register({
             id: 'dsh-ocdup-panel',
             kind: 'ocdup-log',
+            multiple: false,            // 单例:一个调试面板够用
+            priority: 'plugin',
             title: () => 'OCDUP 调试',
-            keepMounted: true,
+            keepMounted: true,          // 轮询跨切 tab / 收起到浮动 / 切会话都活着
             guide: [{
-              id: 'ocdup-log',
-              kind: 'ocdup-log',
+              id: 'new', order: 30,
               title: () => 'OCDUP 调试',
               description: () => 'OpenOCD 命令/响应实时面板',
               icon: ChipGlyph,
@@ -1951,23 +2278,8 @@ window.__ModuleLoader__.load({
             { name: 'sidebar.right.pane.tab', key: 'dsh-ocdup-panel' },
             (props) => h(OcdupPanel, props),
           )), 'dsh-ocdup-panel: pane body')
-
-          // 左侧图标 = 打开右侧 tab(无会话时 openTab 会抛,吞掉即可)
-          slots.inject('sidebar.panellist', () => slots.register(
-            { name: 'sidebar.panellist', id: 'ocdup-log', order: 81, label: () => 'OCDUP 调试' },
-            (props) => h(PanelIcon, {
-              ...props,
-              title: '打开 OCDUP 调试面板(右侧停靠,对话保留)',
-              onOpen: () => { try { right.openTab('ocdup-log') } catch (e) { /* 无会话/面板未挂 */ } },
-            }),
-          ))
         } else {
-          // 兜底:DSH 缺 rightbar 服务(版本差异)→ 整屏 main 模式
-          slots.inject('sidebar.panellist', () => slots.register(
-            { name: 'sidebar.panellist', id: 'ocdup-log', order: 81, label: () => 'OCDUP 调试' },
-            (props) => h(PanelIcon, props),
-          ))
-
+          // 兜底:宿主没有右栏 tab 服务 → 主视图区全局面板
           slots.inject('main', () => slots.register(
             { name: 'main', key: 'ocdup-log' },
             (props) => h(OcdupPanel, props),

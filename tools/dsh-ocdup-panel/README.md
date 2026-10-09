@@ -1,14 +1,16 @@
-# dsh-ocdup-panel — Ocdup 调试实时面板  v1.3.2
+# dsh-ocdup-panel — Ocdup 调试实时面板  v1.3.9
 
-DeepSeek Harness 的常驻插件:在侧边栏加一个 🎛 面板入口,右侧停靠栏实时显示
-**AI 通过 Ocdup MCP 工具与 OpenOCD 的全部交互**(TCL 命令、响应、后端生命周期事件)。
+DeepSeek Harness 的常驻插件:右侧停靠栏的 OCDUP 调试 tab,实时显示
+**AI 通过 Ocdup MCP 工具与 OpenOCD 的全部交互**(TCL 命令、响应、后端生命周期事件),
+并能手动断开/恢复后端把探针让给别的 agent 软件。
 数据层与 [dsh-serial-panel](../../..) 同构——唯一真源是共享 JSONL,UI 可插拔。
 
 ## 数据链路
 
 ```
 ocdup(src/Ocdup,OpenOCD MCP 服务器)
-  → TrafficLog 追加 %LOCALAPPDATA%\Ocdup\mcp-traffic.jsonl(逐条落盘,2MB 轮转 .1)
+  → TrafficLog 追加 %LOCALAPPDATA%\Ocdup\mcp-traffic.jsonl(逐条落盘,2MB 轮转 .1;
+    轮转时面板自动把 .1 尾部接进环,历史不白屏——见 v1.3.6)
   → 本插件 Host 半区尾随增量(默认 400ms 轮询)
   → 同源私有路由 GET /api/ocdup-log?since=<seq>
   → 浏览器面板自适应增量拉取渲染(有数据 700ms / 空闲 2.5s)
@@ -145,6 +147,132 @@ connect 成功后顺带 best-effort `flash probe 0`+`flash banks`(Flash 段不�
 | 链路读数条层级翻转 | **值**(型号/容量/探针名)做主读数(主文本 + 600 字重 + tabular),段名退成弱标签,段色只留左色条 + 图标——旧版是彩色粗体段名 + 灰值,读起来本末倒置;芯片补充读数(内核/dev id)在 ≤620px 整段隐藏(不做半词截断),型号未识别时芯片图标转警示色 |
 | 传输控件 SVG | 暂停/继续/跟随到底改内联 SVG,不再依赖 `⏸`/`▶` 的字形;详情区段名与通道色对齐(`log` 用石板灰而非琥珀),标题行去 `·` 串、去重复日期,日志条数统一成「N 条日志」 |
 
+## v1.3.3 修复:侧边栏图标点了没反应(注册契约对齐宿主 0.2.0-rc.2)
+
+**现象**:侧栏「ACCOM 串口」「OCDUP 调试」两个图标点了都没有反应。
+
+**根因**(读宿主 `resources/app.asar` 的 ui-sidebar 源码逐行确认):
+
+| 宿主的契约 | 旧插件 |
+|---|---|
+| 侧栏 `PanelRow` **自己**绑 `onClick → ctx.layout.selectPanel(id)`,图标只是被渲染进宿主 `<button>` 里的 glyph | `PanelIcon` 自造 `onOpen → right.openTab(...)`,以为点击由自己处理 |
+| `selectPanel(id)` **只认 `main` keyed slot 里同一个 id** 的注册项,缺 key 直接抛错并保持原面板 | body 注册在 `sidebar.right.pane.tab`(`key='dsh-ocdup-panel'`),**main 槽一个都没注册**(那分支只在拿不到 rightbar 服务的老宿主才走) |
+| 侧栏图标 = **全局面板**启动器;右栏 tab 是 chat/browser/document 这类 session 级内容,不经侧栏图标打开 | 点击传 `selectPanel('ocdup-log')`,而 main 里没有这个 key → 抛错 → 静默无反应 |
+| —— | 附带 bug:`openTab('ocdup-log')` 传的是 `kind` 而不是 body 的 key,老宿主路径同样是错的 |
+
+**修法**:无条件按「全局面板」注册——`sidebar.panellist` 的 `id` 与 `main` 的 `key` **严格同值**(`ocdup-log`),`inject` 只声明 `slots`;`PanelIcon.onClick` 退为老宿主兜底(带 `panelId` 调 `layout.selectPanel`)。删除右栏 tab 注册与 `openTab` 调用。
+
+`dsh-serial-panel`(ACCOM)同一个病,同样改法(Xcom 仓库的真源)。
+
+> 副作用(有意为之):面板从「右侧停靠 tab」变成「主视图区整屏面板」;DSH 停靠栏拖拽列宽时容器查询仍生效(≤620px 隐藏芯片补充读数、≤520px 隐藏 Δt 列等)。若要回到右侧停靠,得按新契约注册右栏 tab 类型 + guide 入口(宿主用 `ctx.sidebarRightTabs.register` + `sidebar.right.pane.tab` body,key 与 openTab 参数必须一致),而不是复用旧 `openTab(kind)` 写法。
+
+## v1.3.4 右侧停靠回归 + 「后端」断开/恢复(纯 Client + 一条 Host 路由)
+
+| 改动 | 说明 |
+|---|---|
+| 入口改右栏 guide 卡 | 左侧 `sidebar.panellist` 图标**整体移除**(全局面板在窄栏里没有使用体验),改注册右栏 tab:`ctx.sidebarRightTabs.register({id,kind:'ocdup-log',multiple:false,priority:'plugin',title,keepMounted:true,guide:[{id,order,title,description,icon}]})` + body 注册在 `sidebar.right.pane.tab`(**key = 同一个 id**;openTab 认 kind、body 认 id)。宿主没有右栏服务时退回 main 全局面板。**代价**:guide 卡只在有会话时可见(与终端/浏览器一致) |
+| 链路行第四段「后端」 | 状态从 backend SYS 行派生(`backendStateOf`:`started openocd`/`already present`/`restarted` → running,`backend stopped` → stopped)。点击 = 断开(停掉 ocdup 自拉的 openocd、释放探针,**MCP 门面不断**)或恢复(= `connect`)。烧录进行中先二次确认(3s 窗口,卡片染危险色「确认断开?」);结果以一次性反馈显示在段内,并镜像进流水(cmd/rsp + backend SYS) |
+| 断开/恢复怎么落地 | 面板 Host `inject: ['webServer','tools']`,新路由 `POST /api/ocdup-backend {action}` → `ctx.tools.execute({name:'mcp__ocdup__disconnect'|'mcp__ocdup__connect'})`(MCP 工具在 Host 侧就是普通工具,`mcp__<serverName>__<tool>`;10s 超时)。配套 ocdup v0.4.6 新增 `disconnect` 工具:`read_only` 会话会被拦成 BLOCKED(停机=改变后端状态,与 set_target 同例) |
+| 窄停靠排版 | 芯片卡 grow 改 class `.op-link-grow`,≤560px 收回自然宽;四张卡在 ~340px 停留下排 2~3 行,文字不截断 |
+| 删除的死代码 | `PanelIcon` 组件与 `badgeStore`(未读徽章依赖左侧图标承载) |
+
+> 想手动释放探针时:点「后端 → 已连接」即断开;别的软件用完,AI 调 `mcp__ocdup__connect` 或再点一次即可拉回。`read_only: true` 时断开被 ocdup 拦下(按钮会显示 BLOCKED 文案)。
+
+## v1.3.5 后端段结论压缩 + 链路行 2×2(纯 Client 侧)
+
+用户截图反馈:断开后「后端」卡把一整句英文结论(`backend was not running (nothing on 127.0.0.1:6666) - nothing to disconnect.`)铺在卡片外,把链路行撑爆;窄停留下这张卡还独自占一行。
+
+| 改动 | 说明 |
+|---|---|
+| 结论一个词 | `backendVerdict(action, ok, text)` 把 rsp 文案压成 `已断开`/`未运行`/`未释放`/`已连接`/`失败`(+语义色圆点);完整文案进卡片 tooltip,且断开动作本来就会镜像成 cmd/rsp + backend SYS 行,流水里可追溯 |
+| 状态机补漏 | 「backend was not running」也判为 stopped——旧逻辑跳过该行、回退读到更早的 `started openocd`,把「没跑」显示成「已连接」;没有任何 backend 行时显示「未知」而不是假装已连接 |
+| 段序调整 | 「后端」调到段首:它是这一行**唯一能动手的开关**(前置=最易点),后面三张是「板子上有什么」的数据读数 |
+| 链路行 2×2 | ≤620px 换网格(`.op-linkrow` class 承载布局,刻度标签横跨两列)——flex 贪心打包会排出「4+1」这种一行挤满、一行只剩一张卡的不均衡两行;布局必须走 class,内联 `display:flex` 会压过容器查询 |
+| 窄屏段名 | 「后端」段名带 `.op-seg-label`,≤560px 隐藏(图标 + 圆点 + 状态词自带信息,tooltip 补全) |
+
+> 断开/恢复的完整语义见 v1.3.4 一节;`read_only: true` 时断开被 ocdup 拦成 BLOCKED,卡片会显示「失败」并把文案带在 tooltip 里。
+
+## v1.3.6 轮转的历史不再消失(Host 尾随逻辑 + 空态入口)
+
+用户截图:重启 DSH 后整个面板全空,footer 却写着「轮转文件已生成」——`.1` 里 2MB
+(11,765 行)历史一行都看不到。根因有两条,都不是数据丢失:
+
+* ocdup 侧 `TrafficLog` 用 `FileMode.Append` 开文件,**重启从不截断**;2MB 轮转
+  (`RotateIfNeededLocked`)是设计内的有界策略,历史完整落在 `.1`
+* 面板 Host 把「活动文件变小」一律当清空 `reset()`——轮转发生的瞬间,正在看的
+  面板直接白屏;重启后更是只读活动文件,从不读 `.1`
+
+| 改动 | 说明 |
+|---|---|
+| 轮转自动续接 | 尾随发现活动文件消失/收缩**且 `.1` 刚换过**(size/mtime 变化)时,判定为 ocdup 轮转:先把 `.1` 的尾部窗口(FIRST_TAIL_BYTES,默认 256KB)接进内存环,再继续跟新文件。`.1` 没动 = 面板清空或外部截断,照旧全清——两种收缩因此可区分,旧历史不会在清空后回流 |
+| 防重复灌入 | 自动续接会记住这份 `.1`(size+mtime);用户再点空态「加载」对同一份返回 `note=already loaded`,条目不翻倍 |
+| `POST /api/ocdup-log/rotated` | 按需把 `.1` 尾部补进环并返回新增条目(空态「加载 .1 尾部」按钮);没有 `.1` 返回 `note=no rotated file`。与自动续接共用同一条 `ingestRotated` 读取路径,不复制逻辑 |
+| 空态入口 | 有条目时不算空;全空且 `.1` 存在时显示「更早的 2.0 MB 已轮转到 .1(10/7 07:22)— 当前周期还没有新流量」+ 加载按钮,加载结果以一次性备注反馈(已加载 N 条 / 已经加载过了 / 失败原因) |
+| stats 新字段 | `rotSize` / `rotMtimeMs`(随 `rotated` 一起进 `view()`),footer 轮转列从没信息量的「已生成/未生成」改成 `.1 2.0 MB 10/7 07:22` / `.1 无` |
+| 窗口半行修复 | `ingestRotated` 只在**从中段开窗**(`from > 0`)时丢首部半行;小文件 `from = 0` 时窗口起点就是行边界,旧写法会把第一条完整行当半行丢掉(测试抓到的真 bug) |
+
+> 轮转 ≠ 丢数据:`.1` 恒为最近一个轮转周期的完整内容(轮转时先删旧 `.1` 再移入),
+> 再往前的周期被主动丢弃——这是 ocdup 侧的有界策略,面板只负责让「最近的历史」可见。
+
+## v1.3.7 空态也要能控后端(用户截图问「这个界面没有控制后端的开关嘛?」)
+
+重启后还没流量(或刚清空)时,旧版链路行整行不渲染——「后端」断开/恢复开关跟着消失,
+而那恰恰是最该在手边的时候:探针要不要让给别的 agent 软件,不必等 AI 先跑一轮。
+
+| 改动 | 说明 |
+|---|---|
+| 链路行常驻 | 不再要求 probe/chip/flash 至少有一项。一条链路读数都没有时只留「后端」一张卡;三张占位卡说的是「日志里缺这项」,而空态是「还没有日志」,摆三张「未识别 · 复制提问」只是添乱 |
+| 单卡满行 | ≤620px 网格下 `.op-linkrow > .op-link:only-of-type { grid-column: 1 / -1 }`——半张卡配右半空白看着像渲染坏了,而它那时是这一行唯一的控件(Chrome 实测 271.5px → 551px) |
+| 空态点它也能用 | 没有 backend 行时状态显示「未知」,点击走 `POST /api/ocdup-backend`(无信息时先断开:本来就没跑会如实回「未运行」),结论以一个词回填卡片 |
+| 修:清空后备注说谎 | `clear()` 只清 entries 不清 rotNote——「已加载 .1 尾部 1470 条」在条目被清掉后继续说谎(用户就是这么看到自相矛盾的空态)。现在一起清 |
+| 修:清空后不能再加载 | Host 清空路由不重置 `rotLoaded`——「加载过 → 清空 → 再点加载」被 `already loaded` 挡住,而环里其实已经空了。现在清空即重置 |
+| 加载备注独立成行 | 原来渲染在空态里,条目一加载上来空态整块消失,备注闪一下就没了;改成列表上方独立一行 + 6s 自清,空态/列表两种状态都看得见 |
+
+> 测试 harness 同步升级成带 hook 作用域的迷你 React(每个函数组件一份 hooks,主组件
+> 跨重渲染保留),于是「点按钮 → setState → 重渲染 → 看树」能真跑——T28 就这么端到端
+> 复现并钉死用户那个自相矛盾画面。
+
+## v1.3.8 失配胶囊一键切换(用户实测:「怎么连接上后自己断开了?」)
+
+用户现场:AT32F403AVGT7 开发板插着,`ocd.json` 的 target_cfg 却钉在 423 钥匙板
+(`target_at32f423_key.cfg`——连复位姿势 `connect_assert_srst` 都是按 423 调的)。
+点「后端」连接 → openocd 起得来、SWD 连上、CPUID 读到 Cortex-M4 r0p1(面板显示
+「连上了」),但 DEV_ID@0xE0042000 读回 **0x00000000** → at32f4xx 驱动
+`flash reg address: 0x0, usd addr: 0x0` → `read at32 flash size failed, 0k flash`
+→ **断言 `num_pages > 0` 失败(at32f4xx.c:958),openocd 进程直接 abort** → 控制
+通道被迫关闭 → ocdup 只能报 `nothing is listening on 127.0.0.1:6666` → 面板
+显示「已断开」。三次重连(14:43:45 / 14:44:01 / 14:45:10)同一条路崩到底。
+`set_target AT32F403A`(→ `target/at32f403axG.cfg`,不带 srst 姿势)后 DEV_ID 读回
+0x70050344,flash 双 bank 512K+512K=1MB 全通。
+
+| 改动 | 说明 |
+|---|---|
+| 失配胶囊直连 | v1.3.0 时面板不能调 MCP,胶囊只会把 `mcp__ocdup__set_target X` 复制到剪贴板、要用户/Agent 粘回会话;v1.3.8 起点击 → `POST /api/ocdup-target` → Host 经 `ctx.tools.execute` 直调 `mcp__ocdup__set_target`(切换 = 用新 target_cfg 重启 ocdup 自拉的 openocd;preset 名见 ocd.json 的 `target_presets`) |
+| 切换后自动重连 | set_target 重启后端后「后端」卡显示已连接、链路行却还是旧报告,再点「后端」反而变成断开;现在胶囊切换成功后父组件顺手 `connect` 一次——链路行当场刷新,胶囊随新 identify(无失配行)自动消失 |
+| 烧录中二次确认 | flash 调用进行时点胶囊要 3s 内再点一次(按钮变「确认切换?」):重启后端会打断 AI 的烧录,v1.3.5 同款教训 |
+| 状态机 | 切换中… / 已切换 / 失败(失败原因进 tooltip);只读会话被 ocdup 拦成 BLOCKED 时如实显示失败,且不自动重连 |
+
+> 诊断方法论:用户问「怎么连接上后自己断开了?」——流水日志里三次 connect 全是
+> `Assertion failed: num_pages > 0` 后紧跟 `control channel failed`。不是谁点了
+> 断开,是 openocd 进程 abort;面板只是如实渲染 ocdup 的 `nothing is listening`。
+> 根因不在二进制(.1 归档里零断言记录),在 cfg 与板子不配。
+
+## v1.3.9 轮询链自愈(用户实测:面板视图冻死 3 分钟不刷新)
+
+用户现场:重启 DSH 后打开面板,「后端」卡停在「已断开」不动——而后端其实在跑
+(pid 1888,日志 16:06:20 有 `started openocd` 且之后无任何断开)。取证:Host 侧
+ring 491 条全收齐(`?since=343` 能返回含 `started (pid 1888)` 的 148 条),客户端
+视图却冻在 343 条/16:06:20——**轮询链楔死**。
+
+| 改动 | 说明 |
+|---|---|
+| fetch 加超时 | 新增 `fetchWithTimeout(url, opts, ms)`(AbortController,10s)。以前一个挂起的请求会让 `inFlightRef` 永远为 true,之后每一拍都被 `if (inFlightRef.current)` 挡在 fetch 之外——连 visibilitychange 的立即刷新也救不回来,视图永久冻住;现在超时 abort 落回 catch/finally,下一拍自动恢复 |
+| kick 立即补拍 | 轮询 effect 经 `kickRef` 暴露 `kick()`(清掉排队中的定时器直接 tick);切回本标签(tabVisible false→true)、窗口重新聚焦(`window` focus 事件)、visibilitychange 三处都触发——后台这些拍可能整段没收到,回前台不该还看旧状态 |
+| 测试 | T30 覆盖 fetchWithTimeout 正常路径(透传 AbortSignal)与超时路径(挂起的 fetch 在 ms 后 abort 抛出) |
+
+> 教训:单条 setTimeout 链 + 无超时的 fetch = 单点故障;`inFlightRef` 这类互斥位
+> 一旦被挂起的请求占住,所有恢复入口(包括用户主动切标签)都会被它挡死。
+
 ## 目录职责
 
 **唯一真源 = 本目录(Ocdup 仓库 `tools/dsh-ocdup-panel/`)**,纳入 git 版本管理。
@@ -178,7 +306,11 @@ node test.js core     & node test.js window & node test.js api & node test.js cl
 
 - core:方向归一化(SYS→sys)/ 半行拼接 / since 切片 / 批量裁剪 / 清空与方法守卫 / 坏行容错
 - window:首次挂载只读尾部窗口(大日志不全量读入)
-- api:Δt 乱序钳 0、坏时间戳、码点截断、jsonl/csv 导出、help 路由
+- api:Δt 乱序钳 0、坏时间戳、码点截断、jsonl/csv 导出、help 路由、
+   轮转续接(活动文件收缩 + .1 换过 → 救援尾部;.1 未变 → 按清空处理不回流)、
+   `/rotated` 路由(真加载 / already loaded 防翻倍 / 清空后可再加载 / 方法守卫)、
+   `/api/ocdup-target`(方法守卫 / 缺 preset 400 / 正常路径回显 preset+文本 /
+   tools.execute 参数形态 / 工具 isError→502)
    client:stub React 冒烟(双注册分支、高亮、正则、徽章共享态、面板整体渲染)
   烧录进度解析(erased/wrote/verified 各形态)、调用配对(ok/err/open/孤立)、
   调用耗时、会话分隔与折叠、工具清单排序、关键行标记、
@@ -187,8 +319,11 @@ node test.js core     & node test.js window & node test.js api & node test.js cl
    family→型号/否则内核+dev+未识别/cfg model 不上卡)、Flash 段容量(fmtKb)、
    内核名缩写(coreShort)、target 失配行解析(parseTargetMismatch)、
    flash 容量合计(total,双 bank 1024K 实况)、方向图例(dirLegend)、
-   计数文案(counterLabel)、芯片读数分层(chipLabel head/tail)
-   ——client 模式 116 项,四模式合计 158 项断言。
+    计数文案(counterLabel)、芯片读数分层(chipLabel head/tail)、后端状态派生
+    (backendStateOf)与结论压缩(backendVerdict)、注册契约(右栏 tab 类型/body key=id/guide 无 commandId/
+    左侧不注册 panellist/无右栏服务退回 main)、轮转空态与加载入口(有/无 .1 两支、点击走 POST /rotated、fmtStamp 时间格式)、
+   失配胶囊一键切换(点击走 POST /api/ocdup-target {preset} → 成功后自动 connect → 失败不重连)
+   ——client 模式 151 项,四模式合计 210 项断言。
 
 用环境变量把参数压小是为了快速触发边界(上限 5 条即可验证裁剪)。
 `test.js` 只存在于真源目录,不同步到安装闭包。
