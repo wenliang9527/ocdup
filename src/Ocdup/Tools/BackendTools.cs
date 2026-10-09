@@ -31,6 +31,9 @@ public static class BackendTools
             sb.AppendLine($"version: {(version.Length == 0 ? "(no version reported)" : version)}");
             if (BackendSession.Instance.LastBackendNote is { Length: > 0 } note)
                 sb.AppendLine($"backend: {note}");
+            // P1-5：顺带报告复用通道的健康状况（连接与否 + 空闲时长）。
+            var (channelConnected, channelIdle) = BackendSession.Instance.ChannelState;
+            sb.AppendLine(BackendSession.FormatChannelState(channelConnected, channelIdle));
             sb.AppendLine("targets:");
             sb.Append(FormatTargets(targets));
             return sb.ToString();

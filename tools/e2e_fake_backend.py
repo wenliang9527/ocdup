@@ -16,6 +16,7 @@
    13. halt 后 best-effort 回读核心寄存器（pc/lr/sp/xpsr；reset halt 同样带回）
    14. disconnect: external listener -> "cannot stop it"; read_only -> BLOCKED (panel button path)
    15. run_command 内容分类（v0.4.12）：只读 mdb 透传；program -> BLOCKED 并重定向 flash_write
+   16. P1-5 断链重放：假后端断开连接后，只读 read_memory 自动重连并重放一次，业务无感
 """
 import json
 import os
@@ -31,6 +32,7 @@ import time
 
 DELIM = b"\x1a"
 HOST = "127.0.0.1"
+STATE = {"drop_armed": False}  # P1-5 断链模拟：arm 后，下一条指定读命令被假后端直接断开
 PORT = 29171
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DLL = os.environ.get("OCDUP_DLL") or os.path.join(REPO_ROOT, "src", "Ocdup", "bin", "Debug", "net8.0", "ocdup.dll")
@@ -137,6 +139,18 @@ class FakeBackend(threading.Thread):
                         inner = inner[:-2]
                     with self.lock:
                         self.commands.append(inner)
+                    # P1-5 断链模拟：arm 后，下一条指定的读命令不回包、直接断开连接——
+                    # ocdup 侧应 IOException → 判定只读 op → 自动重连重放一次。
+                    if inner == "__e2e_arm_drop__":
+                        STATE["drop_armed"] = True
+                        try:
+                            conn.sendall(b"armed" + DELIM)
+                        except OSError:
+                            return
+                        continue
+                    if STATE.get("drop_armed") and inner == "mdw 0x20000000 1":
+                        STATE["drop_armed"] = False
+                        return
                     try:
                         conn.sendall(handle_command(inner).encode("utf-8") + DELIM)
                     except OSError:
@@ -344,6 +358,10 @@ def main():
 
         banner("run_command write-class (content policy: program -> BLOCKED, redirect flash_write)")
         print(mcp.call("run_command", {"command": "program build/fw.bin verify"}))
+
+        banner("P1-5: forced connection drop on next read; read-only op replays once after reconnect")
+        print(mcp.call("run_command", {"command": "__e2e_arm_drop__"}))
+        print(mcp.call("read_memory", {"address": "0x20000000", "count": 1}))
 
         banner("halt -> read -> resume (exec control, allow_exec defaults to true)")
         print(mcp.call("halt", {}))
