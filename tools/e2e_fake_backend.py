@@ -21,6 +21,7 @@
        （--lines 2 收到两行即停）+ 收尾 rtt server stop/rtt stop；--info 只报通道清单
    18. ocdup burn CLI（v0.4.20）：verified → exit 0；arm 回读失配 → VERIFY FAILED + exit 1；
        白名单外 → BLOCKED + exit 2（烧录编排与 flash_write 同一核心）
+   20. ocdup burn exit 3（v0.4.24）：死端口 + 无 OCD_BIN → 拉后端必败，BackendException → exit 3
 """
 import json
 import os
@@ -483,6 +484,28 @@ def main():
         print("  outside whitelist -> exit:", burn3.returncode)
         assert burn3.returncode == 2, "burn should exit 2 on BLOCKED, got %d" % burn3.returncode
         assert "BLOCKED" in burn3.stderr, "burn should print the BLOCKED guidance to stderr"
+
+        banner("ocdup burn exit 3 (v0.4.24): backend/channel failure -> deterministic non-zero")
+        # 指向死端口的独立配置 + 无 OCD_BIN：拉后端必败（BackendException → exit 3）
+        dead_cfg = {
+            "interface_cfg": "interface/cmsis-dap.cfg",
+            "target_cfg": "target/at32f435xx.cfg",
+            "port": 29179,
+            "command_timeout_seconds": 5,
+            "permissions": {"read_only": False, "allow_flash": True,
+                            "flash_allowed_paths": ["build/"], "flash_max_bytes": 1048576},
+        }
+        with open(os.path.join(work, "dead.json"), "w", encoding="utf-8") as f:
+            json.dump(dead_cfg, f, indent=2)
+        env_dead = dict(env)
+        env_dead["OCD_CONFIG"] = os.path.join(work, "dead.json")
+        burn4 = subprocess.run(
+            ["dotnet", DLL, "burn", "--file", "build/fw.bin", "--address", "0x08000000"],
+            cwd=work, env=env_dead, capture_output=True, text=True, encoding="utf-8", timeout=90)
+        print("  dead port -> exit:", burn4.returncode)
+        print("  stderr head:", burn4.stderr.strip().splitlines()[:1] if burn4.stderr.strip() else "(empty)")
+        assert burn4.returncode == 3, "burn should exit 3 on backend failure, got %d" % burn4.returncode
+        assert "ERROR" in burn4.stderr, "burn should print the actionable backend failure to stderr"
 
         banner("SVD layer L2 (v0.4.21): load_svd / read_peripheral_register (decode + reset compare) / write gate")
         MINI_SVD = """<?xml version="1.0"?>

@@ -128,6 +128,15 @@ public static class RttCli
                 try { await Task.Delay(100, ct).ConfigureAwait(false); }
                 catch (OperationCanceledException) { return 1; }
             }
+
+            // 扫描超时（有捕获但没等到结论）：不能静默开流——固件没跑 RTT / 搜索区不对时，
+            // 数据面会永远安静，用户只会看到干等。给一句 stderr 提示，让 --seconds/--lines
+            // 的兜底语义有明确的解释。
+            if (controlBlockAddress is null)
+                Console.Error.WriteLine(
+                    $"ocdup rtt: control block not confirmed within {ControlBlockScanBudget.TotalSeconds:0}s - " +
+                    "the stream may stay empty. Check that the firmware actually uses RTT, and pass the exact " +
+                    "_SEGGER_RTT address from the firmware map file via --address.");
         }
 
         // --info：只报通道清单，不开数据流。
