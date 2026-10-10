@@ -114,6 +114,19 @@ ocdup rtt --channel 1 --seconds 30               # 换通道,30s 自动收尾
 
 > 控制块没找到时先查固件 map 文件的 `_SEGGER_RTT` 符号地址，`--address` 精确指过去。
 
+### 🔥 burn CLI（量产烧录，v0.4.20）
+
+治具/产线/CI 的非交互烧录——与 `flash_write` 工具**同一编排核心**（权限闸 + program →
+独立读回校验 → reset 门控），按退出码分流：
+
+```bash
+ocdup burn --file build/fw.bin --address 0x08000000   # 写入+读回校验+reset run
+ocdup burn --file build/fw.elf --no-reset             # 治具自己断电上电,跳过 reset
+echo $?    # 0=verified  1=读回不符/写失败  2=用法/配置/权限(BLOCKED)  3=后端故障
+```
+
+> 烧录中刻意不响应 Ctrl+C：写相中断 = 半截固件；要中止请直接断探针。
+
 > 后续里程碑：断点 / 观察点 / 符号层 L2(SVD) / L3 协议字典，见[设计文档第 12 节](docs/design-plan.md)。
 
 ## 🏗️ 架构
@@ -328,7 +341,7 @@ reload/重启丢弃）；否则 `show_config` 核对生效权限，改 ocd.json 
 ## 🧪 开发与测试
 
 ```bash
-dotnet test Ocdup.sln                     # 270 个单测，不需要硬件
+dotnet test Ocdup.sln                     # 284 个单测，不需要硬件
 python tools/e2e_fake_backend.py          # 端到端：假 TCL-RPC 后端 + 真实 MCP 会话
 ```
 
@@ -366,7 +379,7 @@ python tools/e2e_fake_backend.py          # 端到端：假 TCL-RPC 后端 + 真
 
 | 里程碑 | 状态 |
 |---|---|
-| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 270 个单测 + 假后端 e2e 覆盖（17 条链路） |
+| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 284 个单测 + 假后端 e2e 覆盖（18 条链路） |
 | S4 真机联调 | ✅ AT32F403AVGT7 + CMSIS-DAP v2（DAPLink `0D28:0204`）+ atopenocd：`connect` → `flash_info` → `flash_write`（擦 25 扇区、写 + Verified OK、reset run）→ `read_memory` 运行态读回向量表 |
 | 安全与正确性加固（v0.4.12–v0.4.16） | ✅ `run_command` 内容分类（写类命令与专用工具同权/重定向）、`flash_write` 以独立读回校验为权威判据（三段式结论）、断链只读自动重放 + 空闲心跳、烧录/擦除/dump 执行期 progress notification |
 | doctor CLI | ✅ `ocdup doctor` 五项环境体检（ocd.json / OCD_BIN / scripts / 探针 / 后端端口），换机第一步 |

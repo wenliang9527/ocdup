@@ -19,6 +19,8 @@
    16. P1-5 断链重放：假后端断开连接后，只读 read_memory 自动重连并重放一次，业务无感
    17. ocdup rtt CLI（v0.4.19）：rtt setup/start/server start 命令序列 + 假 RTT TCP 数据面
        （--lines 2 收到两行即停）+ 收尾 rtt server stop/rtt stop；--info 只报通道清单
+   18. ocdup burn CLI（v0.4.20）：verified → exit 0；arm 回读失配 → VERIFY FAILED + exit 1；
+       白名单外 → BLOCKED + exit 2（烧录编排与 flash_write 同一核心）
 """
 import json
 import os
@@ -108,6 +110,10 @@ def handle_command(cmd):
     if c.startswith("verify_image"):
         m = re.match(r"verify_image \{(.+?)\}( 0x[0-9a-fA-F]+)?$", c)
         if m:
+            # v0.4.20 链路 18：arm 后下一次 verify_image 回读回不符（burn 的 exit 1 路径）
+            if STATE.get("fail_verify"):
+                STATE["fail_verify"] = False
+                return "Error: contents differ at 0x08000040 (fake verify mismatch)"
             path = m.group(1)
             size = os.path.getsize(path) if os.path.exists(path) else 4096
             return "verified %d bytes in 0.01s" % size
@@ -196,6 +202,13 @@ class FakeBackend(threading.Thread):
                     # ocdup 侧应 IOException → 判定只读 op → 自动重连重放一次。
                     if inner == "__e2e_arm_drop__":
                         STATE["drop_armed"] = True
+                        try:
+                            conn.sendall(b"armed" + DELIM)
+                        except OSError:
+                            return
+                        continue
+                    if inner == "__e2e_arm_fail_verify__":
+                        STATE["fail_verify"] = True
                         try:
                             conn.sendall(b"armed" + DELIM)
                         except OSError:
@@ -441,6 +454,30 @@ def main():
         print("  listing head:", rtt2.stdout.strip().splitlines()[:3])
         assert rtt2.returncode == 0, "rtt --info should exit 0, got %d" % rtt2.returncode
         assert "TERMINAL" in rtt2.stdout and "Down-channels" in rtt2.stdout, "rtt --info should print the channel listing"
+
+        banner("ocdup burn CLI (v0.4.20): same core as flash_write; exit 0 on verified, 1 on verify mismatch, 2 on BLOCKED")
+        burn = subprocess.run(
+            ["dotnet", DLL, "burn", "--file", "build/fw.bin", "--address", "0x08000000"],
+            cwd=work, env=dict(env), capture_output=True, text=True, encoding="utf-8", timeout=90)
+        print("  exit:", burn.returncode)
+        print("  head:", burn.stdout.strip().splitlines()[-2:] if burn.stdout.strip() else "(no stdout)")
+        assert burn.returncode == 0, "burn should exit 0 on verified, got %d (stderr: %s)" % (burn.returncode, burn.stderr[-300:])
+        assert "matches the target flash" in burn.stdout, "burn report should carry the verified verdict"
+
+        print(mcp.call("run_command", {"command": "__e2e_arm_fail_verify__"}))
+        burn2 = subprocess.run(
+            ["dotnet", DLL, "burn", "--file", "build/fw.bin", "--address", "0x08000000"],
+            cwd=work, env=dict(env), capture_output=True, text=True, encoding="utf-8", timeout=90)
+        print("  armed verify mismatch -> exit:", burn2.returncode)
+        assert burn2.returncode == 1, "burn should exit 1 when the read-back does not match, got %d" % burn2.returncode
+        assert "VERIFY FAILED" in burn2.stdout, "burn report should carry the VERIFY FAILED verdict"
+
+        burn3 = subprocess.run(
+            ["dotnet", DLL, "burn", "--file", "elsewhere/there.bin", "--address", "0x08000000"],
+            cwd=work, env=dict(env), capture_output=True, text=True, encoding="utf-8", timeout=90)
+        print("  outside whitelist -> exit:", burn3.returncode)
+        assert burn3.returncode == 2, "burn should exit 2 on BLOCKED, got %d" % burn3.returncode
+        assert "BLOCKED" in burn3.stderr, "burn should print the BLOCKED guidance to stderr"
 
         banner("halt -> read -> resume (exec control, allow_exec defaults to true)")
         print(mcp.call("halt", {}))

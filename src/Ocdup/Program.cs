@@ -15,6 +15,11 @@ if (args.Length > 0 && args[0].Equals("watch", StringComparison.OrdinalIgnoreCas
 if (args.Length > 0 && args[0].Equals("rtt", StringComparison.OrdinalIgnoreCase))
     return await RttCli.RunAsync(args.Skip(1).ToArray());
 
+// `ocdup burn ...`：量产烧录 CLI（v0.4.20）——产线/CI 按 exit code 分流，编排复用
+// flash_write 的核心（闸与读回判据单一真源）；刻意不接取消（写相中断 = 半截固件）。
+if (args.Length > 0 && args[0].Equals("burn", StringComparison.OrdinalIgnoreCase))
+    return await BurnCli.RunAsync(args.Skip(1).ToArray());
+
 // `ocdup doctor`：环境体检（P1-6）——五项只读检查，不拉后端、不碰目标。
 if (args.Length > 0 && args[0].Equals("doctor", StringComparison.OrdinalIgnoreCase))
     return await DoctorCli.RunAsync();

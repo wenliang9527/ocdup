@@ -79,7 +79,8 @@ public static class FlashTools
         "With verify=false the outcome is 'programmed (unverified)' and only that advisory text gates the reset. " +
         "While running, openocd's log lines (erased sectors / wrote bytes) are forwarded as MCP progress notifications " +
         "when the caller requested a progress token. " +
-        "Gated by read_only / allow_flash / flash_allowed_paths / flash_max_bytes - a BLOCKED answer means the settings forbid it (see show_config).")]
+        "Gated by read_only / allow_flash / flash_allowed_paths / flash_max_bytes - a BLOCKED answer means the settings forbid it (see show_config). " +
+        "The same orchestration is available outside MCP as 'ocdup burn <file>' (v0.4.20).")]
     public static async Task<string> FlashWrite(
         [Description("Path to the image to program (.elf/.hex/.bin).")] string file,
         [Description("Load address for raw .bin images, hex string like '0x08000000'. Ignored for .elf/.hex.")] string? address = null,
@@ -88,126 +89,16 @@ public static class FlashTools
         RequestContext<CallToolRequestParams>? context = null,
         CancellationToken ct = default)
     {
-        var cfg = ConfigStore.Instance.Current;
-
-        string resolved;
-        try
-        {
-            resolved = cfg.ResolvePath(file);
-        }
-        catch (Exception ex)
-        {
-            return $"ERROR: '{file}' is not a usable path: {ex.Message}";
-        }
-
-        if (!File.Exists(resolved))
-            return $"ERROR: '{resolved}' does not exist. Pass the path of the built image (.elf/.hex/.bin); " +
-                   "relative paths are resolved against the ocd.json directory (see show_config for its location).";
-
-        var image = new FileInfo(resolved);
-        if (PermissionGate.CheckFlashWrite(cfg, resolved, image.Length) is { } blocked)
-            return blocked;
-
-        long? loadAddress = null;
-        if (!string.IsNullOrWhiteSpace(address))
-        {
-            if (!Parsing.TryParseHex(address, out var parsed))
-                return $"ERROR: address '{address}' is not a hex value. Use a hex string like '0x08000000'.";
-            loadAddress = parsed;
-        }
-        else if (resolved.EndsWith(".bin", StringComparison.OrdinalIgnoreCase))
-        {
-            return "ERROR: a raw .bin image needs an explicit load address, e.g. flash_write(file=\"build/fw.bin\", address=\"0x08000000\"). " +
-                   "An .elf/.hex image carries its own addresses and needs no address argument.";
-        }
-
         // P1-4：进度泵——调用方带 progressToken 且是自拉后端时，把 openocd 增量日志行
         // （擦扇区 / wrote 行）以 progress notification 推回；不带就零开销。
+        // 编排本体在 FlashWriteCoreAsync（v0.4.20 起与 ocdup burn CLI 共用）。
         var progressPump = FlashProgress.Start(BackendSession.Instance, context?.Server, context?.Params?.Meta);
         using var pumpCts = new CancellationTokenSource();
         var pumpTask = progressPump?.RunAsync(pumpCts.Token) ?? Task.CompletedTask;
         try
         {
-            // v0.4.13（P0-2）：program 不再带 verify——校验由下一步独立的 verify_image 承担，
-            // 判据与写相分离：PY32 等驱动会在写相吐虚假 AHB 错误（操作实际已生效），
-            // 「读回是否与镜像一致」才是烧录成功的权威回答（README 实测定案）。
-            var programCommand = new StringBuilder("program ").Append(Tcl.Quote(resolved));
-            if (loadAddress is { } addr) programCommand.Append(' ').Append(Parsing.Hex(addr));
-
-            string programOutput;
-            try
-            {
-                programOutput = (await BackendSession.Instance.ExecuteAsync(cfg, programCommand.ToString(), startIfNeeded: true, ct, op: "flash_write")).Trim();
-            }
-            catch (BackendException ex)
-            {
-                return ex.Message;
-            }
-
-            string? verifyProblem = null;
-            if (verify)
-            {
-                var verifyCommand = new StringBuilder("verify_image ").Append(Tcl.Quote(resolved));
-                if (loadAddress is { } vaddr) verifyCommand.Append(' ').Append(Parsing.Hex(vaddr));
-
-                string verifyOutput;
-                try
-                {
-                    verifyOutput = (await BackendSession.Instance.ExecuteAsync(cfg, verifyCommand.ToString(), startIfNeeded: false, ct, op: "flash_write")).Trim();
-                }
-                catch (BackendException ex)
-                {
-                    verifyOutput = ex.Message; // 校验通道失败：按存疑判失败（保守），reset 不会执行
-                }
-
-                verifyProblem = InterpretVerifyOutput(verifyOutput);
-            }
-
-            var verdict = ClassifyFlashWrite(verify, programOutput, verifyProblem);
-
-            var sb = new StringBuilder();
-            sb.AppendLine($"programmed: {resolved} ({image.Length} bytes)");
-            if (loadAddress is { } reported) sb.AppendLine($"load address: {Parsing.Hex(reported)}");
-            sb.AppendLine(programOutput.Length == 0 ? "(the program step produced no output)" : programOutput);
-
-            switch (verdict)
-            {
-                case FlashWriteVerdict.ProgrammedVerified:
-                    sb.AppendLine($"verified: {resolved} ({image.Length} bytes) matches the target flash (read-back).");
-                    break;
-                case FlashWriteVerdict.ProgrammedButVerifyFailed:
-                    sb.AppendLine($"VERIFY FAILED: the program step reported success, but the read-back does not match {resolved} ({image.Length} bytes).");
-                    sb.AppendLine($"problem: {verifyProblem}");
-                    break;
-                case FlashWriteVerdict.WriteFailed:
-                    sb.AppendLine($"WRITE FAILED: the program step reported an error, and the read-back does not confirm the image ({image.Length} bytes).");
-                    sb.AppendLine($"problem: {verifyProblem}");
-                    break;
-                case FlashWriteVerdict.Unverified:
-                    sb.AppendLine("unverified: verify=false skipped the read-back check - run mcp__ocdup__verify_image to confirm what landed.");
-                    break;
-            }
-
-            if (!reset) return sb.ToString();
-
-            if (!ShouldResetRun(verdict, programOutput))
-            {
-                sb.Append("NOTE: 'reset run' was skipped - the verdict above is not a clean pass. " +
-                          "Check the log above (probe wiring, flash bank, target_cfg), then flash again.");
-                return sb.ToString();
-            }
-
-            try
-            {
-                var resetOutput = (await BackendSession.Instance.ExecuteAsync(cfg, "reset run", startIfNeeded: false, ct, op: "flash_write")).Trim();
-                sb.AppendLine(resetOutput.Length == 0 ? "reset run: done" : $"reset run: {resetOutput}");
-            }
-            catch (BackendException ex)
-            {
-                sb.AppendLine($"NOTE: the image was programmed, but 'reset run' failed: {ex.Message}");
-            }
-
-            return sb.ToString();
+            var outcome = await FlashWriteCoreAsync(ConfigStore.Instance.Current, file, address, verify, reset, ct).ConfigureAwait(false);
+            return outcome.Report;
         }
         finally
         {
@@ -215,6 +106,141 @@ public static class FlashTools
             pumpCts.Cancel();
             try { await pumpTask.ConfigureAwait(false); } catch { /* 泵的收尾 */ }
         }
+    }
+
+    // ── v0.4.20：烧录编排核心（flash_write 工具与 `ocdup burn` CLI 共用；闸与判据单一真源）──
+
+    /// <summary>核心失败类别：CLI 据此区分退出码（2=用法/权限，3=后端）；MCP 工具形态一律回 Report 文本。</summary>
+    internal enum CoreFailure { Usage, Blocked, Backend }
+
+    /// <summary>核心结果：Ok=false 时 Failure 标明类别、Report 是可直接展示的错误文案；
+    /// Ok=true 时 Report 是完整烧录报告、Verdict 是三段式结论（CLI 的退出码由它决定）。</summary>
+    internal readonly record struct CoreOutcome(bool Ok, CoreFailure Failure, string Report, FlashWriteVerdict Verdict);
+
+    /// <summary>
+    /// 烧录编排：路径解析 → C2 闸（read_only/allow_flash/白名单/上限）→ `program`（不带
+    /// verify）→ 独立 `verify_image` 读回 → <see cref="ClassifyFlashWrite"/> 三段式结论 →
+    /// <see cref="ShouldResetRun"/> 门控 reset。v0.4.13（P0-2）定案：校验与写相分离——
+    /// PY32 等驱动会在写相吐虚假 AHB 错误（操作实际已生效），「读回是否与镜像一致」才是
+    /// 烧录成功的权威回答；program 错误文本降级为辅助信息，只用来区分两种失败形态。
+    /// 校验通道失败按存疑判失败（保守），reset 不会执行。行为与 v0.4.13 起的 flash_write
+    /// 完全一致（e2e 链路 4 钉死）；CLI 侧仅多出退出码映射（见 BurnCli.MapExitCode）。
+    /// </summary>
+    internal static async Task<CoreOutcome> FlashWriteCoreAsync(
+        OcdConfig cfg, string file, string? address, bool verify, bool reset, CancellationToken ct)
+    {
+        string resolved;
+        try
+        {
+            resolved = cfg.ResolvePath(file);
+        }
+        catch (Exception ex)
+        {
+            return new CoreOutcome(false, CoreFailure.Usage, $"ERROR: '{file}' is not a usable path: {ex.Message}", default);
+        }
+
+        if (!File.Exists(resolved))
+            return new CoreOutcome(false, CoreFailure.Usage,
+                $"ERROR: '{resolved}' does not exist. Pass the path of the built image (.elf/.hex/.bin); " +
+                "relative paths are resolved against the ocd.json directory (see show_config for its location).", default);
+
+        var image = new FileInfo(resolved);
+        if (PermissionGate.CheckFlashWrite(cfg, resolved, image.Length) is { } blocked)
+            return new CoreOutcome(false, CoreFailure.Blocked, blocked, default);
+
+        long? loadAddress = null;
+        if (!string.IsNullOrWhiteSpace(address))
+        {
+            if (!Parsing.TryParseHex(address, out var parsed))
+                return new CoreOutcome(false, CoreFailure.Usage,
+                    $"ERROR: address '{address}' is not a hex value. Use a hex string like '0x08000000'.", default);
+            loadAddress = parsed;
+        }
+        else if (resolved.EndsWith(".bin", StringComparison.OrdinalIgnoreCase))
+        {
+            return new CoreOutcome(false, CoreFailure.Usage,
+                "ERROR: a raw .bin image needs an explicit load address, e.g. flash_write(file=\"build/fw.bin\", address=\"0x08000000\"). " +
+                "An .elf/.hex image carries its own addresses and needs no address argument.", default);
+        }
+
+        // program 不再带 verify——校验由下一步独立的 verify_image 承担。
+        string programOutput;
+        try
+        {
+            var programCommand = new StringBuilder("program ").Append(Tcl.Quote(resolved));
+            if (loadAddress is { } addr) programCommand.Append(' ').Append(Parsing.Hex(addr));
+
+            programOutput = (await BackendSession.Instance.ExecuteAsync(cfg, programCommand.ToString(), startIfNeeded: true, ct, op: "flash_write")).Trim();
+        }
+        catch (BackendException ex)
+        {
+            return new CoreOutcome(false, CoreFailure.Backend, ex.Message, default);
+        }
+
+        string? verifyProblem = null;
+        if (verify)
+        {
+            var verifyCommand = new StringBuilder("verify_image ").Append(Tcl.Quote(resolved));
+            if (loadAddress is { } vaddr) verifyCommand.Append(' ').Append(Parsing.Hex(vaddr));
+
+            string verifyOutput;
+            try
+            {
+                verifyOutput = (await BackendSession.Instance.ExecuteAsync(cfg, verifyCommand.ToString(), startIfNeeded: false, ct, op: "flash_write")).Trim();
+            }
+            catch (BackendException ex)
+            {
+                verifyOutput = ex.Message; // 校验通道失败：按存疑判失败（保守），reset 不会执行
+            }
+
+            verifyProblem = InterpretVerifyOutput(verifyOutput);
+        }
+
+        var verdict = ClassifyFlashWrite(verify, programOutput, verifyProblem);
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"programmed: {resolved} ({image.Length} bytes)");
+        if (loadAddress is { } reported) sb.AppendLine($"load address: {Parsing.Hex(reported)}");
+        sb.AppendLine(programOutput.Length == 0 ? "(the program step produced no output)" : programOutput);
+
+        switch (verdict)
+        {
+            case FlashWriteVerdict.ProgrammedVerified:
+                sb.AppendLine($"verified: {resolved} ({image.Length} bytes) matches the target flash (read-back).");
+                break;
+            case FlashWriteVerdict.ProgrammedButVerifyFailed:
+                sb.AppendLine($"VERIFY FAILED: the program step reported success, but the read-back does not match {resolved} ({image.Length} bytes).");
+                sb.AppendLine($"problem: {verifyProblem}");
+                break;
+            case FlashWriteVerdict.WriteFailed:
+                sb.AppendLine($"WRITE FAILED: the program step reported an error, and the read-back does not confirm the image ({image.Length} bytes).");
+                sb.AppendLine($"problem: {verifyProblem}");
+                break;
+            case FlashWriteVerdict.Unverified:
+                sb.AppendLine("unverified: verify=false skipped the read-back check - run mcp__ocdup__verify_image to confirm what landed.");
+                break;
+        }
+
+        if (!reset) return new CoreOutcome(true, CoreFailure.Usage, sb.ToString(), verdict);
+
+        if (!ShouldResetRun(verdict, programOutput))
+        {
+            sb.Append("NOTE: 'reset run' was skipped - the verdict above is not a clean pass. " +
+                      "Check the log above (probe wiring, flash bank, target_cfg), then flash again.");
+            return new CoreOutcome(true, CoreFailure.Usage, sb.ToString(), verdict);
+        }
+
+        try
+        {
+            var resetOutput = (await BackendSession.Instance.ExecuteAsync(cfg, "reset run", startIfNeeded: false, ct, op: "flash_write")).Trim();
+            sb.AppendLine(resetOutput.Length == 0 ? "reset run: done" : $"reset run: {resetOutput}");
+        }
+        catch (BackendException ex)
+        {
+            sb.AppendLine($"NOTE: the image was programmed, but 'reset run' failed: {ex.Message}");
+        }
+
+        return new CoreOutcome(true, CoreFailure.Usage, sb.ToString(), verdict);
     }
 
     [McpServerTool(Name = "verify_image")]

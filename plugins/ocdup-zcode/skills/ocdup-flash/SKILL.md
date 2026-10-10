@@ -41,6 +41,10 @@ docstring 与 `show_config` 输出为准，不要凭记忆猜。
 原始字节直通 stdout，`--address`（查 map 文件 `_SEGGER_RTT`）+ `--lines/--seconds` 限长、
 `--info` 列通道；长时连续流同样不占 MCP 通道；`ocdup rtt --help` 看用法。
 
+另有 **`ocdup burn` 子命令 CLI**（v0.4.20，不是 MCP 工具）：产线/CI 非交互烧录，与
+`flash_write` 同一编排核心，按退出码分流（0=verified / 1=读回不符 / 2=用法·权限 /
+3=后端故障）；烧录中刻意不响应 Ctrl+C（写相中断 = 半截固件）。
+
 ## 标准烧录流程
 
 1. `connect`——先连后端。输出里的 `backend:` 行会回报探针自动识别结果
