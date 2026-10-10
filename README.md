@@ -122,6 +122,15 @@ ocdup rtt --channel 1 --seconds 30               # 换通道,30s 自动收尾
 
 > 控制块没找到时先查固件 map 文件的 `_SEGGER_RTT` 符号地址，`--address` 精确指过去。
 
+## 📖 常用配方（recipes）
+
+| 配方 | 场景 |
+|---|---|
+| [新板首次烧录闭环](docs/recipes/1-first-flash.md) | 插上陌生板子：预检 → connect 认芯片 → 失配切 cfg → 烧录 → 读回验证 |
+| [救板](docs/recipes/2-recover-brick.md) | 连不上/睡死/固件烧坏：通道排障 → connect_assert_srst → halt 现场 → 整片重烧 |
+| [观测运行中的固件](docs/recipes/3-observe-running.md) | watch 变量曲线 / rtt printf 日志流 / halt 卡死现场，三者怎么选 |
+| [量产治具烧录](docs/recipes/4-production-burn.md) | `ocdup burn` + doctor 预检 + exit code 分流的治具脚本骨架 |
+
 ### 🔥 burn CLI（量产烧录，v0.4.20）
 
 治具/产线/CI 的非交互烧录——与 `flash_write` 工具**同一编排核心**（权限闸 + program →
