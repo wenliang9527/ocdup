@@ -30,7 +30,7 @@
 | 「擦掉 0x080C0000 那个扇区」 | `flash_erase_sector` | 破坏性操作，默认关闭，显式开启才可用 |
 | 「跑这条 TCL：`targets`」 | `run_command` | 原始命令逃生舱，兜底专用工具没覆盖的操作 |
 
-## 🧰 工具一览（20 个）
+## 🧰 工具一览（23 个）
 
 ### 会话与诊断
 
@@ -78,6 +78,14 @@
 | `write_variable` | 按名写 1/2/4 字节变量（大对象走 `write_memory`） | `read_only` / `allow_memory_write` |
 
 > 用法：`ocd.json` 里把 `elf_path` 指到编译产物（未 strip 的 .elf），三个工具就都有默认镜像了。
+
+### 符号层（L2，按名读写外设寄存器，v0.4.21）
+
+| 工具 | 作用 | 权限 |
+|---|---|---|
+| `load_svd` | 加载 CMSIS-SVD 文件（自研 XML 解析，支持 cluster 展平与三种位域写法），列外设/寄存器清单——PC 侧读文件，不动目标 | — |
+| `read_peripheral_register` | **按名读寄存器**（`"RCC.CR"`、簇寄存器 `"TIM1.PWM.CCR"`）：地址从 SVD 解出，读回带位域解码 + reset 比对；`svd_path` 可作默认镜像 | 只读 |
+| `write_peripheral_register` | 按名写寄存器：值按寄存器宽度掩码；SVD access 为 read-only 的寄存器即使权限放行也拒写 | `read_only` / `allow_memory_write` |
 
 ### ⏱ watch CLI（M-watch，v0.4.3）
 
@@ -341,7 +349,7 @@ reload/重启丢弃）；否则 `show_config` 核对生效权限，改 ocd.json 
 ## 🧪 开发与测试
 
 ```bash
-dotnet test Ocdup.sln                     # 284 个单测，不需要硬件
+dotnet test Ocdup.sln                     # 299 个单测，不需要硬件
 python tools/e2e_fake_backend.py          # 端到端：假 TCL-RPC 后端 + 真实 MCP 会话
 ```
 
@@ -379,7 +387,7 @@ python tools/e2e_fake_backend.py          # 端到端：假 TCL-RPC 后端 + 真
 
 | 里程碑 | 状态 |
 |---|---|
-| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 284 个单测 + 假后端 e2e 覆盖（18 条链路） |
+| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 299 个单测 + 假后端 e2e 覆盖（19 条链路） |
 | S4 真机联调 | ✅ AT32F403AVGT7 + CMSIS-DAP v2（DAPLink `0D28:0204`）+ atopenocd：`connect` → `flash_info` → `flash_write`（擦 25 扇区、写 + Verified OK、reset run）→ `read_memory` 运行态读回向量表 |
 | 安全与正确性加固（v0.4.12–v0.4.16） | ✅ `run_command` 内容分类（写类命令与专用工具同权/重定向）、`flash_write` 以独立读回校验为权威判据（三段式结论）、断链只读自动重放 + 空闲心跳、烧录/擦除/dump 执行期 progress notification |
 | doctor CLI | ✅ `ocdup doctor` 五项环境体检（ocd.json / OCD_BIN / scripts / 探针 / 后端端口），换机第一步 |

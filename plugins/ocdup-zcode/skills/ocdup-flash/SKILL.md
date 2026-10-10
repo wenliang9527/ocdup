@@ -1,6 +1,6 @@
 ---
 name: ocdup-flash
-description: Use when flashing firmware or reading target memory through the Ocdup toolchain — Ocdup MCP tools (connect/status/show_config/backend_log/identify_chip/set_target/set_permissions/flash_info/flash_write/verify_image/flash_erase_sector/read_memory/write_memory/dump_memory/halt/resume/reset/run_command/list_variables/read_variable/write_variable) wrapping OpenOCD. Covers the standard flash workflow (connect → flash_info → flash_write → read-back), exec control for reliable reads (halt → operate → resume, with PC/LR/SP/xPSR snapshot), chip identification after connect (identify_chip: CPUID + vendor DEV_ID) and switching target_cfg without restarting the session (set_target via target_presets), runtime permission changes (set_permissions, gated by allow_set_permissions), variable access by name via the ELF symbol layer (elf_path in ocd.json) and timed sampling via the `ocdup watch` CLI, address/width conventions, permission-gate discipline (BLOCKED → show_config), probe auto-detection boundaries, and port discipline (6666 single backend, shared by DSH and ZCode). 触发词：烧录、刷机、固件、下载程序、烧写、读 flash、读内存、dump、向量表、卡死、挂起、复位、halt、识别芯片、芯片型号、什么芯片、切换芯片、换板子、set_target、改权限、临时允许、变量名、按名读写、采样、watch、gCounter、探针、OpenOCD、DAPLink、AT-Link、ST-Link、J-Link、AT32。
+description: Use when flashing firmware or reading target memory through the Ocdup toolchain — Ocdup MCP tools (connect/status/show_config/backend_log/identify_chip/set_target/set_permissions/flash_info/flash_write/verify_image/flash_erase_sector/read_memory/write_memory/dump_memory/halt/resume/reset/run_command/list_variables/read_variable/write_variable/load_svd/read_peripheral_register/write_peripheral_register) wrapping OpenOCD. Covers the standard flash workflow (connect → flash_info → flash_write → read-back), exec control for reliable reads (halt → operate → resume, with PC/LR/SP/xPSR snapshot), chip identification after connect (identify_chip: CPUID + vendor DEV_ID) and switching target_cfg without restarting the session (set_target via target_presets), runtime permission changes (set_permissions, gated by allow_set_permissions), variable access by name via the ELF symbol layer (elf_path in ocd.json), peripheral registers by name via the SVD layer (load_svd → read/write_peripheral_register, bit-field decode, read-only access refused; svd_path in ocd.json), timed sampling via the `ocdup watch` CLI, RTT streaming via the `ocdup rtt` CLI and production flashing via the `ocdup burn` CLI, address/width conventions, permission-gate discipline (BLOCKED → show_config), probe auto-detection boundaries, and port discipline (6666 single backend, shared by DSH and ZCode). 触发词：烧录、刷机、固件、下载程序、烧写、读 flash、读内存、dump、向量表、卡死、挂起、复位、halt、识别芯片、芯片型号、什么芯片、切换芯片、换板子、set_target、改权限、临时允许、变量名、按名读写、采样、watch、gCounter、SVD、寄存器、外设寄存器、位域、RCC.CR、rtt、printf 日志、量产、burn、探针、OpenOCD、DAPLink、AT-Link、ST-Link、J-Link、AT32。
 ---
 
 # Ocdup 烧录工具链（AI 操作手册）
@@ -32,6 +32,11 @@ docstring 与 `show_config` 输出为准，不要凭记忆猜。
 | `list_variables` | 列出 .elf 的变量（地址/大小/名，可过滤）——PC 侧读文件，不动目标 | 否 |
 | `read_variable` | 按名读变量（ELF 定位 → 目标读回；受 `memory_read_max_bytes`） | 否 |
 | `write_variable` | 按名写 1/2/4 字节变量（大对象引导用 write_memory） | **是** |
+
+**符号层 L2（v0.4.21）**：`load_svd(file)` 加载 CMSIS-SVD（列外设/寄存器清单；
+`svd_path` 可作默认镜像）→ `read_peripheral_register("RCC.CR")` 按名读 + 位域解码 +
+reset 比对（簇寄存器带路径，如 `"TIM1.PWM.CCR"`）→ `write_peripheral_register` 按名写
+（走 allow_memory_write 闸；SVD access 为 read-only 的寄存器即使放行也拒写）。
 
 另有 **`ocdup watch` 子命令 CLI**（M-watch，不是 MCP 工具）：按符号名定时采样变量
 （`--name` 多个、`--interval`、`--format csv` 重定向画曲线、`--halt` 每拍暂停固件读

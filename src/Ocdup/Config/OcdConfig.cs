@@ -40,6 +40,9 @@ public sealed class OcdConfig
     /// <summary>符号层 L1：list/read/write_variable 的默认镜像（.elf，相对路径基准同其他路径）。</summary>
     public string? ElfPath { get; private set; }
 
+    /// <summary>符号层 L2（v0.4.21）：SVD 默认镜像（read/write_peripheral_register 免 file 参数），相对路径基准同 elf_path。</summary>
+    public string? SvdPath { get; private set; }
+
     /// <summary>interface_cfg = "auto":连接阶段按 USB 设备自动识别探针并选择接口脚本。</summary>
     public bool IsInterfaceAuto => string.Equals(InterfaceCfg, "auto", StringComparison.OrdinalIgnoreCase);
 
@@ -108,7 +111,7 @@ public sealed class OcdConfig
 
     private static readonly string[] TrackedKeys =
     {
-        "interface_cfg", "target_cfg", "transport", "host", "port", "command_timeout_seconds", "elf_path",
+        "interface_cfg", "target_cfg", "transport", "host", "port", "command_timeout_seconds", "elf_path", "svd_path",
         "read_only", "allow_memory_write", "allow_flash", "allow_flash_erase", "allow_raw_command", "allow_exec",
         "allow_set_permissions",
         "flash_allowed_paths", "flash_max_bytes", "memory_read_max_bytes",
@@ -255,6 +258,7 @@ public sealed class OcdConfig
         TakeString(obj, "transport", source, v => Transport = v);
         TakeString(obj, "host", source, v => Host = v, reject: string.IsNullOrWhiteSpace);
         TakeString(obj, "elf_path", source, v => ElfPath = v);
+        TakeString(obj, "svd_path", source, v => SvdPath = v);
 
         TakeInt(obj, "port", source, v => Port = v, min: 1, max: 65535);
         TakeInt(obj, "command_timeout_seconds", source, v => CommandTimeoutSeconds = v, min: 1, max: 3600);
@@ -416,6 +420,7 @@ public sealed class OcdConfig
             $"target_cfg:      {TargetCfg ?? "(not set)"}   [src: {Src("target_cfg")}]",
             $"transport:       {Transport ?? "(probe default)"}   [src: {Src("transport")}]",
             $"elf_path:        {ElfPath ?? "(not set - pass file to list/read/write_variable)"}   [src: {Src("elf_path")}]",
+            $"svd_path:        {SvdPath ?? "(not set - load_svd(file=...) loads one per session)"}   [src: {Src("svd_path")}]",
             $"command_port:    {Host}:{Port}   [src: {Src("port")}]",
             $"command_timeout: {CommandTimeoutSeconds}s   [src: {Src("command_timeout_seconds")}]",
             "permissions:",

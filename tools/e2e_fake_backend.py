@@ -145,14 +145,19 @@ def handle_command(cmd):
                 "0: INPUT 128 0")
     if c == "rtt stop":
         return ""
-    if c.startswith("mdw"):
+    if c.startswith("mdw") or c.startswith("mdh") or c.startswith("mdb"):
         parts = c.split()
         addr = int(parts[1], 16)
         count = int(parts[2]) if len(parts) > 2 else 1
+        width = 8 if c.startswith("mdb") else (16 if c.startswith("mdh") else 32)
+        fmt = {8: "%02x", 16: "%04x", 32: "%08x"}[width]
+        mask = (1 << width) - 1
+        step = width // 8
+        per_line = 32 // width
         lines = []
-        for i in range(0, count, 4):
-            vals = " ".join("%08x" % ((addr + (i + k) * 4) & 0xFFFFFFFF) for k in range(min(4, count - i)))
-            lines.append("0x%08x: %s " % (addr + i * 4, vals))
+        for i in range(0, count, per_line):
+            vals = " ".join(fmt % ((addr + (i + k) * step) & mask) for k in range(min(per_line, count - i)))
+            lines.append("0x%08x: %s " % (addr + i * step, vals))
         return "\n".join(lines)
     return "echo: " + c
 
@@ -478,6 +483,66 @@ def main():
         print("  outside whitelist -> exit:", burn3.returncode)
         assert burn3.returncode == 2, "burn should exit 2 on BLOCKED, got %d" % burn3.returncode
         assert "BLOCKED" in burn3.stderr, "burn should print the BLOCKED guidance to stderr"
+
+        banner("SVD layer L2 (v0.4.21): load_svd / read_peripheral_register (decode + reset compare) / write gate")
+        MINI_SVD = """<?xml version="1.0"?>
+<device>
+  <name>TEST32</name>
+  <peripherals>
+    <peripheral>
+      <name>RCC</name>
+      <baseAddress>0x40021000</baseAddress>
+      <registers>
+        <register>
+          <name>CR</name>
+          <addressOffset>0x00</addressOffset>
+          <size>32</size>
+          <access>read-write</access>
+          <resetValue>0x00000081</resetValue>
+          <fields>
+            <field><name>HSION</name><bitOffset>0</bitOffset><bitWidth>1</bitWidth></field>
+            <field><name>PLLON</name><lsb>24</lsb><msb>24</msb></field>
+            <field><name>HPRE</name><bitRange>[7:4]</bitRange></field>
+          </fields>
+        </register>
+        <cluster>
+          <name>PWM</name>
+          <addressOffset>0x100</addressOffset>
+          <register><name>CCR</name><addressOffset>0x0</addressOffset><size>16</size></register>
+        </cluster>
+      </registers>
+    </peripheral>
+    <peripheral>
+      <name>GPIOA</name>
+      <baseAddress>0x40010800</baseAddress>
+      <registers>
+        <register><name>ODR</name><addressOffset>0x0C</addressOffset><access>read-only</access></register>
+      </registers>
+    </peripheral>
+  </peripherals>
+</device>
+"""
+        with open(os.path.join(work, "test.svd"), "w", encoding="utf-8") as f:
+            f.write(MINI_SVD)
+        print(mcp.call("load_svd", {"file": "test.svd"}))
+        print(mcp.call("load_svd", {"file": "test.svd", "peripheral": "RCC"}))
+        r1 = mcp.call("read_peripheral_register", {"name": "rcc.cr"})
+        print(r1)
+        assert "0x40021000" in r1 and "differs from the reset value" in r1, "CR read should decode and compare reset"
+        r2 = mcp.call("read_peripheral_register", {"name": "RCC.PWM.CCR"})
+        print(r2)
+        assert "0x40021100" in r2, "cluster register should resolve to base+cluster offset"
+        assert any(c.startswith("mdh 0x40021100 1") for c in backend.commands), "16-bit register must be read with mdh"
+        w1 = mcp.call("write_peripheral_register", {"name": "RCC.CR", "value": "0x1"})
+        print(w1)
+        assert "wrote RCC.CR" in w1, "write should go through with the memory-write gate open"
+        assert any(c.startswith("mww 0x40021000 0x1") for c in backend.commands), "32-bit register must be written with mww"
+        w2 = mcp.call("write_peripheral_register", {"name": "GPIOA.ODR", "value": "0x1"})
+        print(w2)
+        assert "read-only" in w2, "read-only access registers must be refused"
+        r3 = mcp.call("read_peripheral_register", {"name": "UART9.CR"})
+        print(r3)
+        assert "Did you mean" in r3, "unknown peripheral should suggest the closest names"
 
         banner("halt -> read -> resume (exec control, allow_exec defaults to true)")
         print(mcp.call("halt", {}))
