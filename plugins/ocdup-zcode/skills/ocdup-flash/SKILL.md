@@ -48,7 +48,9 @@ reset 比对（簇寄存器带路径，如 `"TIM1.PWM.CCR"`）→ `write_periphe
 
 另有 **`ocdup burn` 子命令 CLI**（v0.4.20，不是 MCP 工具）：产线/CI 非交互烧录，与
 `flash_write` 同一编排核心，按退出码分流（0=verified / 1=读回不符 / 2=用法·权限 /
-3=后端故障）；烧录中刻意不响应 Ctrl+C（写相中断 = 半截固件）。
+3=后端故障）；烧录中刻意不响应 Ctrl+C（写相中断 = 半截固件）。配套 **`ocdup verify`
+子命令 CLI**（v0.4.26）：只读比对镜像与目标 flash（金板抽检/烧后自检），判据与
+`verify_image` 工具同一份，exit 0/1/2/3 同族。
 
 ## 标准烧录流程
 

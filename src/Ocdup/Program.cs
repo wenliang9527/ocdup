@@ -20,6 +20,11 @@ if (args.Length > 0 && args[0].Equals("rtt", StringComparison.OrdinalIgnoreCase)
 if (args.Length > 0 && args[0].Equals("burn", StringComparison.OrdinalIgnoreCase))
     return await BurnCli.RunAsync(args.Skip(1).ToArray());
 
+// `ocdup verify ...`：只读比对镜像与目标 flash 的 CLI（v0.4.26）——量产金板抽检/
+// 烧后自检，判据复用 verify_image 的核心，exit code 与 burn 同族。
+if (args.Length > 0 && args[0].Equals("verify", StringComparison.OrdinalIgnoreCase))
+    return await VerifyCli.RunAsync(args.Skip(1).ToArray());
+
 // `ocdup doctor`：环境体检（P1-6）——五项只读检查，不拉后端、不碰目标。
 if (args.Length > 0 && args[0].Equals("doctor", StringComparison.OrdinalIgnoreCase))
     return await DoctorCli.RunAsync();

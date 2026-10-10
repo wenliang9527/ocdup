@@ -249,14 +249,31 @@ public static class FlashTools
         "Use it to answer 'what firmware is actually on the board' - e.g. re-verify a previously flashed build. " +
         "Parameters: file (.elf/.hex/.bin; relative paths resolve against the ocd.json directory), " +
         "address (required for raw .bin, hex string like '0x08000000'; ignored for .elf/.hex). " +
-        "Read-only: no permission gate applies and no file is written on this PC.")]
+        "Read-only: no permission gate applies and no file is written on this PC. " +
+        "The same comparison is available outside MCP as 'ocdup verify <file>' (v0.4.26, exit-code mapped).")]
     public static async Task<string> VerifyImage(
         [Description("Path to the image to verify against target flash (.elf/.hex/.bin).")] string file,
         [Description("Offset for raw .bin images, hex string like '0x08000000'. Ignored for .elf/.hex.")] string? address = null,
         CancellationToken ct = default)
     {
-        var cfg = ConfigStore.Instance.Current;
+        // 编排本体在 VerifyCoreAsync（v0.4.26 起与 `ocdup verify` CLI 共用；判据单一真源）
+        var outcome = await VerifyCoreAsync(ConfigStore.Instance.Current, file, address, ct).ConfigureAwait(false);
+        return outcome.Report;
+    }
 
+    /// <summary>verify 结果：Ok=false 时 Failure 标明类别（CLI 退出码 2/3）；
+    /// Ok=true 时 Verified 是权威结论（CLI 退出码 0/1）、Report 与 MCP 工具逐字一致。</summary>
+    internal readonly record struct VerifyOutcome(bool Ok, CoreFailure Failure, string Report, bool Verified);
+
+    /// <summary>
+    /// 比对编排（v0.4.26 从 verify_image 工具抽出，与 CLI 共用）：路径解析 → .bin 必须显式
+    /// 偏移 → `verify_image` 后端命令 → <see cref="InterpretVerifyOutput"/> 保守判据
+    /// （无 "verified N bytes" 确认即判不通过，宁误报失败）。只读，无权限闸（与 MCP 工具
+    /// 同语义）；报告文本与 v0.3.5 起的 verify_image 工具逐字一致（e2e 链路 4 钉死）。
+    /// </summary>
+    internal static async Task<VerifyOutcome> VerifyCoreAsync(
+        OcdConfig cfg, string file, string? address, CancellationToken ct)
+    {
         string resolved;
         try
         {
@@ -264,25 +281,28 @@ public static class FlashTools
         }
         catch (Exception ex)
         {
-            return $"ERROR: '{file}' is not a usable path: {ex.Message}";
+            return new VerifyOutcome(false, CoreFailure.Usage, $"ERROR: '{file}' is not a usable path: {ex.Message}", false);
         }
 
         if (!File.Exists(resolved))
-            return $"ERROR: '{resolved}' does not exist. Pass the path of the built image (.elf/.hex/.bin); " +
-                   "relative paths are resolved against the ocd.json directory (see show_config for its location).";
+            return new VerifyOutcome(false, CoreFailure.Usage,
+                $"ERROR: '{resolved}' does not exist. Pass the path of the built image (.elf/.hex/.bin); " +
+                "relative paths are resolved against the ocd.json directory (see show_config for its location).", false);
 
         var image = new FileInfo(resolved);
         long? loadAddress = null;
         if (!string.IsNullOrWhiteSpace(address))
         {
             if (!Parsing.TryParseHex(address, out var parsed))
-                return $"ERROR: address '{address}' is not a hex value. Use a hex string like '0x08000000'.";
+                return new VerifyOutcome(false, CoreFailure.Usage,
+                    $"ERROR: address '{address}' is not a hex value. Use a hex string like '0x08000000'.", false);
             loadAddress = parsed;
         }
         else if (resolved.EndsWith(".bin", StringComparison.OrdinalIgnoreCase))
         {
-            return "ERROR: a raw .bin image needs an explicit offset, e.g. verify_image(file=\"build/fw.bin\", address=\"0x08000000\"). " +
-                   "An .elf/.hex image carries its own addresses and needs no address argument.";
+            return new VerifyOutcome(false, CoreFailure.Usage,
+                "ERROR: a raw .bin image needs an explicit offset, e.g. verify_image(file=\"build/fw.bin\", address=\"0x08000000\"). " +
+                "An .elf/.hex image carries its own addresses and needs no address argument.", false);
         }
 
         var command = new StringBuilder("verify_image ").Append(Tcl.Quote(resolved));
@@ -295,14 +315,17 @@ public static class FlashTools
         }
         catch (BackendException ex)
         {
-            return ex.Message;
+            return new VerifyOutcome(false, CoreFailure.Backend, ex.Message, false);
         }
 
-        return InterpretVerifyOutput(output) is { } problem
-            ? $"VERIFY FAILED: {resolved} ({image.Length} bytes) does not match the target flash.\n" +
-              $"problem: {problem}\nbackend output:\n{output}"
-            : $"verified: {resolved} ({image.Length} bytes) matches the target flash.\nbackend: " +
-              (output.Length == 0 ? "(no output)" : output);
+        if (InterpretVerifyOutput(output) is { } problem)
+            return new VerifyOutcome(true, CoreFailure.Usage,
+                $"VERIFY FAILED: {resolved} ({image.Length} bytes) does not match the target flash.\n" +
+                $"problem: {problem}\nbackend output:\n{output}", Verified: false);
+
+        return new VerifyOutcome(true, CoreFailure.Usage,
+            $"verified: {resolved} ({image.Length} bytes) matches the target flash.\nbackend: " +
+            (output.Length == 0 ? "(no output)" : output), Verified: true);
     }
 
     /// <summary>

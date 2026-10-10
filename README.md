@@ -144,7 +144,17 @@ echo $?    # 0=verified  1=读回不符/写失败  2=用法/配置/权限(BLOCKE
 
 > 烧录中刻意不响应 Ctrl+C：写相中断 = 半截固件；要中止请直接断探针。
 
-> 后续里程碑：断点 / 观察点 / 符号层 L2(SVD) / L3 协议字典，见[设计文档第 12 节](docs/design-plan.md)。
+### ✅ verify CLI（只读比对，v0.4.26）
+
+烧后复核/金板抽检，不进 MCP 会话——与 `verify_image` 工具**同一判据**（无
+"verified N bytes" 确认即不通过），只读不动目标：
+
+```bash
+ocdup verify --file build/fw.bin --address 0x08000000
+echo $?    # 0=verified  1=VERIFY FAILED  2=用法/配置  3=后端故障
+```
+
+> 后续里程碑：断点 / 观察点 / L3 协议字典 / 多后端注册表（Q8 方案已定案），见[设计文档第 12/16 节](docs/design-plan.md)。
 
 ## 🏗️ 架构
 

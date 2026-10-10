@@ -22,6 +22,8 @@
    18. ocdup burn CLI（v0.4.20）：verified → exit 0；arm 回读失配 → VERIFY FAILED + exit 1；
        白名单外 → BLOCKED + exit 2（烧录编排与 flash_write 同一核心）
    20. ocdup burn exit 3（v0.4.24）：死端口 + 无 OCD_BIN → 拉后端必败，BackendException → exit 3
+   21. ocdup verify CLI（v0.4.26）：verified → exit 0；arm 回读失配 → VERIFY FAILED + exit 1；
+       缺文件 → exit 2（比对判据与 verify_image 工具同一核心）
 """
 import json
 import os
@@ -506,6 +508,29 @@ def main():
         print("  stderr head:", burn4.stderr.strip().splitlines()[:1] if burn4.stderr.strip() else "(empty)")
         assert burn4.returncode == 3, "burn should exit 3 on backend failure, got %d" % burn4.returncode
         assert "ERROR" in burn4.stderr, "burn should print the actionable backend failure to stderr"
+
+        banner("ocdup verify CLI (v0.4.26): read-only compare, exit 0/1/2")
+        v1 = subprocess.run(
+            ["dotnet", DLL, "verify", "--file", "build/fw.bin", "--address", "0x08000000"],
+            cwd=work, env=dict(env), capture_output=True, text=True, encoding="utf-8", timeout=90)
+        print("  exit:", v1.returncode)
+        assert v1.returncode == 0, "verify should exit 0 on verified, got %d (stderr: %s)" % (v1.returncode, v1.stderr[-300:])
+        assert "matches the target flash" in v1.stdout, "verify report should carry the verified verdict"
+
+        print(mcp.call("run_command", {"command": "__e2e_arm_fail_verify__"}))
+        v2 = subprocess.run(
+            ["dotnet", DLL, "verify", "--file", "build/fw.bin", "--address", "0x08000000"],
+            cwd=work, env=dict(env), capture_output=True, text=True, encoding="utf-8", timeout=90)
+        print("  armed mismatch -> exit:", v2.returncode)
+        assert v2.returncode == 1, "verify should exit 1 on mismatch, got %d" % v2.returncode
+        assert "VERIFY FAILED" in v2.stdout, "verify report should carry the VERIFY FAILED verdict"
+
+        v3 = subprocess.run(
+            ["dotnet", DLL, "verify", "--file", "nope.bin", "--address", "0x08000000"],
+            cwd=work, env=dict(env), capture_output=True, text=True, encoding="utf-8", timeout=90)
+        print("  missing file -> exit:", v3.returncode)
+        assert v3.returncode == 2, "verify should exit 2 on missing file, got %d" % v3.returncode
+        assert "does not exist" in v3.stderr, "verify should print the path guidance to stderr"
 
         banner("SVD layer L2 (v0.4.21): load_svd / read_peripheral_register (decode + reset compare) / write gate")
         MINI_SVD = """<?xml version="1.0"?>

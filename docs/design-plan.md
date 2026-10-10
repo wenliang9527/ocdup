@@ -2,9 +2,9 @@
 
 | 项目 | 内容 |
 |---|---|
-| 文档版本 | v0.4.23 |
+| 文档版本 | v0.4.26 |
 | 日期 | 2026-10-09 |
-| 状态 | **阶段一完成**：控制层 + 烧录 + 读内存 + 执行控制 + 逃生舱 + 运行时权限 + 符号层 L1/L2 + target 注册表 + watch 采样 CLI 均已实现并验证（23 个 MCP 工具 + 4 个 CLI 子命令：watch 采样 / doctor 环境体检 / rtt 实时读取 / burn 量产烧录，S4 真机通过）；v0.4.12–v0.4.16 落地评审定案的安全/正确性加固（run_command 内容分类、flash_write 独立读回权威判据、断链只读自动重放 + 空闲心跳、执行期 progress notification）；后端二进制升级为自编译 atopenocd-py32（AT32 + PY32 双烧录支持，两芯片烧录均真机闭环）；SEGGER RTT 经 `ocdup rtt` CLI 落地（v0.4.19，fork 命令面实证 + 本机 TCP 数据面）；量产烧录经 `ocdup burn` CLI 落地（v0.4.20，与 flash_write 同一编排核心）；符号层 L2（SVD 按名外设寄存器 + 位域解码）v0.4.21 落地；断点/观察点/L3 后置 |
+| 状态 | **阶段一完成**：控制层 + 烧录 + 读内存 + 执行控制 + 逃生舱 + 运行时权限 + 符号层 L1/L2 + target 注册表 + watch 采样 CLI 均已实现并验证（23 个 MCP 工具 + 5 个 CLI 子命令：watch 采样 / doctor 环境体检 / rtt 实时读取 / burn 量产烧录 / verify 只读比对，S4 真机通过）；v0.4.12–v0.4.16 落地评审定案的安全/正确性加固（run_command 内容分类、flash_write 独立读回权威判据、断链只读自动重放 + 空闲心跳、执行期 progress notification）；后端二进制升级为自编译 atopenocd-py32（AT32 + PY32 双烧录支持，两芯片烧录均真机闭环）；SEGGER RTT 经 `ocdup rtt` CLI 落地（v0.4.19，fork 命令面实证 + 本机 TCP 数据面）；量产烧录经 `ocdup burn` CLI 落地（v0.4.20，与 flash_write 同一编排核心）；符号层 L2（SVD 按名外设寄存器 + 位域解码）v0.4.21 落地；v0.4.24–v0.4.26 全项目复查 P1 项收口（ArgScanner 解析收敛 / verify CLI / 复查毛边）；断点/观察点/L3 后置（Q8 多后端方案定案待排期） |
 | 读者 | 项目负责人（硬件/嵌入式）、后续实现者（Agent 或工程师） |
 | 上游参考 | [microhenrio/openocd-mcp](https://github.com/microhenrio/openocd-mcp) v0.4.5 架构（已逐文件审查） |
 
@@ -14,6 +14,7 @@
 
 | 版本 | 变更 |
 |---|---|
+| v0.4.26 | **`ocdup verify`：只读比对 CLI（全项目复查 P1 项 ③）**：① 用途：量产治具金板抽检/CI 烧后自检——烧完 `burn` 后不进 MCP 会话就能复核（exit code 与 burn 同族：0=verified / 1=VERIFY FAILED / 2=用法·配置 / 3=后端故障）；只读无权限闸（与 verify_image 工具同语义）。② 单一真源：verify_image 工具的比对编排抽成 `FlashTools.VerifyCoreAsync`（`VerifyOutcome`：Ok/Failure/Report/Verified），MCP 工具变薄壳，报告文本与 v0.3.5 起逐字一致（e2e 链路 4 钉死）；判据 = `InterpretVerifyOutput` 保守策略（无 "verified N bytes" 即不通过）。③ 选项解析用 v0.4.25 的 ArgScanner（第四个消费者，收敛兑现）；.bin 缺显式偏移在解析期就拒。④ 测试：VerifyCliTests +10（解析 6 / 退出码 4），C# 全套 306→**316 全绿**；e2e 第 21 条链路：verified → exit 0、arm 回读失配 → VERIFY FAILED + exit 1、缺文件 → exit 2，21 条链路 exit 0。csproj 0.4.17→0.4.18。至此 CLI 子命令 **5 个**：watch / doctor / rtt / burn / verify |
 | v0.4.25 | **CLI 选项解析收敛：ArgScanner（全项目复查 P1 项 ④）**：watch/rtt/burn 三个 CLI 的 Parse 循环是四胞胎（`--key value`/`--key=value`/缺值报错/help 识别各抄一份，~90 行重复）——新增 `Cli/ArgScanner`（`Next(out key, out value)` 迭代 + knownKeys/flags 集合），三个 Options 只剩 switch 分发与各自的取值校验，为 v0.4.26 的 verify CLI 铺路（不再产出第四份拷贝）。**两条吃参数铁律都靠既有测试先红钉回**：① 无值旗标不吃紧随其后的选项（`--no-verify --no-reset` 误食即灾难）；② 未知选项**也不吃**下一个参数（`--foo --format xml` 报 unknown 后 `--format xml` 照常解析——迁移第一版让未知项吞了下一参，WatchCliTests 立刻红回，遂把 knownKeys 交给 scanner、未知项自动报错且不消费）。`ArgScannerTests` +5（两条铁律/内联拆分/缺值报错/help 三形态含内联），三个 *Options 的 60+ 既有断言是行为主钉（迁移后全绿 = 零行为漂移）。C# 全套 299→**306 全绿**，e2e 20 条链路 exit 0。csproj 0.4.16→0.4.17 |
 | v0.4.24 | **CLI 复查毛边两处（全项目复查 P1 项 ①②）**：① `ocdup rtt` 控制块扫描超时不再静默开流——自拉后端扫 2s 没等到 `Control block found` 结论时，补一句 stderr 提示（流可能一直安静 + 提示查固件是否真用 RTT / 查 map 文件的 `_SEGGER_RTT` 精确地址），让 `--seconds`/`--lines` 的兜底语义有明确解释，不再「对着空 TCP 干等到 Ctrl+C」。② burn 的 **exit 3 端到端钉死**：此前链路 18 只覆盖 0/1/2，后端/通道故障路径只有单测映射——e2e 第 20 条链路：独立死端口配置（无 OCD_BIN）跑 `ocdup burn`，拉后端必败 → `ERROR: no openocd executable found` 进 stderr + **exit 3**。rtt 文案改动无行为面（31 例既有测试照绿）；C# 全套 299 全绿，e2e 20 条链路 exit 0。csproj 0.4.15→0.4.16 |
 | v0.4.23 | **SDK 升级核查 + HANDOFF 刷新（P1-7 实测收口，docs-only）**：① `dotnet package search`（含 `--prerelease`）实测：ModelContextProtocol 全家最新版就是 **2.2.0**——v0.4.17 钉住的版本即当前最新态，「升级实操」无对象，P1-7 以实测收口（升级回归要点维持第 17 节第 5 条，出新版时照单执行）；② Q8 多后端注册表**实施方案定案**（见第 16 节：覆盖式 backends 配置 + 会话注册表 + 工具可选 backend 参数 + 分后端权限；验收标准与工程量在案，实施待排期）；③ HANDOFF 刷新至本轮六项收口后的实际状态。C# 零改动，csproj 不 bump |
@@ -503,8 +504,8 @@ Ocdup/
 
 | 层 | 方法 | 现状 |
 |---|---|---|
-| 单元 | xUnit + **假 `TcpListener`**（脚本化响应） | 299 个用例：控制通道（capture 包装 / `0x1a` 分帧 / 跨 TCP 分段组装 / 并发串行化 / 读超时 / 连接失败）、权限矩阵、配置加载（嵌套块 / 顶层平铺 / 来源追踪 / 坏输入降级 / 路径基准）、探针识别（优先级 / 同种去重 / 无关设备忽略 / 空行容错）、TCL 引用、命令行构造、地址解析、流量日志轮转、CPUID 解码与 chip_id_map 匹配、运行时权限补丁与 OCD_RDONLY、ELF32 解析（对象符号筛选 / 坏输入拒绝）、SVD 解析（cluster 展平 / 三种位域写法 / 十六进制-十进制语义 / 按名解析与建议）、reg 输出解析、target_presets 解析与切换（ResolvePreset / TargetMismatch / WithTargetChange）、watch CLI 选项/取值/渲染、run_command 内容分类（分类白名单 / `;` 走私 / erase_check 不误杀）、flash_write 三段式结论与 reset 门控、doctor 渲染与退出码、进度泵差分切片与守卫（含「无自拉后端时零通知」的行为级断言）、断链重放白名单与通道状态、rtt CLI（选项/命令构造/setup 判定/控制块日志扫描/限流）、burn CLI（选项含 .bin 早拒/退出码映射） |
-| 端到端 | `tools/e2e_fake_backend.py`：Python 假 TCL-RPC 后端 + 真实 MCP stdio 会话（无需硬件） | 已验证：23 个工具注册（含 v0.4.6 的 disconnect）、烧录/读/写/执行控制（halt/reset halt 回读 PC/LR/SP/xPSR）/逃生舱/芯片识别与 target 失配/set_target 切换（list/未知名/大小写/外部实例警告）/运行时权限/按名读写全链路、format=json 与 verify_image、dump 白名单与上限拦截、read_only 全拦、`reload` 生效与 runtime 补丁丢弃、无 openocd 与坏二进制时的诊断输出、run_command 内容分类（mdb 透传 / program BLOCKED 重定向）、断链重放（假后端断开连接后只读自动重连重放）、`ocdup rtt` CLI 全流程（假 RTT TCP 数据面收满 --lines 即停 + 命令序列断言 + --info）、`ocdup burn` CLI 三态（verified exit 0 / arm 回读失配 VERIFY FAILED exit 1 / 白名单外 BLOCKED exit 2）、SVD 按名读写（load → 大小写不敏感读 + 位域解码 + reset 比对 → 簇寄存器 mdh 选型 → mww 写 → read-only 拒写 → 未知名建议；19 条链路） |
+| 单元 | xUnit + **假 `TcpListener`**（脚本化响应） | 316 个用例：控制通道（capture 包装 / `0x1a` 分帧 / 跨 TCP 分段组装 / 并发串行化 / 读超时 / 连接失败）、权限矩阵、配置加载（嵌套块 / 顶层平铺 / 来源追踪 / 坏输入降级 / 路径基准）、探针识别（优先级 / 同种去重 / 无关设备忽略 / 空行容错）、TCL 引用、命令行构造、地址解析、流量日志轮转、CPUID 解码与 chip_id_map 匹配、运行时权限补丁与 OCD_RDONLY、ELF32 解析（对象符号筛选 / 坏输入拒绝）、SVD 解析（cluster 展平 / 三种位域写法 / 十六进制-十进制语义 / 按名解析与建议）、reg 输出解析、target_presets 解析与切换（ResolvePreset / TargetMismatch / WithTargetChange）、watch CLI 选项/取值/渲染、ArgScanner（旗标/未知项两条不吃参数铁律）、run_command 内容分类（分类白名单 / `;` 走私 / erase_check 不误杀）、flash_write 三段式结论与 reset 门控、doctor 渲染与退出码、进度泵差分切片与守卫（含「无自拉后端时零通知」的行为级断言）、断链重放白名单与通道状态、rtt CLI（选项/命令构造/setup 判定/控制块日志扫描/限流）、burn CLI（选项含 .bin 早拒/退出码映射）、verify CLI（选项/退出码映射） |
+| 端到端 | `tools/e2e_fake_backend.py`：Python 假 TCL-RPC 后端 + 真实 MCP stdio 会话（无需硬件） | 已验证：23 个工具注册（含 v0.4.6 的 disconnect）、烧录/读/写/执行控制（halt/reset halt 回读 PC/LR/SP/xPSR）/逃生舱/芯片识别与 target 失配/set_target 切换（list/未知名/大小写/外部实例警告）/运行时权限/按名读写全链路、format=json 与 verify_image、dump 白名单与上限拦截、read_only 全拦、`reload` 生效与 runtime 补丁丢弃、无 openocd 与坏二进制时的诊断输出、run_command 内容分类（mdb 透传 / program BLOCKED 重定向）、断链重放（假后端断开连接后只读自动重连重放）、`ocdup rtt` CLI 全流程（假 RTT TCP 数据面收满 --lines 即停 + 命令序列断言 + --info）、`ocdup burn` CLI 三态（verified exit 0 / arm 回读失配 VERIFY FAILED exit 1 / 白名单外 BLOCKED exit 2）、burn exit 3（死端口配置拉后端必败）、SVD 按名读写（load → 大小写不敏感读 + 位域解码 + reset 比对 → 簇寄存器 mdh 选型 → mww 写 → read-only 拒写 → 未知名建议）、`ocdup verify` CLI 三态（verified exit 0 / arm 失配 exit 1 / 缺文件 exit 2；21 条链路） |
 | 集成 | 真实探针 + 开发板（S4） | ✅ 已通过（2026-10）；每次记入测试日志（芯片、探针、ocd.json、OpenOCD 版本） |
 | CI | build → test → e2e（windows-latest） | ✅ `.github/workflows/ci.yml`（v0.3.9 建） |
 
@@ -597,7 +598,7 @@ endpoint 字段已带 host:port，天然可区分。
 - e2e（+2 链路）：双假后端（29171/29172）——`flash_info(backend="right")` 路由到 29172、
   默认参数仍走 29171、`write_memory(backend="left")` 在左后端只读配置下 BLOCKED 而右后端
   放行（分后端权限）；
-- **验收**：现有单后端用法零回归（全量测试 + 19 条链路不改动照绿）；双后端链路各走各的
+- **验收**：现有单后端用法零回归（全量测试 + 21 条链路不改动照绿）；双后端链路各走各的
   命令序列；真机验收 = 双探针双板并调一次记录。
 
 **6. 工程量与风险**：预计 1 个完整迭代（配置 0.5d + 注册表 0.5d + 23 工具参数过一遍
@@ -609,7 +610,7 @@ endpoint 字段已带 host:port，天然可区分。
 
 ## 17. 交付结论与下一步（HANDOFF）
 
-**当前状态（v0.4.23）**：**S4 真机联调已通过** ✅（AT32F403AVGT7 + CMSIS-DAP v2 探针 + atopenocd：connect → flash_info → flash_write S300plus.hex 139077 字节，擦 25 扇区、写+校验 Verified OK、reset run、运行态读回向量表 0x08000000 = `20019d28 080002ad …`）。**23 个 MCP 工具 + 4 个 CLI 子命令（`ocdup watch` 采样 / `ocdup doctor` 环境体检 / `ocdup rtt` SEGGER RTT 实时读取 / `ocdup burn` 量产烧录）全部落地**（含符号层 L1 按名读写、**L2 SVD 按名外设寄存器与位域解码（v0.4.21）**、target 注册表与 set_target 切换、halt 核心寄存器现场、disconnect 探针让渡）；v0.4.12–v0.4.16 落地评审定案的安全/正确性加固（run_command 内容分类、flash_write 独立读回权威判据、断链只读自动重放 + 空闲心跳、执行期 progress notification）；v0.4.18 复查修正三处（CLI 子命令计数纠错、`status` 通道状态读取时机、进度泵冷启动守卫下沉）；**v0.4.19–v0.4.22 完成评审 P2 清单**：rtt CLI（fork 命令面实证 + rtt server TCP 数据面）、burn 量产 CLI（与 flash_write 同一编排核心 + exit code 分流）、SVD 外设寄存器层（自研解析 + 位域解码 + 语义拒写）、recipes 四份实战手册（docs/recipes/）；**v0.4.23 P1-7 实测收口**（SDK 2.2.0 即最新，含 prerelease；Q8 多后端实施方案定案待排期）。299 个单元测试全绿 + e2e 19 条链路无硬件回归 + CI 就绪。烧录后端升级为自编译 **atopenocd-py32**（AT32 + PY32 双支持，见 docs/openocd-puya-build.md），PY32F002A 整片烧录与 AT32F403A 整 bank 回归均已真机闭环。S5 的 publish.cmd / CI / DSH 与 ZCode 注册已完成，换机第一步用 `ocdup doctor`，剩「换一台机器 10 分钟跑通」的换机验收。**待真机验收清单**：`ocdup rtt` 板上控制块搜索与数据流（命令面已实证）；`ocdup burn` 治具全流程；真实厂商 SVD（AT32/ST 全量文件）解析健壮性。
+**当前状态（v0.4.26）**：**S4 真机联调已通过** ✅（AT32F403AVGT7 + CMSIS-DAP v2 探针 + atopenocd：connect → flash_info → flash_write S300plus.hex 139077 字节，擦 25 扇区、写+校验 Verified OK、reset run、运行态读回向量表 0x08000000 = `20019d28 080002ad …`）。**23 个 MCP 工具 + 5 个 CLI 子命令（`ocdup watch` 采样 / `ocdup doctor` 环境体检 / `ocdup rtt` SEGGER RTT 实时读取 / `ocdup burn` 量产烧录 / `ocdup verify` 只读比对）全部落地**（含符号层 L1 按名读写、**L2 SVD 按名外设寄存器与位域解码（v0.4.21）**、target 注册表与 set_target 切换、halt 核心寄存器现场、disconnect 探针让渡）；v0.4.12–v0.4.16 落地评审定案的安全/正确性加固（run_command 内容分类、flash_write 独立读回权威判据、断链只读自动重放 + 空闲心跳、执行期 progress notification）；v0.4.18 复查修正三处；v0.4.19–v0.4.22 完成评审 P2 清单（rtt/burn/SVD/recipes）；v0.4.23 P1-7 实测收口（SDK 2.2.0 即最新；Q8 方案定案待排期）；**v0.4.24–v0.4.26 全项目复查 P1 项收口**（rtt 扫描超时提示、burn exit 3 端到端、ArgScanner 解析收敛——两条吃参数铁律靠既有测试先红钉回、`ocdup verify` 只读比对 CLI——四份编排单一真源：FlashWriteCoreAsync/VerifyCoreAsync）。316 个单元测试全绿 + e2e 21 条链路无硬件回归 + CI 就绪。烧录后端升级为自编译 **atopenocd-py32**（AT32 + PY32 双支持，见 docs/openocd-puya-build.md），PY32F002A 整片烧录与 AT32F403A 整 bank 回归均已真机闭环。S5 的 publish.cmd / CI / DSH 与 ZCode 注册已完成，换机第一步用 `ocdup doctor`，剩「换一台机器 10 分钟跑通」的换机验收。**待真机验收清单**：`ocdup rtt` 板上控制块搜索与数据流（命令面已实证）；`ocdup burn`/`verify` 治具全流程；真实厂商 SVD（AT32/ST 全量文件）解析健壮性。
 
 **建议的下一步顺序**：
 

@@ -38,11 +38,10 @@ esac
 
 ## 批次开始前的自检
 
-治具脚本再跑一遍金板镜像对照（用 `--no-reset` 只当校验器用不行——burn 是写工具；
-读回校验已内建在每次 burn 里，所以金板自检 = 烧一次金板镜像 + 人工抽检一块板用
-MCP `verify_image` 复核）：
+金板自检 = 烧一次金板镜像过产线流程 + 抽一块板用 `ocdup verify` 复核（只读比对，
+与 verify_image 工具同一判据，exit code 分流）：
 
 ```bash
 ocdup burn --file fixture/golden.bin --address 0x08000000   # 金板镜像过一遍产线流程
-# 抽检：MCP 会话里 verify_image(file="fixture/golden.bin", address="0x08000000")
+ocdup verify --file fixture/golden.bin --address 0x08000000 # 抽检复核,exit 0=一致
 ```
