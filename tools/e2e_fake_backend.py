@@ -17,6 +17,8 @@
    14. disconnect: external listener -> "cannot stop it"; read_only -> BLOCKED (panel button path)
    15. run_command 内容分类（v0.4.12）：只读 mdb 透传；program -> BLOCKED 并重定向 flash_write
    16. P1-5 断链重放：假后端断开连接后，只读 read_memory 自动重连并重放一次，业务无感
+   17. ocdup rtt CLI（v0.4.19）：rtt setup/start/server start 命令序列 + 假 RTT TCP 数据面
+       （--lines 2 收到两行即停）+ 收尾 rtt server stop/rtt stop；--info 只报通道清单
 """
 import json
 import os
@@ -36,6 +38,34 @@ STATE = {"drop_armed": False}  # P1-5 断链模拟：arm 后，下一条指定�
 PORT = 29171
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DLL = os.environ.get("OCDUP_DLL") or os.path.join(REPO_ROOT, "src", "Ocdup", "bin", "Debug", "net8.0", "ocdup.dll")
+
+# ── 假 RTT 数据面（v0.4.19 链路 17）：rtt server start <port> <ch> 命令到达时在本机
+# 起一个迷你 TCP 监听，连接建立即吐两行样例数据（CLI 以 --lines 2 收满即停）。──
+RTT_SERVERS = {}
+
+
+def start_rtt_server(port):
+    if port in RTT_SERVERS:
+        return
+    srv = socket.socket()
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind((HOST, port))
+    srv.listen(2)
+    RTT_SERVERS[port] = srv
+    threading.Thread(target=serve_rtt, args=(srv,), daemon=True).start()
+
+
+def serve_rtt(srv):
+    while True:
+        try:
+            conn, _ = srv.accept()
+        except OSError:
+            return
+        try:
+            conn.sendall(b"hello from fake rtt line 1\nhello from fake rtt line 2\n")
+        except OSError:
+            pass
+        # 保持连接打开：CLI 达到 --lines 上限后自己断开并走收尾序列
 
 
 def handle_command(cmd):
@@ -86,6 +116,29 @@ def handle_command(cmd):
         return ""
     if c.startswith("flash erase_sector"):
         return "erased sectors 0..last on bank 0"
+    if c.startswith("rtt server start"):
+        m = re.match(r"rtt server start (\d+) (\d+)$", c)
+        if m:
+            start_rtt_server(int(m.group(1)))
+            return ""
+        return "Error: fake backend could not parse rtt server start"
+    if c.startswith("rtt server stop"):
+        return ""
+    if c.startswith("rtt setup"):
+        return ""
+    if c == "rtt start":
+        return ""
+    if c == "rtt channels":
+        return ("Channels: up=4, down=1\n"
+                "Up-channels:\n"
+                "0: TERMINAL 1024 0\n"
+                "1: LOG 256 0\n"
+                "2: BIN 512 1\n"
+                "3: IDLE 64 0\n"
+                "Down-channels:\n"
+                "0: INPUT 128 0")
+    if c == "rtt stop":
+        return ""
     if c.startswith("mdw"):
         parts = c.split()
         addr = int(parts[1], 16)
@@ -362,6 +415,32 @@ def main():
         banner("P1-5: forced connection drop on next read; read-only op replays once after reconnect")
         print(mcp.call("run_command", {"command": "__e2e_arm_drop__"}))
         print(mcp.call("read_memory", {"address": "0x20000000", "count": 1}))
+
+        banner("ocdup rtt CLI (v0.4.19): stream channel 0 via the fake RTT TCP data plane, stop at --lines 2")
+        rtt = subprocess.run(
+            ["dotnet", DLL, "rtt", "--channel", "0", "--port", "19221", "--lines", "2", "--seconds", "60"],
+            cwd=work, env=dict(env), capture_output=True, text=True, encoding="utf-8", timeout=90)
+        print("  exit:", rtt.returncode)
+        print("  stdout:", rtt.stdout.strip()[:200])
+        print("  stderr head:", rtt.stderr.strip().splitlines()[:2] if rtt.stderr.strip() else "(empty)")
+        assert rtt.returncode == 0, "rtt CLI should exit 0, got %d (stderr: %s)" % (rtt.returncode, rtt.stderr[-400:])
+        assert "hello from fake rtt line 2" in rtt.stdout, "rtt CLI should stream the fake payload to stdout verbatim"
+        rtt_cmds = [c for c in backend.commands if c.startswith("rtt")]
+        print("  rtt commands:", rtt_cmds)
+        assert any(c.startswith("rtt setup 0x20000000 4096") for c in rtt_cmds), "rtt setup with defaults missing"
+        assert "rtt start" in rtt_cmds, "rtt start missing"
+        assert "rtt server start 19221 0" in rtt_cmds, "rtt server start missing"
+        assert "rtt server stop 19221" in rtt_cmds, "rtt server stop (cleanup) missing"
+        assert "rtt stop" in rtt_cmds, "rtt stop (cleanup) missing"
+
+        banner("ocdup rtt --info (channel listing only, no data stream)")
+        rtt2 = subprocess.run(
+            ["dotnet", DLL, "rtt", "--info"],
+            cwd=work, env=dict(env), capture_output=True, text=True, encoding="utf-8", timeout=90)
+        print("  exit:", rtt2.returncode)
+        print("  listing head:", rtt2.stdout.strip().splitlines()[:3])
+        assert rtt2.returncode == 0, "rtt --info should exit 0, got %d" % rtt2.returncode
+        assert "TERMINAL" in rtt2.stdout and "Down-channels" in rtt2.stdout, "rtt --info should print the channel listing"
 
         banner("halt -> read -> resume (exec control, allow_exec defaults to true)")
         print(mcp.call("halt", {}))

@@ -2,9 +2,9 @@
 
 | 项目 | 内容 |
 |---|---|
-| 文档版本 | v0.4.18 |
+| 文档版本 | v0.4.19 |
 | 日期 | 2026-10-09 |
-| 状态 | **阶段一完成**：控制层 + 烧录 + 读内存 + 执行控制 + 逃生舱 + 运行时权限 + 符号层 L1 + target 注册表 + watch 采样 CLI 均已实现并验证（20 个 MCP 工具 + 2 个 CLI 子命令：watch 采样 / doctor 环境体检，S4 真机通过）；v0.4.12–v0.4.16 落地评审定案的安全/正确性加固（run_command 内容分类、flash_write 独立读回权威判据、断链只读自动重放 + 空闲心跳、执行期 progress notification）；后端二进制升级为自编译 atopenocd-py32（AT32 + PY32 双烧录支持，两芯片烧录均真机闭环）；断点/观察点/L2(SVD)/L3 后置 |
+| 状态 | **阶段一完成**：控制层 + 烧录 + 读内存 + 执行控制 + 逃生舱 + 运行时权限 + 符号层 L1 + target 注册表 + watch 采样 CLI 均已实现并验证（20 个 MCP 工具 + 3 个 CLI 子命令：watch 采样 / doctor 环境体检 / rtt 实时读取，S4 真机通过）；v0.4.12–v0.4.16 落地评审定案的安全/正确性加固（run_command 内容分类、flash_write 独立读回权威判据、断链只读自动重放 + 空闲心跳、执行期 progress notification）；后端二进制升级为自编译 atopenocd-py32（AT32 + PY32 双烧录支持，两芯片烧录均真机闭环）；SEGGER RTT 经 `ocdup rtt` CLI 落地（v0.4.19，fork 命令面实证 + 本机 TCP 数据面）；断点/观察点/L2(SVD)/L3 后置 |
 | 读者 | 项目负责人（硬件/嵌入式）、后续实现者（Agent 或工程师） |
 | 上游参考 | [microhenrio/openocd-mcp](https://github.com/microhenrio/openocd-mcp) v0.4.5 架构（已逐文件审查） |
 
@@ -14,6 +14,7 @@
 
 | 版本 | 变更 |
 |---|---|
+| v0.4.19 | **`ocdup rtt`：SEGGER RTT 实时读取 CLI（后置项 → TDD 落地）**：① 命令面实证先行：本机两份 atopenocd（旧版与 py32 自编译）的 rtt 命令面都不完整——不带 target cfg 时 `help rtt` 只列 `rtt server`；带 target cfg 复测 + ArteryTek fork 源码（src/rtt/tcl.c）核对定案：fork 是**老式 target 命令表**——`rtt setup <addr> <size> <ID>`（valid any time）/ `rtt start` / `rtt stop` / `rtt channels` / `rtt channellist` / `rtt polling_interval` + 全局 `rtt server start/stop <port> <channel>`；**没有**上游 0.11 的 `rtt terminal`，且 setup/start 两步分离（上游 setup 自带 start）、`rtt start` 找不到控制块时只发 `rtt: No control block found` 日志**不返回 TCL 错**。② 形态定 CLI 而非 MCP 工具（同 watch / C1 理由）：长时连续流不该占死 stdio 串行通道，stdout 重定向到文件/管道才是 RTT 日志的正常用法。③ 数据面 = `rtt server start <port>` + 本机 TcpClient 直连，**原始字节直通 stdout**（不重新编码，二进制协议友好）；进度与结论走 stderr，重定向互不污染。④ 修法细节：游标基线取在 `rtt start` 之前、扫 openocd 捕获确认 `Control block found at 0x…`（fork 找不到不报错，不扫就会对着永不产出的 TCP 端口干等）；外部监听无捕获时如实标注 control block not verified；收尾序列 `rtt server stop` → `rtt stop` best-effort（外部实例也清理干净）；自拉后端随进程退出被 Job 收割（与 watch 同）。⑤ 选项：--address（默认 0x20000000，精确值查 map 文件的 _SEGGER_RTT）/--size（搜索区字节数，默认 4096）/--id（≤15 字符）/--channel/--port（默认 19221）/--info（只报通道清单不开流）/--lines/--bytes/--seconds。⑥ 测试：RttCliTests +31（解析 12 / 命令构造 4 / setup 判定 5 / 控制块扫描 7 / 限流 3），C# 全套 239→**270 全绿**；e2e 第 17 条链路：假后端起迷你 RTT TCP 数据面，CLI 子进程 `--lines 2` 收满即停（payload 原样到达 stdout + 命令序列五步断言）+ `--info` 通道清单，17 条链路 exit 0。csproj 0.4.12→0.4.13。**待真机验收**：板上的控制块搜索与数据流（本机无硬件；命令面与协议行为已实证） |
 | v0.4.18 | **复查修正三处（v0.4.12–v0.4.16 加固落地后的复查结论）**：① **文档数字纠错**：design-plan 状态头与 HANDOFF「20 个 MCP 工具 + **3 个** CLI 子命令」实为 **2 个**——`Program.cs` 只分发 `watch` 与 `doctor`，v0.4.17 回填时多数了一个（原 19 工具 + 1 CLI → 20 工具 + 2 CLI）；v0.4.17 changelog 行同步改正。② **`status` 通道状态行顺序修正**：原先先发 `version`/`targets` 再读 `ChannelState`——两次成功查询把「最近活动」水位刷新成当下，idle 恒显示 0s，P1-5 的「空闲时长」设计意图落空；改为查询**之前**读状态（注释钉死顺序要求，防回归），tool description 补「control channel 状态」一句。③ **进度泵冷启动修正（P1-4 边界）**：`FlashProgress.Start` 原要求「调用这一刻在自拉后端」，而冷启动的 `flash_write`/`dump_memory` 是在 `ExecuteAsync` 内部才拉起 openocd——首次烧录全程无进度；守卫下沉为泵内每拍自查 `CapturesProcessOutput`（`Start` 只留 server + progressToken 两重），既覆盖冷启动（后端就绪后进度自动恢复），也保守挡住外部监听的陈旧环形缓冲。④ 测试：ProgressPumpTests +1（无自拉后端时跑满两拍零通知，行为级钉死），C# 全套 238→**239 全绿**，e2e 16 条链路 exit 0。**待真机验收**：冷启动烧录（未先 connect、由 flash_write 内部拉起后端）时进度是否如期恢复，需插板实跑——本机无硬件，只覆盖了「无自拉后端不报」这一半。csproj 0.4.11→0.4.12 |
 | v0.4.17 | **文档全面对齐（C# 零改动，csproj 不 bump）**：把 v0.4.5–v0.4.16 六个版本滚积的滞后描述一次性回填——① README：工具一览 19→**20 个**（补 disconnect 行，v0.4.6 时漏更）、项目状态表补「安全与正确性加固 v0.4.12–v0.4.16」与「doctor CLI」两行、S1 行测试数 173→238、S5 行补「换机第一步 doctor」；② design-plan：状态头（19 工具 + 1 CLI → 20 工具 + 2 CLI，补安全定案一句）、HANDOFF「当前状态」块 v0.4.4→v0.4.16（工具/CLI/加固/测试数/doctor 全刷新）、单元测试统计行 173→238 并补五项新测试域、e2e 行补 16 条链路与内容分类/断链重放、下一步清单第 3 条补 doctor、**新增第 5 条 P1-7 维护节奏记录**（SDK 钉 2.2.0 的升级回归要点 + Job Object Windows-only 的 Linux 记录项——P1-7 至此以文档形式收口）；③ zcode 插件 SKILL：工具总数 19→20（注明 disconnect）。评审建议顺序的 P0-1 / P0-2 / P1-5 / P1-6 / P1-4 五项 + P1-7 记录项全部收口 |
 | v0.4.16 | **P1-4：烧录/擦除/dump 执行期间的 MCP progress notification（评审定案 → TDD 落地）**：① 现状澄清：launcher 的 PumpAsync 早已把 openocd 每行 stdout/stderr 以 log 方向镜像进 traffic（面板进度条吃的就是那条路），真正缺的是到**调用方客户端**的标准事件通道。② 修法 = 差分泵：launcher 环形缓冲加累计行数水位 `_totalLines` + `TakeNewLines(ref cursor)`（`SliceNewLines` 纯函数：落后超圈只回可见尾部，游标单调推进）→ 新增 `Tools/FlashProgress`（`Start` 三重守卫：有 server + 调用方 `_meta.progressToken` + ocdup 自拉捕获；`RunAsync` 750ms 一拍把增量行以 `notifications/progress` 推回，Progress 计数 + 行文本截断 200 字符）→ `flash_write` / `flash_erase_sector` / `dump_memory` 注入 `RequestContext<CallToolRequestParams>`，泵生命周期 try/finally 显式收口（防泵泄漏与二次烧录双泵重复推送）。③ 边界如实：不带 progressToken 的客户端零开销零行为（SDK 不发通知），进度旁路任何失败静默收工绝不影响主操作结论；带 token 的 progress-capable 客户端在烧录期间逐行实时收到通知。④ SDK 2.2.0 实测细节：`Params.Meta` 是裸 JsonObject（非类型化 metadata），progressToken 按 MCP 规范数字/字符串双形态手工解析成 `ProgressToken(long|String)`；`SendNotificationAsync<T>` 走 `McpJsonUtilities.DefaultOptions`。⑤ 测试：ProgressPumpTests +7（差分切片 4：fresh/incremental/驱逐超圈/无新行 + 截断 2 + Start 守卫 1），C# 全套 231→**238 全绿**，e2e 16 条链路无回归 exit 0。csproj 0.4.10→0.4.11 |
@@ -422,9 +423,11 @@ Ocdup/
 ├── cfgs/                            ← 板级手写 target cfg（target_presets 绝对路径引用；头部注释=排障记录）
 │   ├── target_at32f423_key.cfg      #   钥匙板：connect_assert_srst 治 deepsleep 睡死
 │   └── target_py32f002a_lock.cfg    #   锁芯板：最小通用 cortex_m 调试 cfg（烧录走 Keil）
-├── src/Ocdup/                       # MCP 服务器（.NET 8 控制台，stdio）+ watch CLI
-│   ├── Program.cs                   # watch 子命令分发 + Host 构建 + MCP 服务器/工具注册
+├── src/Ocdup/                       # MCP 服务器（.NET 8 控制台，stdio）+ watch/rtt/doctor CLI
+│   ├── Program.cs                   # watch/rtt/doctor 子命令分发 + Host 构建 + MCP 服务器/工具注册
 │   ├── Cli/WatchCli.cs              # watch 采样 CLI（M-watch）：选项解析/对齐取值/渲染均为纯函数
+│   ├── Cli/RttCli.cs                # rtt 实时读取 CLI（v0.4.19）：fork 命令面 + rtt server TCP 直读
+│   ├── Cli/DoctorCli.cs             # doctor 环境体检 CLI（P1-6）：五项只读检查 + 可操作修复指引
 │   ├── Backend/TclRpcClient.cs      # 控制通道客户端（6666 · 0x1a 分帧 · capture{…} · 串行化）
 │   ├── Backend/BackendSession.cs    # 会话：确保后端在跑 + 复用/丢弃控制通道
 │   ├── Backend/TrafficLog.cs        # 流量镜像（mcp-traffic.jsonl，2MB 轮转；面板数据源）
@@ -482,6 +485,7 @@ Ocdup/
 | M-l3 | L3 协议字典（帧名/模板/期望响应） |
 | M-serial | ~~与 acccom 的串口协同~~ 方案 A 已落地：会话层协同 + 插件 `/flash-verify` 命令（0.2.6）；L3 字典化的帧自动比对仍后置 |
 | M-watch | ~~`watch_variables` 定时采样（独立 CLI 形态）~~ ✅ v0.4.3 `ocdup watch` 子命令（--format csv 重定向画曲线、--halt 一致快照；MCP 工具形态刻意不做——长时运行占死 C1 串行通道） |
+| M-rtt | ~~SEGGER RTT 实时读取~~ ✅ v0.4.19 `ocdup rtt` 子命令（fork 命令面实证：setup/start/stop/channels + rtt server；数据走 rtt server 本机 TCP 直读原始字节；--info/--lines/--bytes/--seconds；MCP 工具形态刻意不做——同 watch 的 C1 理由） |
 
 ---
 
@@ -489,8 +493,8 @@ Ocdup/
 
 | 层 | 方法 | 现状 |
 |---|---|---|
-| 单元 | xUnit + **假 `TcpListener`**（脚本化响应） | 239 个用例：控制通道（capture 包装 / `0x1a` 分帧 / 跨 TCP 分段组装 / 并发串行化 / 读超时 / 连接失败）、权限矩阵、配置加载（嵌套块 / 顶层平铺 / 来源追踪 / 坏输入降级 / 路径基准）、探针识别（优先级 / 同种去重 / 无关设备忽略 / 空行容错）、TCL 引用、命令行构造、地址解析、流量日志轮转、CPUID 解码与 chip_id_map 匹配、运行时权限补丁与 OCD_RDONLY、ELF32 解析（对象符号筛选 / 坏输入拒绝）、reg 输出解析、target_presets 解析与切换（ResolvePreset / TargetMismatch / WithTargetChange）、watch CLI 选项/取值/渲染、run_command 内容分类（分类白名单 / `;` 走私 / erase_check 不误杀）、flash_write 三段式结论与 reset 门控、doctor 渲染与退出码、进度泵差分切片与守卫（含「无自拉后端时零通知」的行为级断言）、断链重放白名单与通道状态 |
-| 端到端 | `tools/e2e_fake_backend.py`：Python 假 TCL-RPC 后端 + 真实 MCP stdio 会话（无需硬件） | 已验证：20 个工具注册（含 v0.4.6 的 disconnect）、烧录/读/写/执行控制（halt/reset halt 回读 PC/LR/SP/xPSR）/逃生舱/芯片识别与 target 失配/set_target 切换（list/未知名/大小写/外部实例警告）/运行时权限/按名读写全链路、format=json 与 verify_image、dump 白名单与上限拦截、read_only 全拦、`reload` 生效与 runtime 补丁丢弃、无 openocd 与坏二进制时的诊断输出、run_command 内容分类（mdb 透传 / program BLOCKED 重定向）与断链重放（假后端断开连接后只读自动重连重放；16 条链路） |
+| 单元 | xUnit + **假 `TcpListener`**（脚本化响应） | 270 个用例：控制通道（capture 包装 / `0x1a` 分帧 / 跨 TCP 分段组装 / 并发串行化 / 读超时 / 连接失败）、权限矩阵、配置加载（嵌套块 / 顶层平铺 / 来源追踪 / 坏输入降级 / 路径基准）、探针识别（优先级 / 同种去重 / 无关设备忽略 / 空行容错）、TCL 引用、命令行构造、地址解析、流量日志轮转、CPUID 解码与 chip_id_map 匹配、运行时权限补丁与 OCD_RDONLY、ELF32 解析（对象符号筛选 / 坏输入拒绝）、reg 输出解析、target_presets 解析与切换（ResolvePreset / TargetMismatch / WithTargetChange）、watch CLI 选项/取值/渲染、run_command 内容分类（分类白名单 / `;` 走私 / erase_check 不误杀）、flash_write 三段式结论与 reset 门控、doctor 渲染与退出码、进度泵差分切片与守卫（含「无自拉后端时零通知」的行为级断言）、断链重放白名单与通道状态、rtt CLI（选项/命令构造/setup 判定/控制块日志扫描/限流） |
+| 端到端 | `tools/e2e_fake_backend.py`：Python 假 TCL-RPC 后端 + 真实 MCP stdio 会话（无需硬件） | 已验证：20 个工具注册（含 v0.4.6 的 disconnect）、烧录/读/写/执行控制（halt/reset halt 回读 PC/LR/SP/xPSR）/逃生舱/芯片识别与 target 失配/set_target 切换（list/未知名/大小写/外部实例警告）/运行时权限/按名读写全链路、format=json 与 verify_image、dump 白名单与上限拦截、read_only 全拦、`reload` 生效与 runtime 补丁丢弃、无 openocd 与坏二进制时的诊断输出、run_command 内容分类（mdb 透传 / program BLOCKED 重定向）、断链重放（假后端断开连接后只读自动重连重放）、`ocdup rtt` CLI 全流程（假 RTT TCP 数据面收满 --lines 即停 + 命令序列断言 + --info；17 条链路） |
 | 集成 | 真实探针 + 开发板（S4） | ✅ 已通过（2026-10）；每次记入测试日志（芯片、探针、ocd.json、OpenOCD 版本） |
 | CI | build → test → e2e（windows-latest） | ✅ `.github/workflows/ci.yml`（v0.3.9 建） |
 
@@ -541,7 +545,7 @@ Ocdup/
 
 ## 17. 交付结论与下一步（HANDOFF）
 
-**当前状态（v0.4.18）**：**S4 真机联调已通过** ✅（AT32F403AVGT7 + CMSIS-DAP v2 探针 + atopenocd：connect → flash_info → flash_write S300plus.hex 139077 字节，擦 25 扇区、写+校验 Verified OK、reset run、运行态读回向量表 0x08000000 = `20019d28 080002ad …`）。**20 个 MCP 工具 + 2 个 CLI 子命令（`ocdup watch` 采样 / `ocdup doctor` 环境体检）全部落地**（含符号层 L1 按名读写、target 注册表与 set_target 切换、halt 核心寄存器现场、disconnect 探针让渡）；v0.4.12–v0.4.16 落地评审定案的安全/正确性加固（run_command 内容分类、flash_write 独立读回权威判据、断链只读自动重放 + 空闲心跳、执行期 progress notification）；v0.4.18 复查修正三处（CLI 子命令计数纠错、`status` 通道状态读取时机、进度泵冷启动守卫下沉）；239 个单元测试全绿 + e2e 16 条链路无硬件回归 + CI 就绪。烧录后端升级为自编译 **atopenocd-py32**（AT32 + PY32 双支持，见 docs/openocd-puya-build.md），PY32F002A 整片烧录与 AT32F403A 整 bank 回归均已真机闭环。S5 的 publish.cmd / CI / DSH 与 ZCode 注册已完成，换机第一步用 `ocdup doctor`，剩「换一台机器 10 分钟跑通」的换机验收。
+**当前状态（v0.4.19）**：**S4 真机联调已通过** ✅（AT32F403AVGT7 + CMSIS-DAP v2 探针 + atopenocd：connect → flash_info → flash_write S300plus.hex 139077 字节，擦 25 扇区、写+校验 Verified OK、reset run、运行态读回向量表 0x08000000 = `20019d28 080002ad …`）。**20 个 MCP 工具 + 3 个 CLI 子命令（`ocdup watch` 采样 / `ocdup doctor` 环境体检 / `ocdup rtt` SEGGER RTT 实时读取）全部落地**（含符号层 L1 按名读写、target 注册表与 set_target 切换、halt 核心寄存器现场、disconnect 探针让渡）；v0.4.12–v0.4.16 落地评审定案的安全/正确性加固（run_command 内容分类、flash_write 独立读回权威判据、断链只读自动重放 + 空闲心跳、执行期 progress notification）；v0.4.18 复查修正三处（CLI 子命令计数纠错、`status` 通道状态读取时机、进度泵冷启动守卫下沉）；270 个单元测试全绿 + e2e 17 条链路无硬件回归 + CI 就绪。烧录后端升级为自编译 **atopenocd-py32**（AT32 + PY32 双支持，见 docs/openocd-puya-build.md），PY32F002A 整片烧录与 AT32F403A 整 bank 回归均已真机闭环。S5 的 publish.cmd / CI / DSH 与 ZCode 注册已完成，换机第一步用 `ocdup doctor`，剩「换一台机器 10 分钟跑通」的换机验收。**待真机验收**：`ocdup rtt` 在板上的控制块搜索与数据流（命令面已实证）。
 
 **建议的下一步顺序**：
 

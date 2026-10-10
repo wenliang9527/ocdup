@@ -37,6 +37,10 @@ docstring 与 `show_config` 输出为准，不要凭记忆猜。
 （`--name` 多个、`--interval`、`--format csv` 重定向画曲线、`--halt` 每拍暂停固件读
 一致快照），长时运行不占 MCP 通道；`ocdup watch --help` 看用法。
 
+另有 **`ocdup rtt` 子命令 CLI**（v0.4.19，不是 MCP 工具）：读固件 printf / RTT 日志流——
+原始字节直通 stdout，`--address`（查 map 文件 `_SEGGER_RTT`）+ `--lines/--seconds` 限长、
+`--info` 列通道；长时连续流同样不占 MCP 通道；`ocdup rtt --help` 看用法。
+
 ## 标准烧录流程
 
 1. `connect`——先连后端。输出里的 `backend:` 行会回报探针自动识别结果

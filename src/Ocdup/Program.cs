@@ -10,6 +10,11 @@ using Ocdup.Cli;
 if (args.Length > 0 && args[0].Equals("watch", StringComparison.OrdinalIgnoreCase))
     return await WatchCli.RunAsync(args.Skip(1).ToArray());
 
+// `ocdup rtt ...`：SEGGER RTT 实时读取 CLI（v0.4.19）——同理走子命令：长时连续流
+// 不能占死 MCP 串行通道（C1），原始字节重定向到文件/管道才是 RTT 的正常用法。
+if (args.Length > 0 && args[0].Equals("rtt", StringComparison.OrdinalIgnoreCase))
+    return await RttCli.RunAsync(args.Skip(1).ToArray());
+
 // `ocdup doctor`：环境体检（P1-6）——五项只读检查，不拉后端、不碰目标。
 if (args.Length > 0 && args[0].Equals("doctor", StringComparison.OrdinalIgnoreCase))
     return await DoctorCli.RunAsync();
