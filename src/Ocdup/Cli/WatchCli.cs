@@ -235,75 +235,55 @@ public sealed record WatchOptions(
         string format = "pretty";
         var halt = false;
         var count = 0;
-        var help = false;
 
-        for (var i = 0; i < args.Length; i++)
+        // v0.4.25：解析循环收敛进 ArgScanner（--key value / --key=value / 旗标 / help / 未知项）
+        var scanner = new ArgScanner("watch", args,
+            knownKeys: new[] { "--name", "--elf", "--interval", "--format", "--halt", "--count" },
+            flags: new[] { "--halt" });
+        while (scanner.Next(out var key, out var value))
         {
-            var arg = args[i];
-            var eq = arg.IndexOf('=');
-            var key = eq > 0 ? arg[..eq] : arg;
-            var inline = eq > 0 ? arg[(eq + 1)..] : null;
-
-            string? Value()
-            {
-                if (inline is not null) return inline;
-                if (i + 1 >= args.Length)
-                {
-                    errors.Add($"option '{key}' needs a value.");
-                    return null;
-                }
-                return args[++i];
-            }
-
             switch (key)
             {
-                case "--help" or "-h" or "/?":
-                    help = true;
-                    break;
                 case "--name":
-                    var v = Value();
-                    if (v is not null)
-                        names.AddRange(v.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+                    if (value is not null)
+                        names.AddRange(value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
                     break;
                 case "--elf":
-                    elf = Value();
+                    elf = value;
                     break;
                 case "--interval":
-                    var iv = Value();
-                    if (iv is not null && (!int.TryParse(iv, NumberStyles.Integer, CultureInfo.InvariantCulture, out interval) || interval is < 20 or > 600_000))
+                    if (value is not null && (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out interval) || interval is < 20 or > 600_000))
                     {
-                        errors.Add($"interval '{iv}' is out of range - use milliseconds between 20 and 600000.");
+                        errors.Add($"interval '{value}' is out of range - use milliseconds between 20 and 600000.");
                         interval = 250;
                     }
                     break;
                 case "--format":
-                    var f = Value();
-                    if (f is not null && !f.Equals("pretty", StringComparison.OrdinalIgnoreCase) && !f.Equals("csv", StringComparison.OrdinalIgnoreCase))
-                        errors.Add($"format '{f}' is not supported - use 'pretty' or 'csv'.");
-                    else if (f is not null)
-                        format = f.ToLowerInvariant();
+                    if (value is not null && !value.Equals("pretty", StringComparison.OrdinalIgnoreCase) && !value.Equals("csv", StringComparison.OrdinalIgnoreCase))
+                        errors.Add($"format '{value}' is not supported - use 'pretty' or 'csv'.");
+                    else if (value is not null)
+                        format = value.ToLowerInvariant();
                     break;
                 case "--halt":
                     halt = true;
                     break;
                 case "--count":
-                    var c = Value();
-                    if (c is not null && (!int.TryParse(c, NumberStyles.Integer, CultureInfo.InvariantCulture, out count) || count < 0))
+                    if (value is not null && (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out count) || count < 0))
                     {
-                        errors.Add($"count '{c}' is invalid - use a non-negative integer (0 = unlimited).");
+                        errors.Add($"count '{value}' is invalid - use a non-negative integer (0 = unlimited).");
                         count = 0;
                     }
                     break;
                 default:
-                    errors.Add($"unknown option '{arg}'.");
-                    break;
+                    break; // 未知选项：ArgScanner 已报错且不消费下一个参数
             }
         }
 
-        if (!help && names.Count == 0)
+        if (!scanner.Help && names.Count == 0)
             errors.Add("no variable to watch - pass --name at least once (list_variables shows what the ELF contains).");
 
-        return new WatchOptions(names, elf, interval, format, halt, count, help, errors);
+        errors.AddRange(scanner.Errors); // 扫描器自己的缺值/未知错误并入统一报告
+        return new WatchOptions(names, elf, interval, format, halt, count, scanner.Help, errors);
     }
 }
 

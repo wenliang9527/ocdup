@@ -353,72 +353,51 @@ public sealed record RttOptions(
         var lines = 0;
         long bytes = 0;
         var seconds = 0;
-        var help = false;
 
-        for (var i = 0; i < args.Length; i++)
+        // v0.4.25：解析循环收敛进 ArgScanner
+        var scanner = new ArgScanner("rtt", args,
+            knownKeys: new[] { "--address", "--size", "--id", "--channel", "--port", "--info", "--lines", "--bytes", "--seconds" },
+            flags: new[] { "--info" });
+        while (scanner.Next(out var key, out var value))
         {
-            var arg = args[i];
-            var eq = arg.IndexOf('=');
-            var key = eq > 0 ? arg[..eq] : arg;
-            var inline = eq > 0 ? arg[(eq + 1)..] : null;
-
-            string? Value()
-            {
-                if (inline is not null) return inline;
-                if (i + 1 >= args.Length)
-                {
-                    errors.Add($"option '{key}' needs a value.");
-                    return null;
-                }
-                return args[++i];
-            }
-
             switch (key)
             {
-                case "--help" or "-h" or "/?":
-                    help = true;
-                    break;
                 case "--address":
-                    var a = Value();
-                    if (a is null) break;
-                    if (!Parsing.TryParseHex(a, out var parsedAddress))
+                    if (value is null) break;
+                    if (!Parsing.TryParseHex(value, out var parsedAddress))
                     {
-                        errors.Add($"address '{a}' is not a hex value - use e.g. --address 0x20000000 (the _SEGGER_RTT symbol in the map file).");
+                        errors.Add($"address '{value}' is not a hex value - use e.g. --address 0x20000000 (the _SEGGER_RTT symbol in the map file).");
                         break;
                     }
                     address = parsedAddress;
                     break;
                 case "--size":
-                    var s = Value();
-                    if (s is not null && (!int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out size) || size is < 16 or > 1_048_576))
+                    if (value is not null && (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out size) || size is < 16 or > 1_048_576))
                     {
-                        errors.Add($"size '{s}' is out of range - use a byte count between 16 and 1048576.");
+                        errors.Add($"size '{value}' is out of range - use a byte count between 16 and 1048576.");
                         size = 4096;
                     }
                     break;
                 case "--id":
-                    var v = Value();
-                    if (v is not null)
+                    if (value is not null)
                     {
-                        if (v.Length == 0 || v.Length > 15)
-                            errors.Add($"id '{v}' must be 1..15 characters (the control block ID the firmware was built with, e.g. \"SEGGER RTT\").");
+                        if (value.Length == 0 || value.Length > 15)
+                            errors.Add($"id '{value}' must be 1..15 characters (the control block ID the firmware was built with, e.g. \"SEGGER RTT\").");
                         else
-                            id = v;
+                            id = value;
                     }
                     break;
                 case "--channel":
-                    var ch = Value();
-                    if (ch is not null && (!int.TryParse(ch, NumberStyles.Integer, CultureInfo.InvariantCulture, out channel) || channel is < 0 or > 15))
+                    if (value is not null && (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out channel) || channel is < 0 or > 15))
                     {
-                        errors.Add($"channel '{ch}' is out of range - use an up-channel index between 0 and 15.");
+                        errors.Add($"channel '{value}' is out of range - use an up-channel index between 0 and 15.");
                         channel = 0;
                     }
                     break;
                 case "--port":
-                    var p = Value();
-                    if (p is not null && (!int.TryParse(p, NumberStyles.Integer, CultureInfo.InvariantCulture, out port) || port is < 1024 or > 65535))
+                    if (value is not null && (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out port) || port is < 1024 or > 65535))
                     {
-                        errors.Add($"port '{p}' is out of range - use a TCP port between 1024 and 65535.");
+                        errors.Add($"port '{value}' is out of range - use a TCP port between 1024 and 65535.");
                         port = DefaultPort;
                     }
                     break;
@@ -426,35 +405,32 @@ public sealed record RttOptions(
                     info = true;
                     break;
                 case "--lines":
-                    var l = Value();
-                    if (l is not null && (!int.TryParse(l, NumberStyles.Integer, CultureInfo.InvariantCulture, out lines) || lines < 0))
+                    if (value is not null && (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out lines) || lines < 0))
                     {
-                        errors.Add($"lines '{l}' is invalid - use a non-negative integer (0 = unlimited).");
+                        errors.Add($"lines '{value}' is invalid - use a non-negative integer (0 = unlimited).");
                         lines = 0;
                     }
                     break;
                 case "--bytes":
-                    var b = Value();
-                    if (b is not null && (!long.TryParse(b, NumberStyles.Integer, CultureInfo.InvariantCulture, out bytes) || bytes < 0))
+                    if (value is not null && (!long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out bytes) || bytes < 0))
                     {
-                        errors.Add($"bytes '{b}' is invalid - use a non-negative integer (0 = unlimited).");
+                        errors.Add($"bytes '{value}' is invalid - use a non-negative integer (0 = unlimited).");
                         bytes = 0;
                     }
                     break;
                 case "--seconds":
-                    var sec = Value();
-                    if (sec is not null && (!int.TryParse(sec, NumberStyles.Integer, CultureInfo.InvariantCulture, out seconds) || seconds is < 0 or > 86400))
+                    if (value is not null && (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out seconds) || seconds is < 0 or > 86400))
                     {
-                        errors.Add($"seconds '{sec}' is out of range - use 0 (until Ctrl+C) or 1..86400.");
+                        errors.Add($"seconds '{value}' is out of range - use 0 (until Ctrl+C) or 1..86400.");
                         seconds = 0;
                     }
                     break;
                 default:
-                    errors.Add($"unknown option '{arg}'.");
-                    break;
+                    break; // 未知选项：ArgScanner 已报错且不消费下一个参数
             }
         }
 
-        return new RttOptions(address, size, id, channel, port, info, lines, bytes, seconds, help, errors);
+        errors.AddRange(scanner.Errors); // 扫描器自己的缺值/未知错误并入统一报告
+        return new RttOptions(address, size, id, channel, port, info, lines, bytes, seconds, scanner.Help, errors);
     }
 }

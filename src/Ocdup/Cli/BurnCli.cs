@@ -104,43 +104,26 @@ public sealed record BurnOptions(
         string? address = null;
         var verify = true;
         var reset = true;
-        var help = false;
 
-        for (var i = 0; i < args.Length; i++)
+        // v0.4.25：解析循环收敛进 ArgScanner（两个无值旗标不吃下一个选项）
+        var scanner = new ArgScanner("burn", args,
+            knownKeys: new[] { "--file", "--address", "--no-verify", "--no-reset" },
+            flags: new[] { "--no-verify", "--no-reset" });
+        while (scanner.Next(out var key, out var value))
         {
-            var arg = args[i];
-            var eq = arg.IndexOf('=');
-            var key = eq > 0 ? arg[..eq] : arg;
-            var inline = eq > 0 ? arg[(eq + 1)..] : null;
-
-            string? Value()
-            {
-                if (inline is not null) return inline;
-                if (i + 1 >= args.Length)
-                {
-                    errors.Add($"option '{key}' needs a value.");
-                    return null;
-                }
-                return args[++i];
-            }
-
             switch (key)
             {
-                case "--help" or "-h" or "/?":
-                    help = true;
-                    break;
                 case "--file":
-                    file = Value();
+                    file = value;
                     break;
                 case "--address":
-                    var a = Value();
-                    if (a is null) break;
-                    if (!Parsing.TryParseHex(a, out _))
+                    if (value is null) break;
+                    if (!Parsing.TryParseHex(value, out _))
                     {
-                        errors.Add($"address '{a}' is not a hex value - use e.g. --address 0x08000000.");
+                        errors.Add($"address '{value}' is not a hex value - use e.g. --address 0x08000000.");
                         break;
                     }
-                    address = a;
+                    address = value;
                     break;
                 case "--no-verify":
                     verify = false;
@@ -149,12 +132,11 @@ public sealed record BurnOptions(
                     reset = false;
                     break;
                 default:
-                    errors.Add($"unknown option '{arg}'.");
-                    break;
+                    break; // 未知选项：ArgScanner 已报错且不消费下一个参数
             }
         }
 
-        if (!help)
+        if (!scanner.Help)
         {
             if (string.IsNullOrWhiteSpace(file))
                 errors.Add("no image to burn - pass --file <path> (.elf/.hex/.bin).");
@@ -163,6 +145,7 @@ public sealed record BurnOptions(
                            "(.elf/.hex carry their own addresses).");
         }
 
-        return new BurnOptions(file ?? "", address, verify, reset, help, errors);
+        errors.AddRange(scanner.Errors); // 扫描器自己的缺值/未知错误并入统一报告
+        return new BurnOptions(file ?? "", address, verify, reset, scanner.Help, errors);
     }
 }
