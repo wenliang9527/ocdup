@@ -2,7 +2,7 @@
 
 | 项目 | 内容 |
 |---|---|
-| 文档版本 | v0.4.22 |
+| 文档版本 | v0.4.23 |
 | 日期 | 2026-10-09 |
 | 状态 | **阶段一完成**：控制层 + 烧录 + 读内存 + 执行控制 + 逃生舱 + 运行时权限 + 符号层 L1/L2 + target 注册表 + watch 采样 CLI 均已实现并验证（23 个 MCP 工具 + 4 个 CLI 子命令：watch 采样 / doctor 环境体检 / rtt 实时读取 / burn 量产烧录，S4 真机通过）；v0.4.12–v0.4.16 落地评审定案的安全/正确性加固（run_command 内容分类、flash_write 独立读回权威判据、断链只读自动重放 + 空闲心跳、执行期 progress notification）；后端二进制升级为自编译 atopenocd-py32（AT32 + PY32 双烧录支持，两芯片烧录均真机闭环）；SEGGER RTT 经 `ocdup rtt` CLI 落地（v0.4.19，fork 命令面实证 + 本机 TCP 数据面）；量产烧录经 `ocdup burn` CLI 落地（v0.4.20，与 flash_write 同一编排核心）；符号层 L2（SVD 按名外设寄存器 + 位域解码）v0.4.21 落地；断点/观察点/L3 后置 |
 | 读者 | 项目负责人（硬件/嵌入式）、后续实现者（Agent 或工程师） |
@@ -14,6 +14,7 @@
 
 | 版本 | 变更 |
 |---|---|
+| v0.4.23 | **SDK 升级核查 + HANDOFF 刷新（P1-7 实测收口，docs-only）**：① `dotnet package search`（含 `--prerelease`）实测：ModelContextProtocol 全家最新版就是 **2.2.0**——v0.4.17 钉住的版本即当前最新态，「升级实操」无对象，P1-7 以实测收口（升级回归要点维持第 17 节第 5 条，出新版时照单执行）；② Q8 多后端注册表**实施方案定案**（见第 16 节：覆盖式 backends 配置 + 会话注册表 + 工具可选 backend 参数 + 分后端权限；验收标准与工程量在案，实施待排期）；③ HANDOFF 刷新至本轮六项收口后的实际状态。C# 零改动，csproj 不 bump |
 | v0.4.22 | **recipes/playbooks：四份实战手册（评审 P2 收尾项）**：`docs/recipes/`——① 新板首次烧录闭环（doctor 预检 → connect 认芯片/失配切 set_target → flash_info 确认布局 → flash_write 三段式结论 → 运行态读回验证，附四个常见坑）；② 救板（通道排障 → 深睡板 connect_assert_srst 姿势 → halt 核心寄存器现场 → 整片擦除重烧，按「每次只放宽一点」排序）；③ 观测运行中的固件（watch 采样 / rtt 日志流 / halt 现场三入口怎么选 + MCP 与 CLI 共探针的独占性提醒）；④ 量产治具骨架（`ocdup burn` exit code 0/1/2/3 分流的 bash 脚本 + 治具 ocd.json 钉死清单 + 金板自检）。README 加「常用配方」索引。C# 零改动，csproj 不 bump（v0.3.19 先例） |
 | v0.4.21 | **符号层 L2：SVD 按名外设寄存器（M-sym 后置项 → TDD 落地）**：① 新增 3 个工具（总数 20→**23**）——`load_svd`（PC 侧解析 + 外设/寄存器清单，peripheral 参数可只列一个外设）、`read_peripheral_register`（`"RCC.CR"` 按名读：地址 = 外设基址 + 偏移，读回带**位域解码 + reset 比对**）、`write_peripheral_register`（按名写：值按寄存器宽度掩码；走 CheckMemoryWrite 闸，SVD access 为 read-only 的寄存器**即使权限放行也语义拒写**）。② 自研 `Backend/SvdFile` 解析（System.Xml.Linq，零新依赖，C7 纪律）：三种位域写法（bitOffset/bitWidth、lsb/msb、bitRange）、cluster 递归展平（偏移累加 + 名字路径前缀 `PWM.CCR`）、size/access/resetValue 缺省兜底、命名空间不敏感。③ 实测踩坑入库：SVD 的 scaledNonNegativeInteger **无前缀 = 十进制**（lsb "24"、size "32" 是十进制，先按 hex 解就读成 0x24/0x32）、`0x` 前缀钉死十六进制（"0x40021000" 剥前缀后不能落 decimal 分支）、写方向助记符是 mw*（mwb/mwh/mww）与读方向 md* 是两套——三处都是测试先红的真回归。④ 缓存按「完整路径 + mtime」，`svd_path` 新配置键作默认镜像（elf_path 同款约定）；未命中名给「Did you mean」建议（C3）。⑤ 数据面复用 read/write_memory 的 md*/mw* 路径（op 标 read_memory/write_memory，断链重放语义随 op 一致）。⑥ 测试：SvdFileTests +15（解析 8 / 解析与建议 2 / 位域与解码 3 / 按宽度选 monitor 3 / 写掩码与 access 2 等理论展开），C# 全套 284→**299 全绿**；e2e 第 19 条链路：load → 大小写不敏感按名读（decode + reset diff）→ 簇寄存器（mdh 选型断言）→ mww 写 → read-only 拒写 → 未知名建议，19 条链路 exit 0。csproj 0.4.14→0.4.15。**真机验收待插板**：真实厂商 SVD（AT32/ST 全量文件）的解析健壮性 |
 | v0.4.20 | **`ocdup burn`：量产烧录 CLI（评审 P2 → TDD 落地）**：① 形态：产线治具/CI 按 exit code 分流——0=写入且读回一致（`--no-verify` 显式选择时 unverified 也 0）/ 1=读回不符或写失败（VERIFY FAILED / WRITE FAILED）/ 2=用法·配置·权限（BLOCKED）/ 3=后端或通道故障；报告文本与 flash_write 工具逐字一致。② **单一真源抽取**：flash_write 的编排（路径解析 → C2 闸 → `program` 不带 verify → 独立 `verify_image` 读回 → `ClassifyFlashWrite` 三段式结论 → `ShouldResetRun` 门控 reset）整体抽成 `FlashTools.FlashWriteCoreAsync`（`CoreOutcome`：Ok/Failure/Report/Verdict），MCP 工具变薄壳（进度泵照旧包裹核心），CLI 复用同一核心——闸与判据零复制（防两处漂移）；行为由既有 FlashToolsTests + e2e 链路 4 钉死不变。③ 量产语义两处刻意为之：Ctrl+C **不**接取消（写相中断 = 半截固件，要中止请拔探针）；.bin 缺显式地址在**解析期**就拒（失败发生在碰后端之前）。④ 测试：BurnCliTests +14（选项解析 8 含 .bin 早拒 / 退出码映射 6），C# 全套 270→**284 全绿**；e2e 第 18 条链路：verified → exit 0、arm 假后端回读失配 → VERIFY FAILED + exit 1、白名单外 → BLOCKED + exit 2，18 条链路 exit 0。csproj 0.4.13→0.4.14 |
@@ -543,24 +544,80 @@ Ocdup/
 | Q5 | L3 协议字典覆盖哪些协议（私有帧？Modbus？CAN？） | M-l3 | ⏳ 待定 |
 | Q6 | 与 acccom 的分工边界：Ocdup 只发「去烧录/去验证」指令，帧交互仍走 acccom？ | M-serial | ✅ 关闭（**方案 A：会话层协同**）：两个 MCP server 挂在同一会话由 AI 编排，帧交互全走 acccom，Ocdup 侧零代码；流程固化为插件 `/flash-verify` 命令（0.2.6） |
 | Q7 | 相对路径基准 = ocd.json 所在目录 | — | ✅ 关闭并已实现 |
-| Q8 | 单目标（C6）是否满足？多探针场景是否需要多连接 | M-serial 等 | ⏳ 待定 |
+| Q8 | 单目标（C6）是否满足？多探针场景是否需要多连接 | M-serial 等 | 📋 方案已定（见下方「Q8 实施方案」，v0.4.22 定案）：单板场景 C6 满足；多板并调按注册表方案实施，待排期 |
 | **Q9** | `read_memory` 是否需要先 halt？ | S4 | ✅ 真机验证：运行态直读 flash（0x08000000 向量表）成功，无需 halt；RAM 变量的「一致性快照」场景留待 M-exec |
 | **Q10** | 目标芯片实际可用的 OpenOCD 版本与 scripts 目录名 | — | ✅ 关闭：Artery 定制版 atopenocd（本机安装，路径不入库，0.11.0+dev 2024-08-05）+ `interface_cfg: "auto"`（本机探针 0D28:0204 解析为 `interface/cmsis-dap.cfg`）+ `target/at32f403axx.cfg`，实机烧录通过；**注意 `atlink_dap_v2.cfg` 在本机这根公版 DAPLink 探针上会 `unable to find a matching CMSIS-DAP device`（见 4.5 已知边界 1）**；非 AT 芯片走主线版（EIDE xPack 或 `openocd-20240916.7z` 解压）换 `OCD_BIN`/`OCD_SCRIPTS` 即可 |
 | **Q11** | 镜像路径是否也接受相对 CWD（当前只认 ocd.json 目录） | 不阻塞 | ⏳ 可后置 |
+
+### Q8 实施方案：多后端注册表（v0.4.22 定案，实施待排期）
+
+**动机**：Q8 原问题「单目标（C6）是否满足？多探针场景是否需要多连接」——当前答案：
+单板场景完全满足（探针本身独占，多数场景一块板一个会话）；**多板并调**（如双板对拷
+通信调试、产线多工位一机多探针）才需要。以下方案把改动收敛在会话层，工具层只加一个
+可选参数。
+
+**1. 配置形态**（向后兼容：没有 `backends` 键 = 现状单后端，零行为变化）：
+
+```jsonc
+{
+  "interface_cfg": "auto", "target_cfg": "target/at32f403axx.cfg", "port": 6666,  // 默认后端（现有键不动）
+  "backends": {
+    "left":  { "port": 6666, "target_cfg": "target/at32f403axx.cfg" },   // 覆盖默认值，未给的键继承顶层
+    "right": { "port": 6667, "interface_cfg": "interface/cmsis-dap.cfg" }
+  }
+}
+```
+
+- 标签即身份（`left`/`right`），每个后端一份**覆盖式**配置（继承顶层键）；
+- `OcdConfig` 加 `IReadOnlyDictionary<string, OcdConfig> Backends`——每个条目就是一份
+  完整的 `OcdConfig`（现有 WithRuntimeChanges/WithTargetChange/ResolvePath 逻辑原样复用，
+  来源标注 `<tag> (backends)`）。
+
+**2. 会话层**：`BackendSession` 单例 → `BackendSessions` 注册表（`ConcurrentDictionary<string,
+BackendSession>`，空标签 = 默认实例 = 现在的 `Instance`）。心跳/断链重放/通道串行闸都是
+实例内部状态，**每标签一套，互不干扰**——这正是它当初收在类里的红利。launcher/traffic 的
+endpoint 字段已带 host:port，天然可区分。
+
+**3. 工具面**：23 个工具各加一个可选参数 `backend`（默认空 = 默认后端）；工具开头一行
+`var cfg = ConfigStore.Instance.Current.ResolveBackend(backend)`（不存在标签 → ERROR 带可用
+标签清单，C3）。`run_command` 内容分类、权限闸全部在各自 cfg 上跑——**不同后端可以有不同
+权限**（左板只读分析、右板可烧），这是注册表最值钱的一点。
+
+**4. 联动点**：`status`/`show_config` 列出全部后端与各自通道状态；doctor 增加逐后端端口
+检查；面板流量按 endpoint 已可区分（可选：工具参数透传 tag 进 portTag 字段）；SKILL 补
+「多板会话」一节。**探针独占性**照旧成立——不同后端必须是不同探针/不同端口，同一探针
+起两份 openocd 仍会打架（文档明示）。
+
+**5. 测试与验收标准**：
+
+- 单测（预估 +25）：配置解析（继承/覆盖/坏标签降级）、ResolveBackend（存在/不存在/大小写）、
+  注册表并发获取同标签同实例、跨标签会话隔离（A 标签断链不影响 B）；
+- e2e（+2 链路）：双假后端（29171/29172）——`flash_info(backend="right")` 路由到 29172、
+  默认参数仍走 29171、`write_memory(backend="left")` 在左后端只读配置下 BLOCKED 而右后端
+  放行（分后端权限）；
+- **验收**：现有单后端用法零回归（全量测试 + 19 条链路不改动照绿）；双后端链路各走各的
+  命令序列；真机验收 = 双探针双板并调一次记录。
+
+**6. 工程量与风险**：预计 1 个完整迭代（配置 0.5d + 注册表 0.5d + 23 工具参数过一遍
+0.5d + 测试/e2e/文档 1d）。风险：工具签名变更触发 MCP 客户端缓存（schema 变化，客户端需
+重连刷新 tools/list）；面板 v1.3.x 的「后端」卡语义需要跟进（单卡 → 按标签分组）——刻意
+放到二期。
 
 ---
 
 ## 17. 交付结论与下一步（HANDOFF）
 
-**当前状态（v0.4.21）**：**S4 真机联调已通过** ✅（AT32F403AVGT7 + CMSIS-DAP v2 探针 + atopenocd：connect → flash_info → flash_write S300plus.hex 139077 字节，擦 25 扇区、写+校验 Verified OK、reset run、运行态读回向量表 0x08000000 = `20019d28 080002ad …`）。**23 个 MCP 工具 + 4 个 CLI 子命令（`ocdup watch` 采样 / `ocdup doctor` 环境体检 / `ocdup rtt` SEGGER RTT 实时读取 / `ocdup burn` 量产烧录）全部落地**（含符号层 L1 按名读写、**L2 SVD 按名外设寄存器与位域解码（v0.4.21）**、target 注册表与 set_target 切换、halt 核心寄存器现场、disconnect 探针让渡）；v0.4.12–v0.4.16 落地评审定案的安全/正确性加固（run_command 内容分类、flash_write 独立读回权威判据、断链只读自动重放 + 空闲心跳、执行期 progress notification）；v0.4.18 复查修正三处（CLI 子命令计数纠错、`status` 通道状态读取时机、进度泵冷启动守卫下沉）；299 个单元测试全绿 + e2e 19 条链路无硬件回归 + CI 就绪。烧录后端升级为自编译 **atopenocd-py32**（AT32 + PY32 双支持，见 docs/openocd-puya-build.md），PY32F002A 整片烧录与 AT32F403A 整 bank 回归均已真机闭环。S5 的 publish.cmd / CI / DSH 与 ZCode 注册已完成，换机第一步用 `ocdup doctor`，剩「换一台机器 10 分钟跑通」的换机验收。**待真机验收**：`ocdup rtt` 在板上的控制块搜索与数据流（命令面已实证）；`ocdup burn` 治具全流程；真实厂商 SVD（AT32/ST 全量文件）的解析健壮性。
+**当前状态（v0.4.23）**：**S4 真机联调已通过** ✅（AT32F403AVGT7 + CMSIS-DAP v2 探针 + atopenocd：connect → flash_info → flash_write S300plus.hex 139077 字节，擦 25 扇区、写+校验 Verified OK、reset run、运行态读回向量表 0x08000000 = `20019d28 080002ad …`）。**23 个 MCP 工具 + 4 个 CLI 子命令（`ocdup watch` 采样 / `ocdup doctor` 环境体检 / `ocdup rtt` SEGGER RTT 实时读取 / `ocdup burn` 量产烧录）全部落地**（含符号层 L1 按名读写、**L2 SVD 按名外设寄存器与位域解码（v0.4.21）**、target 注册表与 set_target 切换、halt 核心寄存器现场、disconnect 探针让渡）；v0.4.12–v0.4.16 落地评审定案的安全/正确性加固（run_command 内容分类、flash_write 独立读回权威判据、断链只读自动重放 + 空闲心跳、执行期 progress notification）；v0.4.18 复查修正三处（CLI 子命令计数纠错、`status` 通道状态读取时机、进度泵冷启动守卫下沉）；**v0.4.19–v0.4.22 完成评审 P2 清单**：rtt CLI（fork 命令面实证 + rtt server TCP 数据面）、burn 量产 CLI（与 flash_write 同一编排核心 + exit code 分流）、SVD 外设寄存器层（自研解析 + 位域解码 + 语义拒写）、recipes 四份实战手册（docs/recipes/）；**v0.4.23 P1-7 实测收口**（SDK 2.2.0 即最新，含 prerelease；Q8 多后端实施方案定案待排期）。299 个单元测试全绿 + e2e 19 条链路无硬件回归 + CI 就绪。烧录后端升级为自编译 **atopenocd-py32**（AT32 + PY32 双支持，见 docs/openocd-puya-build.md），PY32F002A 整片烧录与 AT32F403A 整 bank 回归均已真机闭环。S5 的 publish.cmd / CI / DSH 与 ZCode 注册已完成，换机第一步用 `ocdup doctor`，剩「换一台机器 10 分钟跑通」的换机验收。**待真机验收清单**：`ocdup rtt` 板上控制块搜索与数据流（命令面已实证）；`ocdup burn` 治具全流程；真实厂商 SVD（AT32/ST 全量文件）解析健壮性。
 
 **建议的下一步顺序**：
 
 1. ~~跑 S4~~ ✅ 已完成（2026-10：AT32F403AVGT7 + CMSIS-DAP v2，完整闭环验收通过）；
 2. ~~运行态读失败补 M-exec~~ ✅ v0.3.8 落地 halt/resume/reset（Q9 真机验证运行态直读可行；halt 用于可靠读写现场）；
 3. ~~S5 打包与客户端注册~~ 🟡 主体完成（publish.cmd + CI + DSH 双 profile + ZCode MCP/插件）；换机第一步 `ocdup doctor`（v0.4.15）；剩换机 10 分钟验收；
-4. 之后才轮到断点/观察点（M-bp）与符号层（M-sym）——它们建立在同一个控制层之上，成本会显著低于本轮；
-5. 维护节奏（P1-7 记录项）：ModelContextProtocol SDK 钉在 2.2.0（Core 1.4.0）——升级前全量单测 + e2e 回归，重点看 tool description 长度上限、stdio 行为、progress notification（`Tools/FlashProgress.cs` 是 progress API 的现成参考实现：`Params.Meta` 为裸 JsonObject、progressToken 手工解析成 `ProgressToken(long|String)`、`McpJsonUtilities.DefaultOptions` 发送）；Job Object 孤儿兜底是 Windows-only（`OpenOcdLauncher.Job`），Linux 部署需补 `Process.Kill(entireProcessTree)` + SIGTERM 处理——当前 Windows 单机部署，记录在案。
+4. ~~评审 P0/P1/P2 清单~~ ✅ v0.4.12–v0.4.22 全部收口（P0-1/P0-2/P1-4/P1-5/P1-6 + rtt/burn/SVD/recipes；P1-7 于 v0.4.23 实测收口）；
+5. **待真机验收**（插板即做，见上清单）；
+6. 之后的大项：**Q8 多后端注册表实施**（方案与验收标准已在第 16 节定案，约 1 个迭代）、断点/观察点（M-bp，`step` 顺路）、provisioning（M-prov）、L3 协议字典（M-l3）；
+7. 维护节奏（P1-7 记录项）：ModelContextProtocol SDK 钉在 2.2.0（Core 1.4.0）——2026-10-09 核查即 NuGet 最新（含 prerelease），出新版时全量单测 + e2e 回归，重点看 tool description 长度上限、stdio 行为、progress notification（`Tools/FlashProgress.cs` 是 progress API 的现成参考实现：`Params.Meta` 为裸 JsonObject、progressToken 手工解析成 `ProgressToken(long|String)`、`McpJsonUtilities.DefaultOptions` 发送）；Job Object 孤儿兜底是 Windows-only（`OpenOcdLauncher.Job`），Linux 部署需补 `Process.Kill(entireProcessTree)` + SIGTERM 处理——当前 Windows 单机部署，记录在案。
 
 本文档随项目演进维护；每关闭一个重要开放问题就相应升级文档状态。
 
