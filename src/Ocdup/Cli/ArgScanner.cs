@@ -47,7 +47,7 @@ internal sealed class ArgScanner(string commandName, string[] args, IReadOnlySet
 
             if (!knownKeys.Contains(k))
             {
-                _errors.Add($"unknown option '{arg}'."); // 报完整原始 token（含内联部分）
+                _errors.Add($"unknown option '{arg}' (ocdup {commandName})."); // 报完整原始 token（含内联部分）
                 key = k;
                 value = null;
                 return true;
@@ -74,7 +74,7 @@ internal sealed class ArgScanner(string commandName, string[] args, IReadOnlySet
                 return true;
             }
 
-            _errors.Add($"option '{k}' needs a value.");
+            _errors.Add($"option '{k}' needs a value (ocdup {commandName}).");
             key = k;
             value = null;
             return true;

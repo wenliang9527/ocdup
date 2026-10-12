@@ -231,4 +231,16 @@ public sealed class RttCliTests
         var o = RttOptions.Parse(["--info", "--lines", "1"]);
         Assert.False(RttCli.LimitReached(0, 0, o));
     }
+
+    // ── 退出码家族（v0.4.27）：与 burn / verify 同族 0/1/2/3 ──
+
+    [Fact]
+    public void ExitCode_FollowsTheBurnVerifyFamily()
+    {
+        Assert.Equal(0, RttCli.ExitCode(RttCli.RttFailure.None));
+        Assert.Equal(1, RttCli.ExitCode(RttCli.RttFailure.Runtime));
+        Assert.Equal(1, RttCli.ExitCode(RttCli.RttFailure.Data));
+        Assert.Equal(2, RttCli.ExitCode(RttCli.RttFailure.Usage));
+        Assert.Equal(3, RttCli.ExitCode(RttCli.RttFailure.Backend));
+    }
 }

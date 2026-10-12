@@ -33,13 +33,13 @@ public static class RttCli
         if (options.Help)
         {
             Console.Write(HelpText);
-            return 0;
+            return ExitCode(RttFailure.None);
         }
         if (options.Errors.Count > 0)
         {
             foreach (var e in options.Errors) Console.Error.WriteLine("ERROR: " + e);
             Console.Error.WriteLine("run 'ocdup rtt --help' for usage.");
-            return 1;
+            return ExitCode(RttFailure.Usage);
         }
 
         var cfg = ConfigStore.Instance.Current;
@@ -59,11 +59,28 @@ public static class RttCli
         catch (BackendException ex)
         {
             Console.Error.WriteLine("ERROR: " + ex.Message);
-            exitCode = 2;
+            exitCode = ExitCode(RttFailure.Backend);
         }
         catch (OperationCanceledException)
         {
             // Ctrl+C：正常收尾（cleanup 在 finally）
+        }
+        catch (SocketException ex)
+        {
+            // 数据面：rtt server 端口连不上（拒绝连接重试满 2s / 中途被重置）。控制通道本身
+            // 是好的，所以这不是 BackendException——但绝不能让它逃逸成未处理异常
+            // （v0.4.27 复现：端口没起来时重试窗口结束后 SocketException 直接崩进程）。
+            Console.Error.WriteLine($"ERROR: cannot use the RTT data port 127.0.0.1:{options.Port}: {ex.SocketErrorCode}. " +
+                                     "Nothing accepted a connection there - 'rtt server start' reported no error, so either the " +
+                                     "port is taken by another program or the backend did not open it. Pass --port <n> to pick another " +
+                                     "(the control channel itself is fine).");
+            exitCode = ExitCode(RttFailure.Data);
+        }
+        catch (IOException ex)
+        {
+            Console.Error.WriteLine($"ERROR: the RTT data connection to 127.0.0.1:{options.Port} was lost: {ex.Message}. " +
+                                     "The bytes streamed so far are already on stdout; rerun to resume.");
+            exitCode = ExitCode(RttFailure.Data);
         }
         finally
         {
@@ -93,7 +110,7 @@ public static class RttCli
         {
             Console.Error.WriteLine("ERROR: 'rtt setup' was rejected by the backend: " +
                 (setupOutput.Length == 0 ? "(no output)" : setupOutput));
-            return 1;
+            return ExitCode(RttFailure.Runtime);
         }
 
         // 2. start：fork 语义是显式启动轮询（上游 0.11 的 setup 自带 start，这里不适用）。
@@ -120,13 +137,13 @@ public static class RttCli
                             "ERROR: the RTT control block was not found in the searched area. " +
                             "Find the exact placement in the firmware map file (symbol _SEGGER_RTT) and pass it via " +
                             "--address (e.g. --address 0x20000100), or widen the search with --size.");
-                        return 1;
+                        return ExitCode(RttFailure.Runtime);
                     }
                     controlBlockAddress = hit.Address;
                     break;
                 }
                 try { await Task.Delay(100, ct).ConfigureAwait(false); }
-                catch (OperationCanceledException) { return 1; }
+                catch (OperationCanceledException) { return ExitCode(RttFailure.Runtime); }
             }
 
             // 扫描超时（有捕获但没等到结论）：不能静默开流——固件没跑 RTT / 搜索区不对时，
@@ -147,7 +164,7 @@ public static class RttCli
             Console.WriteLine(channels.Length == 0
                 ? "(the backend produced no channel listing)"
                 : channels);
-            return 0;
+            return ExitCode(RttFailure.None);
         }
 
         // 4. rtt server：让 openocd 在本机开一个 TCP 端口转发该上行通道。
@@ -158,7 +175,7 @@ public static class RttCli
             Console.Error.WriteLine("ERROR: 'rtt server start' was rejected by the backend: " +
                 (serverOutput.Length == 0 ? "(no output)" : serverOutput) +
                 $" - is port {options.Port} already taken? Pass --port <n> to pick another.");
-            return 1;
+            return ExitCode(RttFailure.Runtime);
         }
 
         // 5. 连上数据端口（rtt server 在命令返回时可能还没开始 accept，短重试）。
@@ -225,10 +242,34 @@ public static class RttCli
         Console.Error.WriteLine(
             $"done: {totalBytes} bytes / {totalLines} line(s) from channel {options.Channel}" +
             (controlBlockAddress is { } doneCb ? $", control block at {Parsing.Hex(doneCb)}" : "") + ".");
-        return 0;
+        return ExitCode(RttFailure.None);
     }
 
     // ── 纯函数面（单测钉死；语义注释见测试文件头部）──
+
+    /// <summary>rtt 的失败类别（退出码映射用，纯函数可单测）。</summary>
+    internal enum RttFailure
+    {
+        None,     // 成功/help/流式收尾（含限额到达、Ctrl+C 主动停止）
+        Runtime,  // 运行期失败：setup 被拒 / 控制块没找到 / rtt server start 被拒 / 流提前结束
+        Data,     // 数据面 IO：rtt server 端口连不上、连接中途丢失（控制通道本身是好的）
+        Usage,    // 用法/配置错误（选项解析）
+        Backend,  // 控制通道/后端故障（BackendException）
+    }
+
+    /// <summary>
+    /// 退出码映射（纯函数，可单测）：与 `ocdup burn` / `ocdup verify` 同族——
+    /// 0 成功 / 1 运行期失败 / 2 用法配置 / 3 后端或控制通道故障。
+    /// v0.4.27 修正：此前用法错误返回 1、BackendException 返回 2，与 burn/verify 的
+    /// 0/1/2/3 家族正好错位；数据面 IO 失败更是未处理异常直接崩进程。
+    /// </summary>
+    internal static int ExitCode(RttFailure failure) => failure switch
+    {
+        RttFailure.None => 0,
+        RttFailure.Usage => 2,
+        RttFailure.Backend => 3,
+        _ => 1, // Runtime / Data
+    };
 
     internal enum ControlBlockOutcome { Found, NotFound }
 
@@ -318,6 +359,13 @@ public static class RttCli
         data is written to stdout verbatim (raw bytes - safe for binary protocols);
         progress notes go to stderr. Example:
           ocdup rtt --address 0x20000400 --lines 1000 > rtt.log
+
+        exit codes (same family as 'ocdup burn' / 'ocdup verify'):
+          0  streamed to completion / --info listing done (limits reached count)
+          1  setup rejected, control block not found, data port unusable,
+             or the stream ended early
+          2  usage / config error
+          3  backend or control-channel failure
 
         config/backend come from ocd.json (OCD_CONFIG) exactly like the MCP tools;
         the OpenOCD backend is started on demand and cleaned up on exit (an openocd

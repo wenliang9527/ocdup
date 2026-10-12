@@ -109,4 +109,26 @@ public sealed class RuntimePermissionsTests : IDisposable
     {
         Assert.Equal(expected, Parsing.HexValue(value, width));
     }
+
+    // ── set_permissions 的数值上限校验（v0.4.27）：文案而非异常 ──
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(-4096)]
+    public void ValidateLimit_NegativeValue_ReturnsActionableError(long value)
+    {
+        var problem = ConfigTools.ValidateLimit("memory_read_max_bytes", value);
+
+        Assert.NotNull(problem);
+        Assert.Contains("ERROR:", problem);
+        Assert.Contains("must be >= 0", problem);
+        Assert.Contains("show_config", problem);
+    }
+
+    [Fact]
+    public void ValidateLimit_ZeroAndPositive_Pass()
+    {
+        Assert.Null(ConfigTools.ValidateLimit("flash_max_bytes", 0));
+        Assert.Null(ConfigTools.ValidateLimit("flash_max_bytes", 1048576));
+    }
 }

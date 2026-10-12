@@ -21,9 +21,14 @@
        （--lines 2 收到两行即停）+ 收尾 rtt server stop/rtt stop；--info 只报通道清单
    18. ocdup burn CLI（v0.4.20）：verified → exit 0；arm 回读失配 → VERIFY FAILED + exit 1；
        白名单外 → BLOCKED + exit 2（烧录编排与 flash_write 同一核心）
+    19. 符号层 L2（v0.4.21）：load_svd → 按名读（大小写不敏感 + 位域解码 + reset 比对）→
+        cluster 寄存器（PWM.CCR 用 mdh）→ mww 写 → read-only access 拒写 → 未知名建议
    20. ocdup burn exit 3（v0.4.24）：死端口 + 无 OCD_BIN → 拉后端必败，BackendException → exit 3
    21. ocdup verify CLI（v0.4.26）：verified → exit 0；arm 回读失配 → VERIFY FAILED + exit 1；
        缺文件 → exit 2（比对判据与 verify_image 工具同一核心）
+    22. ocdup rtt 死数据端口 + 用法错误（v0.4.27）：arm 后 rtt server start 成功但数据端口连不上
+        → ERROR 可操作文案 + exit 1（此前未处理 SocketException 崩进程，退出码 3762504530）；未知选项 → exit 2
+    23. SVD 默认镜像（v0.4.27）：load_svd() 不传 file → 回落 ocd.json 的 svd_path 并解析成功
 """
 import json
 import os
@@ -128,6 +133,11 @@ def handle_command(cmd):
     if c.startswith("rtt server start"):
         m = re.match(r"rtt server start (\d+) (\d+)$", c)
         if m:
+            # v0.4.27 链路：__e2e_no_rtt_server__ 之后，命令「成功」但不真开数据端口
+            # （模拟 rtt server 没起来/端口被占——数据面连不上的回归场景）。
+            if STATE.get("no_rtt_server"):
+                STATE["no_rtt_server"] = False
+                return ""
             start_rtt_server(int(m.group(1)))
             return ""
         return "Error: fake backend could not parse rtt server start"
@@ -222,6 +232,14 @@ class FakeBackend(threading.Thread):
                         except OSError:
                             return
                         continue
+                    # v0.4.27：arm 后，下一条 rtt server start 只回成功、不开数据端口
+                    if inner == "__e2e_no_rtt_server__":
+                        STATE["no_rtt_server"] = True
+                        try:
+                            conn.sendall(b"armed" + DELIM)
+                        except OSError:
+                            return
+                        continue
                     if STATE.get("drop_armed") and inner == "mdw 0x20000000 1":
                         STATE["drop_armed"] = False
                         return
@@ -302,7 +320,7 @@ def build_mini_elf():
         + shdr(3, str_off, len(strtab)) + shdr(1, 0, 0)
 
 
-def write_config(work, **permissions):
+def write_config(work, _extras=None, **permissions):
     cfg = {
         "interface_cfg": "interface/cmsis-dap.cfg",
         "target_cfg": "target/at32f435xx.cfg",
@@ -326,6 +344,8 @@ def write_config(work, **permissions):
         },
     }
     cfg["permissions"].update(permissions)
+    if _extras:
+        cfg.update(_extras)  # 顶层额外键（svd_path 等），测试默认镜像解析用
     with open(os.path.join(work, "ocd.json"), "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
 
@@ -462,6 +482,27 @@ def main():
         print("  listing head:", rtt2.stdout.strip().splitlines()[:3])
         assert rtt2.returncode == 0, "rtt --info should exit 0, got %d" % rtt2.returncode
         assert "TERMINAL" in rtt2.stdout and "Down-channels" in rtt2.stdout, "rtt --info should print the channel listing"
+
+        banner("ocdup rtt dead data port (v0.4.27): rtt server accepted but nothing listens on the data port")
+        # arm：下一条 rtt server start 只回成功、不真开数据端口（先经 MCP 会话下arm 命令）
+        print(mcp.call("run_command", {"command": "__e2e_no_rtt_server__"}))
+        rtt3 = subprocess.run(
+            ["dotnet", DLL, "rtt", "--port", "19222", "--lines", "1", "--seconds", "30"],
+            cwd=work, env=dict(env), capture_output=True, text=True, encoding="utf-8", timeout=90)
+        print("  exit:", rtt3.returncode)
+        print("  stderr head:", rtt3.stderr.strip().splitlines()[:2])
+        # 回归钉死：数据端口连不上曾以未处理 SocketException 崩进程（退出码 3762504530 + 英文堆栈）
+        assert rtt3.returncode == 1, "rtt should exit 1 on a dead data port, got %d (stderr: %s)" % (
+            rtt3.returncode, rtt3.stderr[-400:])
+        assert "cannot use the RTT data port" in rtt3.stderr, "rtt should explain the dead data port on stderr"
+        assert "Unhandled exception" not in rtt3.stderr, "rtt must not crash with an unhandled exception"
+
+        banner("ocdup rtt usage error (v0.4.27): exit code family aligned with burn/verify")
+        rtt4 = subprocess.run(
+            ["dotnet", DLL, "rtt", "--bogus"],
+            cwd=work, env=dict(env), capture_output=True, text=True, encoding="utf-8", timeout=60)
+        assert rtt4.returncode == 2, "usage errors must exit 2 (burn/verify family), got %d" % rtt4.returncode
+        assert "unknown option '--bogus' (ocdup rtt)" in rtt4.stderr, "scanner error should name the command"
 
         banner("ocdup burn CLI (v0.4.20): same core as flash_write; exit 0 on verified, 1 on verify mismatch, 2 on BLOCKED")
         burn = subprocess.run(
@@ -632,6 +673,18 @@ def main():
             print(" -", c)
     finally:
         mcp.close()
+
+    banner("SVD default image (v0.4.27): load_svd() with no file falls back to \"svd_path\" in ocd.json")
+    write_config(work, read_only=False, _extras={"svd_path": "test.svd"})
+    mcp4 = Mcp(DLL, work, env)
+    try:
+        mcp4.initialize()
+        print(mcp4.call("load_svd"))
+        r4 = mcp4.call("read_peripheral_register", {"name": "RCC.CR"})
+        print(r4)
+        assert "0x40021000" in r4, "load_svd() without file should load svd_path and resolve RCC.CR"
+    finally:
+        mcp4.close()
 
     banner("connect on a dead port with no openocd on PATH")
     write_config(work, read_only=False)

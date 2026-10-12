@@ -44,18 +44,20 @@ public static class ConfigTools
             return blocked;
 
         var pairs = new List<string>();
+        var problems = new List<string>();
         void AddBool(string key, bool? v)
         {
             if (v is { } b) pairs.Add($"\"{key}\": {(b ? "true" : "false")}");
         }
         void AddLong(string key, long? v)
         {
-            if (v is { } n)
+            if (v is not { } n) return;
+            if (ValidateLimit(key, n) is { } problem)
             {
-                if (n < 0)
-                    throw new ArgumentException($"{key} must be >= 0");
-                pairs.Add($"\"{key}\": {n}");
+                problems.Add(problem); // 负值攒着一起报，不走抛异常——调用方是模型/CI，要的是可操作文案（C3）
+                return;
             }
+            pairs.Add($"\"{key}\": {n}");
         }
 
         AddBool("read_only", readOnly);
@@ -68,6 +70,9 @@ public static class ConfigTools
         AddLong("flash_max_bytes", flashMaxBytes);
         AddLong("memory_read_max_bytes", memoryReadMaxBytes);
         AddLong("dump_max_bytes", dumpMaxBytes);
+
+        if (problems.Count > 0)
+            return string.Join("\n", problems);
 
         if (pairs.Count == 0)
             return "ERROR: no changes requested. Pass at least one permission to change (see the tool parameters).";
@@ -91,5 +96,15 @@ public static class ConfigTools
                   "path whitelists and probe/target config only change via ocd.json.");
         return sb.ToString();
     }
+
+    /// <summary>
+    /// 数值上限的取值校验（纯函数，可单测）：负值返回可直接展示的 ERROR 文案而不是抛异常——
+    /// set_permissions 的调用方是模型或 CI 脚本，异常只会得到一句裸 message（C3 约定破例）。
+    /// </summary>
+    internal static string? ValidateLimit(string key, long value) =>
+        value < 0
+            ? $"ERROR: '{key}' must be >= 0 (0 = unlimited where the setting supports it). " +
+              "Pass a non-negative value, or omit the parameter to leave it unchanged. See show_config."
+            : null;
 }
 

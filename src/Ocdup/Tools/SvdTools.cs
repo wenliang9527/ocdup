@@ -25,24 +25,30 @@ public static class SvdTools
     [McpServerTool(Name = "load_svd")]
     [Description(
         "Load a CMSIS-SVD file (XML) and list its peripherals - or one peripheral's registers when 'peripheral' is given. " +
+        "file is optional when \"svd_path\" is set in ocd.json (it serves as the default). " +
         "The parsed device stays loaded for read_peripheral_register / write_peripheral_register (they need no file argument after this). " +
-        "PC-side file read only: no permission gate, the target is not touched. Relative paths resolve against the ocd.json directory; " +
-        "\"svd_path\" in ocd.json can serve as the default.")]
+        "PC-side file read only: no permission gate, the target is not touched. Relative paths resolve against the ocd.json directory.")]
     public static Task<string> LoadSvd(
-        [Description("Path to the .svd file (relative paths resolve against the ocd.json directory).")] string file,
+        [Description("Path to the .svd file (relative paths resolve against the ocd.json directory). Omit when \"svd_path\" is set in ocd.json.")] string? file = null,
         [Description("Optional peripheral name: list only its registers (name, address, size, access).")] string? peripheral = null,
         CancellationToken ct = default)
     {
         var cfg = ConfigStore.Instance.Current;
 
+        var pathArg = string.IsNullOrWhiteSpace(file) ? cfg.SvdPath : file;
+        if (string.IsNullOrWhiteSpace(pathArg))
+            return Task.FromResult("ERROR: no SVD file given. Pass file, or set \"svd_path\" in ocd.json once " +
+                                   "(read_peripheral_register / write_peripheral_register then need no file argument either). " +
+                                   "See show_config.");
+
         string resolved;
         try
         {
-            resolved = cfg.ResolvePath(file);
+            resolved = cfg.ResolvePath(pathArg);
         }
         catch (Exception ex)
         {
-            return Task.FromResult($"ERROR: '{file}' is not a usable path: {ex.Message}");
+            return Task.FromResult($"ERROR: '{pathArg}' is not a usable path: {ex.Message}");
         }
 
         if (!File.Exists(resolved))
