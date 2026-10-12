@@ -62,4 +62,5 @@ mcp__ocdup__flash_write(file="build/fw.hex")
 - 任何时候 `backend_log` 都能看 openocd 自己的日志（TCL-RPC 响应里看不到的
   `Info:`/`Error:`/target 事件都在那）。
 - 探针被别的软件占着：`disconnect` 释放自己拉起的实例；外部实例杀不动会
-  如实说明——去把那个软件停掉。
+  如实说明——去把那个软件停掉。若此前 halt 过，disconnect 的结论会提示目标
+  处于 halted（后端停了没人 resume；要保持运行，先 `resume` / `reset run` 再断开）。

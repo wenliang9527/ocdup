@@ -2,6 +2,7 @@ using System.IO;
 using System.Net.Sockets;
 using Ocdup.Config;
 using Ocdup.Launcher;
+using Ocdup.Tools;
 
 namespace Ocdup.Backend;
 
@@ -234,7 +235,7 @@ public sealed class BackendSession
     /// 幂等：本来就没在跑也回可读文案，不抛。占着 _connectGate：断开不能和一次正在
     /// 进行的 Acquire 交叉（否则可能刚断开又被顺手拉起来）。
     /// </summary>
-    public async Task<string> StopAsync(CancellationToken ct = default)
+    public async Task<string> StopAsync(CancellationToken ct = default, string? haltedNote = null)
     {
         var cfg = ConfigStore.Instance.Current;
         await _connectGate.WaitAsync(ct).ConfigureAwait(false);
@@ -250,9 +251,9 @@ public sealed class BackendSession
             for (var i = 0; i < 20 && await OpenOcdLauncher.ProbePortAsync(cfg.Host, cfg.Port, 100, ct).ConfigureAwait(false); i++)
                 await Task.Delay(100, ct).ConfigureAwait(false);
 
-            var message = StopVerdict(wasUp,
+            var message = StopReport(wasUp,
                 await OpenOcdLauncher.ProbePortAsync(cfg.Host, cfg.Port, 300, ct).ConfigureAwait(false),
-                $"{cfg.Host}:{cfg.Port}");
+                $"{cfg.Host}:{cfg.Port}", haltedNote);
             _traffic.Record("backend", "SYS", message, $"{cfg.Host}:{cfg.Port}");
             return message;
         }
@@ -273,6 +274,48 @@ public sealed class BackendSession
             : wasUp
                 ? $"backend stopped - the probe behind {endpoint} is released for other software. Call connect to bring it back."
                 : $"backend was not running (nothing on {endpoint}) - nothing to disconnect.";
+
+    /// <summary>
+    /// P0-3（v0.4.28）：停机前的 targets 查询发现目标 halted 时附加的提示——halt 后断开，
+    /// halted 的核会一直停在 halted（没人会 resume），下一个探针使用者面对的就是一块「假死」的板子。
+    /// </summary>
+    internal const string HaltedTargetNote =
+        "\nnote: the targets query just before stopping reported the target halted - a halted core " +
+        "stays halted after the backend stops (nothing will resume it). If the board must keep running, " +
+        "resume or 'reset run' BEFORE disconnecting.";
+
+    /// <summary>
+    /// disconnect 结论组装（纯函数，可单测）：仅在「真的停掉了自拉后端」时附带 halted 提示——
+    /// 外部实例杀不动 / 本来就没跑两种结论没停任何东西，附提示反而误导。
+    /// </summary>
+    internal static string StopReport(bool wasUp, bool stillUp, string endpoint, string? haltedNote)
+    {
+        var verdict = StopVerdict(wasUp, stillUp, endpoint);
+        return wasUp && !stillUp && haltedNote is not null ? verdict + haltedNote : verdict;
+    }
+
+    /// <summary>
+    /// P0-3 残余边界的探测：停机前 best-effort 查一次 targets，目标 halted 就带回
+    /// <see cref="HaltedTargetNote"/>。只读、短超时、任何失败一律 null——绝不拖垮 disconnect 本身。
+    /// op 用 "disconnect"（不在断链重放白名单：通道失败即抛，正好在这里被吞）。
+    /// 注意：必须在 StopAsync **之外**调用——StopAsync 持 _connectGate，而 ExecuteAsync→AcquireAsync
+    /// 要同一把闸，持锁内调 = 死锁。
+    /// </summary>
+    public async Task<string?> ProbeHaltedNoteAsync(OcdConfig cfg, CancellationToken ct = default)
+    {
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromMilliseconds(1500));
+            var targets = await ExecuteAsync(cfg, "targets", startIfNeeded: false, timeout.Token, op: "disconnect")
+                .ConfigureAwait(false);
+            return Parsing.AnyTargetHalted(targets) ? HaltedTargetNote : null;
+        }
+        catch (Exception)
+        {
+            return null; // best-effort：通道不在 / 超时 / 输出解析不出 → 当「没有 halted 信息」
+        }
+    }
 
     // ── P1-5：空闲心跳 + 通道状态 ──
 

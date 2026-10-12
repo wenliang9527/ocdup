@@ -60,7 +60,10 @@ public static class BackendTools
         "Stop the OpenOCD backend that ocdup itself started and release the probe, without dropping the MCP connection " +
         "(this facade stays alive; every hardware tool fails until connect). Use it when another agent program needs the " +
         "probe - the command port is a shared exclusive resource. Idempotent: disconnecting an already-stopped backend is " +
-        "a no-op with an explanation. A listener started outside ocdup is reported, not stopped. Read-only sessions are blocked.")]
+        "a no-op with an explanation. A listener started outside ocdup is reported, not stopped. Read-only sessions are blocked. " +
+        "Boundary: disconnect is backend lifecycle - it sends no execution-control command to the target, so unlike " +
+        "halt/resume/reset it does not need allow_exec. If the target is halted, the report says so: a halted core stays " +
+        "halted after the backend stops, so resume or reset run first if the board must keep running.")]
     public static async Task<string> Disconnect(CancellationToken ct = default)
     {
         var cfg = ConfigStore.Instance.Current;
@@ -71,7 +74,12 @@ public static class BackendTools
                    "To release the probe, set \"read_only\": false in ocd.json (top level or inside the permissions block), " +
                    "or start ocdup with OCD_READONLY unset. See show_config.";
 
-        return await BackendSession.Instance.StopAsync(ct).ConfigureAwait(false);
+        // P0-3（v0.4.28）：halt 后断开会把 halted 的目标留给下一个探针使用者——停机前 best-effort
+        // 查一次 targets，halted 就在结论里明说。探测必须在 StopAsync **之外**做（见
+        // ProbeHaltedNoteAsync 的死锁说明），且只在闸放行后才碰后端（C2）。
+        var haltedNote = await BackendSession.Instance.ProbeHaltedNoteAsync(cfg, ct).ConfigureAwait(false);
+
+        return await BackendSession.Instance.StopAsync(ct, haltedNote).ConfigureAwait(false);
     }
 
     /// <summary>targets 输出优先用一行式摘要（省 token）；解析失败回退原始表格。</summary>

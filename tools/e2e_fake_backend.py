@@ -29,6 +29,9 @@
     22. ocdup rtt 死数据端口 + 用法错误（v0.4.27）：arm 后 rtt server start 成功但数据端口连不上
         → ERROR 可操作文案 + exit 1（此前未处理 SocketException 崩进程，退出码 3762504530）；未知选项 → exit 2
     23. SVD 默认镜像（v0.4.27）：load_svd() 不传 file → 回落 ocd.json 的 svd_path 并解析成功
+    24. P0-3 边界定案（v0.4.28）：allow_exec=false 时 halt BLOCKED 而 disconnect 照常（后端生命周期
+        不进 allow_exec；外部实例如实回报「杀不动」，且该结论不附 halted 提示）；停机前的 targets
+        探测与「仅真停掉自拉后端才附 halted 提示」的组装规则由单元层钉死
 """
 import json
 import os
@@ -45,6 +48,7 @@ import time
 DELIM = b"\x1a"
 HOST = "127.0.0.1"
 STATE = {"drop_armed": False}  # P1-5 断链模拟：arm 后，下一条指定读命令被假后端直接断开
+TARGET_HALTED = False  # P0-3（v0.4.28）：halt/resume/reset 驱动的目标执行态，targets 照实回报
 PORT = 29171
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DLL = os.environ.get("OCDUP_DLL") or os.path.join(REPO_ROOT, "src", "Ocdup", "bin", "Debug", "net8.0", "ocdup.dll")
@@ -79,13 +83,15 @@ def serve_rtt(srv):
 
 
 def handle_command(cmd):
+    global TARGET_HALTED
     c = cmd.strip()
     if c.startswith("ocd_version") or c == "version":
         return "Open On-Chip Debugger 0.12.0 (fake backend for Ocdup e2e)"
     if c == "targets":
+        state = "halted" if TARGET_HALTED else "running"
         return ("    TargetName         Type       Endian TapName            State\n"
                 "--  ------------------ ---------- ------ ------------------ ------------\n"
-                " 0* at32f435zmt7       cortex_m   little at32f435zmt7.cpu   running")
+                " 0* at32f435zmt7       cortex_m   little at32f435zmt7.cpu   " + state)
     if c.startswith("flash banks"):
         return "0 : at32f435zmt7.flash (at32f435xx) at 0x08000000, size 0x00100000, buswidth 2, chipwidth 4"
     if c.startswith("program"):
@@ -94,10 +100,13 @@ def handle_command(cmd):
                 "** Programming Finished **\n"
                 "** Verified OK **")
     if c.startswith("reset"):
+        TARGET_HALTED = "halt" in c  # reset run → running；reset halt → halted
         return ""
     if c == "halt" or c.startswith("halt "):
+        TARGET_HALTED = True
         return "halted"
     if c.startswith("resume"):
+        TARGET_HALTED = False
         return ""
     if c.startswith("reg "):
         # `reg <name>`（halt 后核心寄存器回读）：按 atopenocd 实测形态响应（冒号 + 位宽注，
@@ -685,6 +694,22 @@ def main():
         assert "0x40021000" in r4, "load_svd() without file should load svd_path and resolve RCC.CR"
     finally:
         mcp4.close()
+
+    banner("P0-3 boundary (v0.4.28): allow_exec=false gates halt/resume but NOT disconnect (backend lifecycle)")
+    write_config(work, read_only=False, allow_exec=False)
+    mcp5 = Mcp(DLL, work, env)
+    try:
+        mcp5.initialize()
+        r5 = mcp5.call("halt", {})
+        print(r5)
+        assert "BLOCKED" in r5 and "allow_exec" in r5, "halt must stay behind allow_exec"
+        d5 = mcp5.call("disconnect", {})
+        print(d5)
+        assert "BLOCKED" not in d5, "disconnect is backend lifecycle - read_only only, no allow_exec"
+        assert "cannot stop it" in d5, "external fake listener: reported, not stopped"
+        assert "stays halted" not in d5, "nothing was stopped, so no halted note may be attached"
+    finally:
+        mcp5.close()
 
     banner("connect on a dead port with no openocd on PATH")
     write_config(work, read_only=False)

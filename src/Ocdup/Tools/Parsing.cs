@@ -171,4 +171,25 @@ public static class Parsing
 
         return lines.Count > 0 ? string.Join("\n", lines) : null;
     }
+
+    /// <summary>
+    /// P0-3（v0.4.28）：`targets` 输出里是否有目标处于 halted 态（与 <see cref="TrySummarizeTargets"/>
+    /// 同一套数据行判定：序号开头、≥6 列、末列是状态）。disconnect 停机前用它决定要不要附 halted 提示。
+    /// null/空/解析不出的文本一律 false——提示是 best-effort，宁缺勿误。
+    /// </summary>
+    public static bool AnyTargetHalted(string? output)
+    {
+        if (string.IsNullOrWhiteSpace(output)) return false;
+
+        foreach (var rawLine in output.Split('\n'))
+        {
+            var line = rawLine.Trim();
+            if (line.Length == 0 || line.StartsWith("--") || line.Contains("TargetName")) continue;
+            var tokens = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (tokens.Length < 6) continue;
+            if (!char.IsDigit(tokens[0][0])) continue;
+            if (tokens[^1].Equals("halted", StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
 }

@@ -95,4 +95,42 @@ public sealed class BackendSessionTests
         Assert.Contains("not connected", down);
         Assert.Contains("reconnect", down);
     }
+
+    // ── P0-3 边界定案(v0.4.28):disconnect 是后端生命周期操作——不向目标发执行控制
+    //    命令,只过 read_only 总闸,不进 allow_exec;halt 后断开会把 halted 的目标留给
+    //    下一个探针使用者,这个残余用停机前报告收口(纯函数层钉死组装规则)。──
+
+    [Fact]
+    public void StopReport_AppendsHaltedNoteOnlyWhenOurBackendWasReleased()
+    {
+        var released = BackendSession.StopReport(wasUp: true, stillUp: false, "127.0.0.1:6666",
+            BackendSession.HaltedTargetNote);
+        Assert.Contains("backend stopped", released);
+        Assert.Contains("halted", released);
+        Assert.Contains("reset run", released); // 可操作指引(C3):要保持运行,断开前先恢复
+
+        // 外部实例杀不动 / 本来就没跑:没停任何东西,附 halted 提示反而是误导
+        var foreign = BackendSession.StopReport(true, true, "127.0.0.1:6666", BackendSession.HaltedTargetNote);
+        Assert.Contains("still running", foreign);
+        Assert.DoesNotContain("reset run", foreign);
+
+        var wasDown = BackendSession.StopReport(false, false, "127.0.0.1:6666", BackendSession.HaltedTargetNote);
+        Assert.Contains("nothing to disconnect", wasDown);
+        Assert.DoesNotContain("reset run", wasDown);
+    }
+
+    [Fact]
+    public void StopReport_WithoutHaltedProbe_IsPlainVerdict()
+    {
+        var text = BackendSession.StopReport(true, false, "127.0.0.1:6666", haltedNote: null);
+        Assert.Contains("backend stopped", text);
+        Assert.DoesNotContain("halted", text);
+    }
+
+    [Fact]
+    public void HaltedTargetNote_IsActionable()
+    {
+        Assert.Contains("stays halted", BackendSession.HaltedTargetNote);
+        Assert.Contains("resume", BackendSession.HaltedTargetNote);
+    }
 }

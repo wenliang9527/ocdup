@@ -152,4 +152,28 @@ public sealed class ParsingTests
     {
         Assert.Null(Parsing.TrySummarizeTargets(output));
     }
+
+    // ── AnyTargetHalted:disconnect 停机前的 halted 探测(P0-3,v0.4.28)──
+
+    [Fact]
+    public void AnyTargetHalted_SeesHaltedState()
+    {
+        var text = TargetsText() + "\n 1  second.core       cortex_m   big    tap2               halted";
+        Assert.True(Parsing.AnyTargetHalted(text));
+    }
+
+    [Fact]
+    public void AnyTargetHalted_AllRunningIsFalse() =>
+        Assert.False(Parsing.AnyTargetHalted(TargetsText()));
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("Error: target named \"at32\" does not exist")]
+    [InlineData("    TargetName         Type       Endian TapName            State")]
+    public void AnyTargetHalted_NonTableOutputIsFalse(string? output)
+    {
+        // 提示是 best-effort:解析不出的文本一律「没有 halted 信息」,宁缺勿误
+        Assert.False(Parsing.AnyTargetHalted(output));
+    }
 }

@@ -67,7 +67,7 @@
 |---|---|---|
 | `halt` / `resume` / `reset` | 执行控制：halt 后读写才可靠，并带回核心寄存器现场（pc/lr/sp/xpsr，「跑飞在哪」一步定位）；reset run 重启固件 | `read_only` / **`allow_exec`（默认 true）** |
 | `run_command` | 原始 TCL 逃生舱（单行命令，兜底专用工具没覆盖的操作）；写类命令带内容分类（RawCommandPolicy）：`program`/`dump_image`/`shutdown` 等重定向专用工具，`erase`/`fill`/`mww`/`reset` 等走对应专用闸 | `read_only` / `allow_raw_command`（默认 false） |
-| `disconnect` | 断开 ocdup 自拉的后端并释放探针（让给别的 agent 软件；幂等；端口上是外部实例时杀不动会如实说明）；read_only 会话拦截 | `read_only` |
+| `disconnect` | 断开 ocdup 自拉的后端并释放探针（让给别的 agent 软件；幂等；端口上是外部实例时杀不动会如实说明）；目标 halted 时结论附提示——后端停了没人 resume，要保持运行先 `resume` / `reset run` 再断开 | `read_only`（后端生命周期，**不进 `allow_exec`**） |
 
 ### 符号层（L1，按变量名读写）
 
@@ -353,7 +353,7 @@ reload/重启丢弃）；否则 `show_config` 核对生效权限，改 ocd.json 
 | `allow_flash` | true | `flash_write` |
 | `allow_memory_write` | true | `write_memory` |
 | `allow_flash_erase` | **false** | `flash_erase_sector`（破坏性，显式开启） |
-| `allow_exec` | true | `halt` / `resume` / `reset` |
+| `allow_exec` | true | `halt` / `resume` / `reset`（`disconnect` 不在此列——后端生命周期只过 `read_only`） |
 | `allow_raw_command` | **false** | `run_command`（v0.4.12 起默认收紧；开启后写类命令仍有内容分类——同权或重定向专用工具） |
 | `allow_set_permissions` | **false** | `set_permissions`（运行时改权限）——人类授权开关：放宽权限的决定权在人 |
 | `flash_allowed_paths` | []（不限） | 烧录文件必须在白名单目录内 |
@@ -368,7 +368,7 @@ reload/重启丢弃）；否则 `show_config` 核对生效权限，改 ocd.json 
 ## 🧪 开发与测试
 
 ```bash
-dotnet test Ocdup.sln                     # 320 个单测，不需要硬件
+dotnet test Ocdup.sln                     # 329 个单测，不需要硬件
 python tools/e2e_fake_backend.py          # 端到端：假 TCL-RPC 后端 + 真实 MCP 会话
 ```
 
@@ -406,7 +406,7 @@ python tools/e2e_fake_backend.py          # 端到端：假 TCL-RPC 后端 + 真
 
 | 里程碑 | 状态 |
 |---|---|
-| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 320 个单测 + 假后端 e2e 覆盖（23 条链路） |
+| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 329 个单测 + 假后端 e2e 覆盖（24 条链路） |
 | S4 真机联调 | ✅ AT32F403AVGT7 + CMSIS-DAP v2（DAPLink `0D28:0204`）+ atopenocd：`connect` → `flash_info` → `flash_write`（擦 25 扇区、写 + Verified OK、reset run）→ `read_memory` 运行态读回向量表 |
 | 安全与正确性加固（v0.4.12–v0.4.16） | ✅ `run_command` 内容分类（写类命令与专用工具同权/重定向）、`flash_write` 以独立读回校验为权威判据（三段式结论）、断链只读自动重放 + 空闲心跳、烧录/擦除/dump 执行期 progress notification |
 | doctor CLI | ✅ `ocdup doctor` 五项环境体检（ocd.json / OCD_BIN / scripts / 探针 / 后端端口），换机第一步 |
