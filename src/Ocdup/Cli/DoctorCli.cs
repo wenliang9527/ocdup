@@ -17,8 +17,46 @@ internal sealed record DoctorCheck(string Name, DoctorVerdict Verdict, string De
 /// </summary>
 public static class DoctorCli
 {
-    public static async Task<int> RunAsync()
+    private const string HelpText = """
+        ocdup doctor - environment checklist (v0.4.15)
+
+        usage: ocdup doctor [--help]
+
+        checks (all read-only: nothing is started, the target is not touched):
+          ocd.json        found / parsed without errors / target_cfg present
+          openocd binary  OCD_BIN or PATH, verified by running --version
+          openocd scripts OCD_SCRIPTS or a layout next to the binary; target/ must exist
+          debug probe     AT-Link / CMSIS-DAP / ST-Link / J-Link on USB
+          backend port    a listener on the command port; if present, one read-only
+                          version query proves the TCL-RPC channel works
+
+        exit codes:
+          0  no FAIL items (warnings are fine - a cold start has no backend yet)
+          1  at least one FAIL item - fix the listed items and re-run
+
+        typical first command on a new machine; config/backend come from ocd.json
+        (OCD_CONFIG) exactly like the MCP tools.
+        """;
+
+    public static async Task<int> RunAsync(string[] args)
     {
+        // v0.4.29：doctor 也走 ArgScanner 的 help 识别——此前 --help 被忽略、直接跑体检，
+        // 在环境不全的机器上还会因 FAIL 返回 1，与其余四个 CLI 的 --help 约定不一致。
+        var scanner = new ArgScanner("doctor", args, Array.Empty<string>(), Array.Empty<string>());
+        while (scanner.Next(out _, out _)) { /* doctor 无选项；未知项由 scanner 记错 */ }
+
+        if (scanner.Help)
+        {
+            Console.Write(HelpText);
+            return 0;
+        }
+        if (scanner.Errors.Count > 0)
+        {
+            foreach (var e in scanner.Errors) Console.Error.WriteLine("ERROR: " + e);
+            Console.Error.WriteLine("run 'ocdup doctor --help' for usage.");
+            return 2;
+        }
+
         var cfg = OcdConfig.Load();
         var checks = new List<DoctorCheck>
         {

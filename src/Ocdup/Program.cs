@@ -27,7 +27,7 @@ if (args.Length > 0 && args[0].Equals("verify", StringComparison.OrdinalIgnoreCa
 
 // `ocdup doctor`：环境体检（P1-6）——五项只读检查，不拉后端、不碰目标。
 if (args.Length > 0 && args[0].Equals("doctor", StringComparison.OrdinalIgnoreCase))
-    return await DoctorCli.RunAsync();
+    return await DoctorCli.RunAsync(args.Skip(1).ToArray());
 
 var builder = Host.CreateApplicationBuilder(args);
 

@@ -1,6 +1,6 @@
 ---
 name: ocdup-flash
-description: Use when flashing firmware or reading target memory through the Ocdup toolchain — Ocdup MCP tools (connect/status/show_config/backend_log/identify_chip/set_target/set_permissions/flash_info/flash_write/verify_image/flash_erase_sector/read_memory/write_memory/dump_memory/halt/resume/reset/run_command/list_variables/read_variable/write_variable/load_svd/read_peripheral_register/write_peripheral_register) wrapping OpenOCD. Covers the standard flash workflow (connect → flash_info → flash_write → read-back), exec control for reliable reads (halt → operate → resume, with PC/LR/SP/xPSR snapshot), chip identification after connect (identify_chip: CPUID + vendor DEV_ID) and switching target_cfg without restarting the session (set_target via target_presets), runtime permission changes (set_permissions, gated by allow_set_permissions), variable access by name via the ELF symbol layer (elf_path in ocd.json), peripheral registers by name via the SVD layer (load_svd → read/write_peripheral_register, bit-field decode, read-only access refused; svd_path in ocd.json), timed sampling via the `ocdup watch` CLI, RTT streaming via the `ocdup rtt` CLI and production flashing via the `ocdup burn` CLI, address/width conventions, permission-gate discipline (BLOCKED → show_config), probe auto-detection boundaries, and port discipline (6666 single backend, shared by DSH and ZCode). 触发词：烧录、刷机、固件、下载程序、烧写、读 flash、读内存、dump、向量表、卡死、挂起、复位、halt、识别芯片、芯片型号、什么芯片、切换芯片、换板子、set_target、改权限、临时允许、变量名、按名读写、采样、watch、gCounter、SVD、寄存器、外设寄存器、位域、RCC.CR、rtt、printf 日志、量产、burn、探针、OpenOCD、DAPLink、AT-Link、ST-Link、J-Link、AT32。
+description: Use when flashing firmware or reading/writing target memory, registers or variables on a connected MCU via the Ocdup toolchain - the mcp__ocdup__* OpenOCD-facing MCP tools (connect/status, flash_info/flash_write/verify_image/flash_erase_sector, read/write_memory, dump_memory, halt/resume/reset, run_command, backend_log, identify_chip, set_target, set_permissions, list_variables, read/write_variable, load_svd, read/write_peripheral_register) and the ocdup watch/rtt/burn/verify CLIs. Covers the flash workflow (connect, flash_info, flash_write, verify read-back), halt/resume for reliable reads and crash triage, chip identify and hot target switching, permission gates (BLOCKED > show_config, never bypass), probe auto-detect boundaries, and port discipline (single backend on 6666 shared by DSH and ZCode). 触发词：烧录、刷机、固件下载、烧写、读flash、读内存、dump、向量表、卡死、跑飞、复位、识别芯片、什么芯片、切换芯片、换板子、变量名、按名读写、采样、寄存器、位域、SVD、RTT、printf日志、量产、探针、OpenOCD、DAPLink、AT-Link、ST-Link、J-Link、AT32、PY32。
 ---
 
 # Ocdup 烧录工具链（AI 操作手册）
@@ -9,7 +9,7 @@ Ocdup 是 PC 侧的 OpenOCD 门面（MCP 服务器，stdio），把「连接探�
 按地址读回数据」封装成 MCP 工具。本技能只管**流程与纪律**；参数细节以工具
 docstring 与 `show_config` 输出为准，不要凭记忆猜。
 
-## 工具总览（ZCode 内以 `mcp__ocdup__*` 形式提供；DSH 内为 `mcp__ocdup__<tool>`；共 20 个——v0.4.6 起含 disconnect（探针让渡），随版本演进以实际列表为准）
+## 工具总览（ZCode 内以 `mcp__ocdup__*` 形式提供；DSH 内为 `mcp__ocdup__<tool>`；共 25 个——含 v0.4.6 的 disconnect（探针让渡）与 v0.4.21 的 SVD 三件（load_svd / read_peripheral_register / write_peripheral_register），随版本演进以实际列表为准）
 
 | 工具 | 作用 | 变更目标？ |
 |---|---|---|
@@ -50,7 +50,12 @@ reset 比对（簇寄存器带路径，如 `"TIM1.PWM.CCR"`）→ `write_periphe
 `flash_write` 同一编排核心，按退出码分流（0=verified / 1=读回不符 / 2=用法·权限 /
 3=后端故障）；烧录中刻意不响应 Ctrl+C（写相中断 = 半截固件）。配套 **`ocdup verify`
 子命令 CLI**（v0.4.26）：只读比对镜像与目标 flash（金板抽检/烧后自检），判据与
-`verify_image` 工具同一份，exit 0/1/2/3 同族。
+`verify_image` 工具同一份，exit 0/1/2/3 同族。后端 CRC 算法需目标静止，固件在跑时
+可能回 `VERIFY INCONCLUSIVE`——**那不代表固件不匹配**，halt 后重试。
+
+另有 **`ocdup doctor` 子命令 CLI**（v0.4.15，不是 MCP 工具）：环境体检，换机/排障
+第一步——把 ocd.json / OCD_BIN / OCD_SCRIPTS / 探针 / 后端端口五项拼成一张
+`[OK]/[WARN]/[FAIL]` + 「如何修」的清单，只读、不拉起后端、不碰目标，有 FAIL 退出码 1。
 
 ## 标准烧录流程
 
