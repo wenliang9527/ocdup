@@ -73,6 +73,10 @@ public static class VerifyCli
         same conservative criterion as the verify_image MCP tool ("verified N bytes" or
         it did not pass). Typical use: re-check a board after 'ocdup burn' without an
         MCP session.
+
+        the backend's flash-verify algorithm needs a stably halted core. With the
+        firmware running the run can end in 'VERIFY INCONCLUSIVE' - that is NOT a
+        mismatch, halt the target and run it again.
         """;
 }
 

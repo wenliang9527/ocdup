@@ -86,4 +86,64 @@ public sealed class FlashToolsTests
         Assert.True(FlashTools.ShouldResetRun(FlashTools.FlashWriteVerdict.Unverified, "** Programming Finished **"));
         Assert.False(FlashTools.ShouldResetRun(FlashTools.FlashWriteVerdict.Unverified, "Error: flash bank missing"));
     }
+
+    // ── v0.4.29 真机实测（AT32F403AVGT7 + atopenocd-py32）：CRC 算法起不来 ≠ 镜像不匹配 ──
+
+    [Theory]
+    [InlineData("target not halted\nerror executing cortex_m crc algorithm")]
+    [InlineData("timed out while waiting for target halted\nerror executing cortex_m crc algorithm")]
+    [InlineData("target not halted")]
+    public void DetectCrcAlgorithmFailure_RecognisesTheRunningTargetSignatures(string output)
+    {
+        var problem = FlashTools.DetectCrcAlgorithmFailure(output);
+
+        Assert.NotNull(problem);
+        Assert.Contains("NOT evidence that the image differs", problem);
+        Assert.Contains("halt", problem);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("verified 524288 bytes in 0.48s")]
+    [InlineData("content mismatch: addr=0x08000000, target=0xff, file=0x00")]
+    [InlineData("Error: flash bank missing")]
+    public void DetectCrcAlgorithmFailure_LeavesOtherOutputsAlone(string output)
+    {
+        Assert.Null(FlashTools.DetectCrcAlgorithmFailure(output));
+    }
+
+    [Fact]
+    public void ComposeVerifyReport_CrcFailure_SaysInconclusiveNotMismatch()
+    {
+        // 真机原文作为回归用例：这三种形态都不能被说成「固件不匹配」
+        var crc = "target not halted\nerror executing cortex_m crc algorithm";
+        var report = FlashTools.ComposeVerifyReport(
+            "build/fw.bin", 524288, "the backend reported an error", crc,
+            FlashTools.DetectCrcAlgorithmFailure(crc));
+
+        Assert.StartsWith("VERIFY INCONCLUSIVE", report);
+        Assert.Contains("says nothing about", report);
+        Assert.DoesNotContain("does not match the target flash", report);
+    }
+
+    [Fact]
+    public void ComposeVerifyReport_RealMismatch_StillSaysFailed()
+    {
+        var report = FlashTools.ComposeVerifyReport(
+            "build/fw.bin", 4096, "content mismatch: target=0xff, file=0x00",
+            "content mismatch: addr=0x08000000, target=0xff, file=0x00", null);
+
+        Assert.StartsWith("VERIFY FAILED", report);
+        Assert.Contains("does not match the target flash", report);
+    }
+
+    [Fact]
+    public void ComposeVerifyReport_CleanPass_SaysVerified()
+    {
+        var report = FlashTools.ComposeVerifyReport(
+            "build/fw.bin", 4096, null, "verified 4096 bytes in 0.01s", null);
+
+        Assert.StartsWith("verified:", report);
+        Assert.Contains("matches the target flash", report);
+    }
 }

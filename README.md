@@ -50,7 +50,7 @@
 |---|---|---|
 | `flash_info` | 列出 flash banks（驱动、基址、大小） | 只读 |
 | `flash_write` | **下载**：烧录镜像（写 → 独立读回校验判据 → 可选复位运行；结论三段式：verified / verify FAILED / write failed）；执行期 openocd 日志行以 progress notification 推回带 progressToken 的调用方 | `read_only` / `allow_flash` / 白名单 / 上限 |
-| `verify_image` | **烧后独立校验**：镜像与目标 flash 比对，不写任何东西（回答「板子里到底是谁」） | 只读 |
+| `verify_image` | **烧后独立校验**：镜像与目标 flash 比对，不写任何东西（回答「板子里到底是谁」）。后端 CRC 算法需目标静止，固件在跑时可能报 `VERIFY INCONCLUSIVE`（**不代表固件不匹配**，halt 后重试） | 只读 |
 | `flash_erase_sector` | 擦除 flash 扇区（破坏性，默认关闭） | `read_only` / **`allow_flash_erase`（默认 false）** |
 
 ### 内存读写
@@ -368,7 +368,7 @@ reload/重启丢弃）；否则 `show_config` 核对生效权限，改 ocd.json 
 ## 🧪 开发与测试
 
 ```bash
-dotnet test Ocdup.sln                     # 329 个单测，不需要硬件
+dotnet test Ocdup.sln                     # 339 个单测，不需要硬件
 python tools/e2e_fake_backend.py          # 端到端：假 TCL-RPC 后端 + 真实 MCP 会话
 ```
 
@@ -399,15 +399,34 @@ python tools/e2e_fake_backend.py          # 端到端：假 TCL-RPC 后端 + 真
   `node test.js core|window|api|client`（210 项断言）；改代码只改真源目录再 `deploy.cmd`。
 - **发布**：根目录 `publish.cmd`（单测 Release → publish → 提示重启 DSH；检测到
   ocdup.exe 在跑会拒绝执行）。CI：`.github/workflows/ci.yml`（build + 单测 + e2e）。
-- 若客户端正在运行 ocdup 锁住了 `bin/Debug` 的 exe，测试改用 Release 通道：
-  `dotnet test Ocdup.sln -c Release`。
+
+### 🔒 文件锁：两种成因，别混
+
+`CS2012 / MSB3027 / "文件正由另一进程使用"` 有两种成因，解法不同：
+
+| 成因 | 症状 | 解法 |
+|---|---|---|
+| **MCP 客户端在跑 ocdup** | `dotnet build` / `publish` 报 exe 被锁 | 完全退出 DSH / ZCode 再构建；或测试改走 Release 通道 `dotnet test Ocdup.sln -c Release`（`bin/Debug` 被锁时不影响 `bin/Release`） |
+| **两个 dotnet 命令并发** | 同上，但**没有任何客户端在跑**——往往是 build 与 test 同时发出去 | 串行执行；或给 test 加 `--no-build` 复用上一步产物 |
+
+**推荐姿势**（与 CI 一致）：
+
+```bash
+dotnet build Ocdup.sln && dotnet test Ocdup.sln --no-build -v q
+```
+
+`&&` 保证串行，`--no-build` 让 test 直接用 build 产物、连编译都省掉。
+在同一个 agent 会话里把 build 与 test 当成两条并行工具调用一起发出去，是最容易踩第二种坑的方式。
+
+> 排查顺序：先看报的是 `obj/` 里的中间产物（`ocdup.dll is being used`）还是
+> `bin/` 里的 exe（`publish\ocdup.exe`）——`obj/` 基本都是并发成因，`bin/` 优先怀疑客户端。
 
 ## 📍 项目状态
 
 | 里程碑 | 状态 |
 |---|---|
-| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 329 个单测 + 假后端 e2e 覆盖（24 条链路） |
-| S4 真机联调 | ✅ AT32F403AVGT7 + CMSIS-DAP v2（DAPLink `0D28:0204`）+ atopenocd：`connect` → `flash_info` → `flash_write`（擦 25 扇区、写 + Verified OK、reset run）→ `read_memory` 运行态读回向量表 |
+| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 339 个单测 + 假后端 e2e 覆盖（25 条链路） |
+| S4 真机联调 | ✅ AT32F403AVGT7 + CMSIS-DAP v2（DAPLink `0D28:0204`）+ atopenocd：`connect` → `flash_info` → `flash_write`（擦 25 扇区、写 + Verified OK、reset run）→ `read_memory` 运行态读回向量表。**2026-10-13 第二轮**：`burn`/`verify` 治具链路 dump → burn → verify → dump 闭环 sha256 一致；实烧 SL150 v4.0 固件（74.4KB）后 hex 覆盖区逐字节零差异、固件正常运行 |
 | 安全与正确性加固（v0.4.12–v0.4.16） | ✅ `run_command` 内容分类（写类命令与专用工具同权/重定向）、`flash_write` 以独立读回校验为权威判据（三段式结论）、断链只读自动重放 + 空闲心跳、烧录/擦除/dump 执行期 progress notification |
 | doctor CLI | ✅ `ocdup doctor` 五项环境体检（ocd.json / OCD_BIN / scripts / 探针 / 后端端口），换机第一步 |
 | S5 打包与客户端注册 | 🟡 已注册进 DSH（desktop + web 两个 profile）与 ZCode（`mcp.servers` 条目 + `ocdup-zcode` 插件，均指 `publish/ocdup.exe`）；换机第一步先跑 `ocdup doctor`（v0.4.15） |

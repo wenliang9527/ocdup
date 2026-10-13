@@ -250,6 +250,9 @@ public static class FlashTools
         "Parameters: file (.elf/.hex/.bin; relative paths resolve against the ocd.json directory), " +
         "address (required for raw .bin, hex string like '0x08000000'; ignored for .elf/.hex). " +
         "Read-only: no permission gate applies and no file is written on this PC. " +
+        "IMPORTANT: the backend's flash-verify algorithm needs a stably halted core. If the firmware is running, " +
+        "the answer can be 'VERIFY INCONCLUSIVE' (the CRC algorithm could not run) - that says NOTHING about whether " +
+        "the content matches; halt (allow_exec), verify again, then resume. " +
         "The same comparison is available outside MCP as 'ocdup verify <file>' (v0.4.26, exit-code mapped).")]
     public static async Task<string> VerifyImage(
         [Description("Path to the image to verify against target flash (.elf/.hex/.bin).")] string file,
@@ -305,6 +308,8 @@ public static class FlashTools
                 "An .elf/.hex image carries its own addresses and needs no address argument.", false);
         }
 
+        // 只读工具的失败文案与 CLI 共用 VerifyCoreAsync；halt 提示文案在 tool description 里也写了。
+
         var command = new StringBuilder("verify_image ").Append(Tcl.Quote(resolved));
         if (loadAddress is { } addr) command.Append(' ').Append(Parsing.Hex(addr));
 
@@ -318,14 +323,14 @@ public static class FlashTools
             return new VerifyOutcome(false, CoreFailure.Backend, ex.Message, false);
         }
 
-        if (InterpretVerifyOutput(output) is { } problem)
-            return new VerifyOutcome(true, CoreFailure.Usage,
-                $"VERIFY FAILED: {resolved} ({image.Length} bytes) does not match the target flash.\n" +
-                $"problem: {problem}\nbackend output:\n{output}", Verified: false);
+        // v0.4.29（真机实测）：CRC 算法起不来 ≠ 镜像不匹配。先认这一类输出，
+        // 否则保守判据会把「没验成」说成「固件坏了」，模型据此无谓重烧。
+        var crcProblem = DetectCrcAlgorithmFailure(output);
+        var problem = InterpretVerifyOutput(output);
+        var report = ComposeVerifyReport(resolved, image.Length, problem, output, crcProblem);
 
-        return new VerifyOutcome(true, CoreFailure.Usage,
-            $"verified: {resolved} ({image.Length} bytes) matches the target flash.\nbackend: " +
-            (output.Length == 0 ? "(no output)" : output), Verified: true);
+        // CRC 起不来 = 存疑：既不算通过也不算失败（exit 1），但报告措辞已说明原因。
+        return new VerifyOutcome(true, CoreFailure.Usage, report, Verified: problem is null);
     }
 
     /// <summary>
@@ -339,6 +344,55 @@ public static class FlashTools
         if (output.Contains("verified", StringComparison.OrdinalIgnoreCase) && !LooksLikeFailure(output))
             return null;
         return LooksLikeFailure(output) ? "the backend reported an error" : "no 'verified N bytes' confirmation in the output";
+    }
+
+    /// <summary>
+    /// 后端报了「CRC 校验算法跑不起来」这一类输出（真机实测 2026-10-13，AT32F403AVGT7 +
+    /// atopenocd-py32）：`target not halted` / `error executing cortex_m crc algorithm` /
+    /// `timed out while waiting for target halted`。**这不表示镜像与 flash 不匹配**——
+    /// atopenocd 的 CRC 算法需要一个稳定的 halt 态，固件在跑时它的时序不稳；实测同一条
+    /// verify_image 命令在目标静止时能回 `verified 524288 bytes`，在运行态/竞争态下失败。
+    /// 纯函数：命中即返回可操作文案，否则 null（调用方据此改判「存疑」而非「不匹配」）。
+    /// </summary>
+    public static string? DetectCrcAlgorithmFailure(string output)
+    {
+        if (output.Length == 0) return null;
+        return output.Contains("crc algorithm", StringComparison.OrdinalIgnoreCase)
+            || output.Contains("target not halted", StringComparison.OrdinalIgnoreCase)
+            || output.Contains("waiting for target halted", StringComparison.OrdinalIgnoreCase)
+            ? "the backend could not run its CRC algorithm over the target (" +
+              "openocd's flash-verify algorithm needs a stably halted core; the messages were: " +
+              Compact(output) + "). This is NOT evidence that the image differs from the flash - " +
+              "halt the target (allow_exec), run the verify again, then resume. " +
+              "If it still fails while halted, the content really does differ."
+            : null;
+    }
+
+    /// <summary>把多行后端输出压成单行片段（引进文案的诊断尾巴，限长避免撑爆回复）。</summary>
+    private static string Compact(string output)
+    {
+        var flat = output.ReplaceLineEndings(" / ").Trim();
+        return flat.Length <= 160 ? flat : flat[..160] + "…";
+    }
+
+    /// <summary>
+    /// verify_image 报告组装（纯函数，可单测）：`crcProblem` 非空 = CRC 算法起不来，
+    /// 结论用「VERIFY INCONCLUSIVE」而不是「VERIFY FAILED」——措辞必须让模型知道
+    /// 「固件没坏，只是这次没验成」，否则会误判固件损坏并触发无谓的重烧。
+    /// </summary>
+    internal static string ComposeVerifyReport(
+        string resolved, long sizeBytes, string? problem, string output, string? crcProblem)
+    {
+        if (crcProblem is not null)
+            return $"VERIFY INCONCLUSIVE: the comparison did not run to completion, so this says nothing about " +
+                   $"whether {resolved} ({sizeBytes} bytes) matches the target flash.\n" +
+                   $"reason: {crcProblem}\nbackend output:\n{output}";
+
+        return problem is not null
+            ? $"VERIFY FAILED: {resolved} ({sizeBytes} bytes) does not match the target flash.\n" +
+              $"problem: {problem}\nbackend output:\n{output}"
+            : $"verified: {resolved} ({sizeBytes} bytes) matches the target flash.\nbackend: " +
+              (output.Length == 0 ? "(no output)" : output);
     }
 
     [McpServerTool(Name = "flash_erase_sector")]

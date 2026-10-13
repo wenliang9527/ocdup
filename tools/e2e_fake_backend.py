@@ -32,6 +32,9 @@
     24. P0-3 边界定案（v0.4.28）：allow_exec=false 时 halt BLOCKED 而 disconnect 照常（后端生命周期
         不进 allow_exec；外部实例如实回报「杀不动」，且该结论不附 halted 提示）；停机前的 targets
         探测与「仅真停掉自拉后端才附 halted 提示」的组装规则由单元层钉死
+    25. CRC 算法起不来（v0.4.29，真机 2026-10-13 抓原文）：verify_image 回
+        `target not halted` / `timed out while waiting for target halted` → VERIFY INCONCLUSIVE
+        + halt 指引；**绝不**说成「固件不匹配」（模型据此会无谓重烧）
 """
 import json
 import os
@@ -127,6 +130,11 @@ def handle_command(cmd):
     if c.startswith("verify_image"):
         m = re.match(r"verify_image \{(.+?)\}( 0x[0-9a-fA-F]+)?$", c)
         if m:
+            # v0.4.29 链路 25：arm 后回真机抓到的 CRC 算法失败原文（两种形态）
+            crc = STATE.get("crc_fail")
+            if crc:
+                STATE["crc_fail"] = None
+                return crc
             # v0.4.20 链路 18：arm 后下一次 verify_image 回读回不符（burn 的 exit 1 路径）
             if STATE.get("fail_verify"):
                 STATE["fail_verify"] = False
@@ -236,6 +244,17 @@ class FakeBackend(threading.Thread):
                         continue
                     if inner == "__e2e_arm_fail_verify__":
                         STATE["fail_verify"] = True
+                        try:
+                            conn.sendall(b"armed" + DELIM)
+                        except OSError:
+                            return
+                        continue
+                    # v0.4.29：arm 后下一条 verify_image 回真机的 CRC 算法失败原文
+                    if inner in ("__e2e_arm_crc_running__", "__e2e_arm_crc_halted__"):
+                        STATE["crc_fail"] = ("target not halted\nerror executing cortex_m crc algorithm"
+                                             if inner.endswith("running__")
+                                             else "timed out while waiting for target halted\n"
+                                                  "error executing cortex_m crc algorithm")
                         try:
                             conn.sendall(b"armed" + DELIM)
                         except OSError:
@@ -581,6 +600,19 @@ def main():
         print("  missing file -> exit:", v3.returncode)
         assert v3.returncode == 2, "verify should exit 2 on missing file, got %d" % v3.returncode
         assert "does not exist" in v3.stderr, "verify should print the path guidance to stderr"
+
+        banner("CRC-algorithm failure (v0.4.29, real-machine 2026-10-13): INCONCLUSIVE, never 'firmware mismatch'")
+        for arm, label in (("__e2e_arm_crc_running__", "target not halted"),
+                           ("__e2e_arm_crc_halted__", "timed out while waiting for target halted")):
+            print(mcp.call("run_command", {"command": arm}))
+            crc = mcp.call("verify_image", {"file": "build/fw.bin", "address": "0x08000000"})
+            print(crc)
+            assert crc.startswith("VERIFY INCONCLUSIVE"), \
+                "CRC failure must read as INCONCLUSIVE, got: %s" % crc.splitlines()[0]
+            assert "does not match the target flash" not in crc, \
+                "CRC failure must NOT claim the firmware differs from the flash"
+            assert "halt" in crc, "CRC failure must tell the caller to halt and retry"
+            print("  [%s] -> INCONCLUSIVE with halt guidance OK" % label)
 
         banner("SVD layer L2 (v0.4.21): load_svd / read_peripheral_register (decode + reset compare) / write gate")
         MINI_SVD = """<?xml version="1.0"?>
