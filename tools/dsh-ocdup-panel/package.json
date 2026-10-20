@@ -1,6 +1,6 @@
 {
   "name": "dsh-ocdup-panel",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "private": true,
   "description": "Ocdup 调试面板 DSH 插件：侧边栏入口(全局面板)，尾随 ocdup MCP 的 mcp-traffic.jsonl 实时显示 AI 的 OpenOCD 命令/响应/后端事件",
   "main": "./index.js",

@@ -1,4 +1,4 @@
-# dsh-ocdup-panel — Ocdup 调试实时面板  v1.5.0
+# dsh-ocdup-panel — Ocdup 调试实时面板  v1.5.1
 
 DeepSeek Harness 的常驻插件:右侧停靠栏的 OCDUP 调试 tab,实时显示
 **AI 通过 Ocdup MCP 工具与 OpenOCD 的全部交互**(TCL 命令、响应、后端生命周期事件),
@@ -272,6 +272,11 @@ ring 491 条全收齐(`?since=343` 能返回含 `started (pid 1888)` 的 148 条
 
 > 教训:单条 setTimeout 链 + 无超时的 fetch = 单点故障;`inFlightRef` 这类互斥位
 > 一旦被挂起的请求占住,所有恢复入口(包括用户主动切标签)都会被它挡死。
+
+## v1.5.1 开关状态对比度
+
+「MCP 开/关」按钮由淡染改为**实底绿(开)/ 中性灰平底(关)**,并加 ●/○ 形状 cue——
+26px 按钮上淡染区分度不够,扫一眼必须能认出状态。
 
 ## v1.5.0 MCP 一键开关(面板内热切换)
 

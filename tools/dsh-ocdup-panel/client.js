@@ -385,7 +385,11 @@ window.__ModuleLoader__.load({
           '.op-btn[data-on="1"] { border-color: var(--dsw-alias-label-primary, #222); background: var(--dsw-alias-label-primary, #222); color: var(--dsw-alias-bg-layer-2, #fff); font-weight: 600; }',
           '.op-btn[data-tone="warn"] { border-color: var(--dsw-alias-state-warn-primary, #f59e0b); background: rgba(245,158,11,.10); color: var(--dsw-alias-state-warn-primary, #b45309); }',
           '.op-btn[data-tone="danger"] { border-color: var(--dsw-alias-state-error-primary, #ef4444); background: rgba(239,68,68,.10); color: var(--dsw-alias-state-error-primary, #dc2626); font-weight: 600; }',
-          '.op-btn[data-tone="ok"] { border-color: var(--dsw-alias-state-success-primary, #22c55e); background: rgba(34,197,94,.10); color: var(--dsw-alias-state-success-primary, #15803d); }',
+          // MCP 开关(v1.5.1):开态实底绿白字 / 关态中性灰平底 + ●/○ 形状 cue。
+          // 淡染在 26px 按钮上区分度不够,扫一眼必须认出状态。tone 规则在 data-on
+          // 之后书写,同特异性按源序覆盖,ok/off 再各加一个属性选择器确保压过 data-on
+          '.op-btn[data-tone="ok"][data-on="1"] { border-color: var(--dsw-alias-state-success-primary, #22c55e); background: var(--dsw-alias-state-success-primary, #16a34a); color: #fff; font-weight: 700; }',
+          '.op-btn[data-tone="off"] { border-color: var(--dsw-alias-border-l2, #d9d9d9); background: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 10%, transparent); color: var(--dsw-alias-label-tertiary, #999); font-weight: 600; }',
           // 分段控件(流水/调用):选中段墨色填充,压在被选相邻段之上
           '.op-seg { position: relative; white-space: nowrap; border: 1px solid var(--dsw-alias-border-l2, #d9d9d9); background: var(--dsw-alias-bg-layer-3, #fff); color: var(--dsw-alias-label-secondary, #555); transition: background-color .12s ease, border-color .12s ease, color .12s ease; }',
           '.op-seg:first-child { border-radius: 6px 0 0 6px; }',
@@ -1803,13 +1807,13 @@ window.__ModuleLoader__.load({
           btn(follow && autoSuspended ? '已挂起' : '跟随', () => setFollow(!follow), effectiveFollow,
             follow && autoSuspended ? '翻看历史中已自动挂起,回到底部或再点恢复' : '自动滚动到最新',
             follow && autoSuspended ? 'warn' : '', h(TailGlyph)),
-          btn(mcpOn ? 'MCP 开' : 'MCP 关', toggleMcp, mcpOn,
+          btn(mcpOn ? '● MCP 开' : '○ MCP 关', toggleMcp, mcpOn,
             mcpAvailable
               ? (mcpOn
                 ? '停用 ocdup MCP:新会话不再注册 mcp__ocdup__* 工具(省 token);当前会话工具列表不变'
                 : '启用 ocdup MCP:新会话才会注册 mcp__ocdup__* 工具;热生效,无需重启 DSH')
               : 'MCP 开关不可用(pluginManager 服务缺失)',
-            mcpAvailable ? (mcpOn ? 'ok' : 'warn') : ''),
+            mcpAvailable ? (mcpOn ? 'ok' : 'off') : ''),
           portSelect,
         ),
         h('div', { style: { ...toolbarBar, flexWrap: 'wrap', rowGap: 6 } },
