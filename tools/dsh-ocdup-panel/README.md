@@ -1,4 +1,4 @@
-# dsh-ocdup-panel — Ocdup 调试实时面板  v1.3.9
+# dsh-ocdup-panel — Ocdup 调试实时面板  v1.5.0
 
 DeepSeek Harness 的常驻插件:右侧停靠栏的 OCDUP 调试 tab,实时显示
 **AI 通过 Ocdup MCP 工具与 OpenOCD 的全部交互**(TCL 命令、响应、后端生命周期事件),
@@ -273,6 +273,40 @@ ring 491 条全收齐(`?since=343` 能返回含 `started (pid 1888)` 的 148 条
 > 教训:单条 setTimeout 链 + 无超时的 fetch = 单点故障;`inFlightRef` 这类互斥位
 > 一旦被挂起的请求占住,所有恢复入口(包括用户主动切标签)都会被它挡死。
 
+## v1.5.0 MCP 一键开关(面板内热切换)
+
+工具条新增「MCP 开 / MCP 关」按钮,直接启停本面板对应的 host 层 MCP 条目
+(`include:mcp-ocdup`):关闭后**新会话**不再注册 `mcp__ocdup__*` 工具(30 个工具
+schema 约占 6.8k token/轮,单笔最大的 token 节省),开启后随时可用。与 v1.3.8 的
+target 胶囊同思路:面板动作不必「复制提问让 AI 调」。
+
+- 切换走 `pluginManager.setPluginEnabled`(改 profile patch 的 `disabled` + **热 reload**),
+  **无需重启 DSH**;状态持久化在 patch 里,重启后保持。
+- 状态实时读 loader,不存偏好——外部改动后面板显示永远说真话。
+- **已开会话的工具列表是快照**,切换只对新会话生效(UI 已提示)。
+- 停用时空态显示引导文案;`pluginManager` 服务缺失时按钮置灰。
+- 新增路由:`GET /api/ocdup-log/mcp`(读状态)/ `POST /api/ocdup-log/mcp` `{enabled:bool}`(切换)。
+
+## v1.4.0 全项目复查面板侧:三个 P1 + 八个边角
+
+对照 ocdup v0.4.30 的全项目优化轮,面板代码(client.js / index.js)做了一轮独立
+复查(约 2300 行),修三个用户日常路径上的 P1 与八个边角。全部有测试钉死:
+四模式 210 → **234 项断言**(core 23 / window 5 / api 37 / client 169)。
+
+| # | 级别 | 问题 | 修法 |
+|---|---|---|---|
+| 1 | **P1** | **默认(流水)视图没有烧录进度条与「烧录中」保护**:`flashCall` 只从 `basis` 取,而流水视图的 basis 是原始行(没有 `kind=call` 项)→ `lastFlashCall` 恒 null → 进度条不渲染;连带断开后端 / 切换 target 两处「烧录进行中二次确认」也永不触发。只有手动切到「调用」视图这些才活 | 配对结果单独提 `paired` memo,`flashCall` 两种视图都从它取;「仍是最新动态」提纯为 `flashStillLatest`(调用视图对象同一性 / 流水视图应答行 seq 相等,新函数进 `_test`) |
+| 2 | **P1** | **后端卡片显示陈旧的「已连接」**:`backendStateOf` 只认成功形态的 SYS 行;启动失败(`did not become ready`)/端口无监听(`nothing is listening`)/TCL-RPC 通道打不开/心跳丢失(`heartbeat lost`)都不匹配 → 循环跳过失败行扫到更早的 `started openocd`。拔线或换错 cfg 后再调任意硬件工具,卡片继续撒谎(与 v1.3.8「连上就自己断开」同族) | 失败文案归一成 `stopped`;反例「外部实例杀不动」(still running)归 `running`——监听确实还活着 |
+| 3 | **P1** | **轮转漏救两侧丢行**:判定只看「活动文件收缩」。轮转后新文件若在一拍内长过旧 offset(慢盘/挂起/大 POLL_MS 完全可达),收缩不触发 → 既不救 .1 尾部(白屏),又把新文件前 offset 字节整段跳过(头部丢) | 判定升级为「.1 换了 + 活动文件自上一拍被重写过(mtime)」→ 救 .1 + 新文件从头读。**信号选型踩坑**:先用 birthtime,实测 NTFS 隧道效应会让「改名后同名重建」的文件继承旧创建时间(信号失效),last-write 时间不受影响才可靠 |
+| 4 | P2 | 探针段误认失败文案:`BuildFailureMessage` 里嵌 probeNote,`deriveLinkInfo` 照解析 → connect 失败后「探针」卡显示一个像活着的链路 | 只从非 `ERROR` 开头的 SYS 行解析探针 |
+| 5 | P2 | kick 竞态泄漏定时器:`schedule` 排新定时器不清旧的 → 每竞态多一条无主轮询链 | 排新的先 `clearTimeout` |
+| 6 | P2 | target/backend 两个 POST 没有客户端超时:Host 的 10s abort 只在宿主 `tools.execute` 认 signal 时收得住,不认时按钮永久卡在「切换中…」 | 两处 fetch 加 AbortController(15s)+ T29b 断言 signal 在场 |
+| 7 | P2 | 用户正则对完整 4000 字符(调用视图拼 cmd+rsp+logs ~12KB)跑,灾难性回溯冻结 UI;且命中落在显示截断尾部时「行保留但高亮丢」 | 匹配主题与行显示同源(都截到 `ROW_PAYLOAD_MAX`);顺带把 `matcherHit` 契约收紧为恒布尔(空 tag 时曾返回 `''`) |
+| 8 | P2 | 芯片卡只剩 dev_id 时(CPUID 读失败但 DEV_ID 读到)显示写死的「已连接」 | 提纯 `chipFallbackLabel`:有效 dev_id → `dev <id>` |
+| 9 | P2 | gap 行不服从 port 过滤:按 host:port 筛时仍插一条「已省略 N 条」 | gap 插入条件补 `port === 'ALL'` |
+| 10 | P2 | 字面量 `null` 行让 `consume` 抛异常(`rec.direction` 对 null 取属性),而 `offset` 已推进 → 该批后续行永远丢失(静默丢数据) | 非对象记录按坏行计,consume 不再抛 |
+| 11 | P2 | Host 入口不校验 text/tool 类型:非字符串透传会让客户端 `e.text.length` / `e.tool.toLowerCase()` 直接崩 | 入口归一成字符串(`safeText` 兜底序列化) |
+
 ## 目录职责
 
 **唯一真源 = 本目录(Ocdup 仓库 `tools/dsh-ocdup-panel/`)**,纳入 git 版本管理。
@@ -323,7 +357,13 @@ node test.js core     & node test.js window & node test.js api & node test.js cl
     (backendStateOf)与结论压缩(backendVerdict)、注册契约(右栏 tab 类型/body key=id/guide 无 commandId/
     左侧不注册 panellist/无右栏服务退回 main)、轮转空态与加载入口(有/无 .1 两支、点击走 POST /rotated、fmtStamp 时间格式)、
    失配胶囊一键切换(点击走 POST /api/ocdup-target {preset} → 成功后自动 connect → 失败不重连)
-   ——client 模式 151 项,四模式合计 210 项断言。
+   ——client 模式 169 项,四模式合计 234 项断言。
+
+v1.4.0 新增覆盖:null 行不吞后续批 + 非字符串 text/tool 归一(core)、轮转后新文件
+变大也救 .1 且头部不跳(api,T12c)、flashStillLatest 两视图语义(client,T17b)、
+失败 SYS 行归 stopped / 外部实例 still running 归 running(T23b)、探针段不解析
+失败文案 + 芯片卡 dev 回退(T19b)、匹配主题与显示同截断 + matcherHit 恒布尔(T14)、
+target/backend POST 带 signal(T29b)。
 
 用环境变量把参数压小是为了快速触发边界(上限 5 条即可验证裁剪)。
 `test.js` 只存在于真源目录,不同步到安装闭包。
@@ -348,6 +388,7 @@ node test.js core     & node test.js window & node test.js api & node test.js cl
 GET /api/ocdup-log/help          # 接口速见(markdown)
 GET /api/ocdup-log?stats=1       # 零载荷存活检查
 GET /api/ocdup-log?since=<seq>&compact=1&max=512
+GET /api/ocdup-log/mcp           # MCP 条目启停状态;POST {enabled:bool} 热切换(见 v1.5.0)
 ```
 
 ## 安装 / 卸载

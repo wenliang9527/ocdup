@@ -1,9 +1,19 @@
 'use strict'
 // ============================================================
-//  dsh-ocdup-panel — Host 半区(永久 cordis 插件)  v1.3.9
+//  dsh-ocdup-panel — Host 半区(永久 cordis 插件)  v1.4.0
 //
-//  v1.3.9:纯 Client 侧(轮询链自愈:fetch 超时 + kick),数据层与路由契约无变化;
-//  仅版本号随插件整体 bump。
+//  v1.4.0:对照 ocdup v0.4.30 全项目复查(面板侧 3×P1 + 8×P2,断言 210→234),
+//  Host 半区收 P1-3 与 P2-10/11:
+//   * P1-3 轮转判定从「只看活动文件收缩」升级为「.1 换了 + 活动文件自上一拍
+//     被重写过(mtime)」:轮转后新文件若在 POLL_MS 内就长得比 offset 还大
+//     (硬盘/卷起),收缩永远不触发——表现为秒不换部(白屏),又把新文件前
+//     offset 字节整段跳过(丢头部);信号用 last-write mtime(NTFS 隧道效应
+//     会让改名后同名重建的文件继承旧 birthtime,信号失效);
+//   * P2-11 入口归一:text/tool 入口校验并归一成字符串(safeText 兜底序列化,
+//     JSON.stringify 对 BigInt 会抛)——非字符串透传曾让客户端
+//     e.text.length / e.tool.toLowerCase() 直接炸;
+//   * P2-10 consume 容错:JSON.parse('null') 也「成功」,非对象记录按坏行计——
+//     此前对 null 取属性抛异常且 offset 已推进,吞掉该批后续所有行。
 //
 //  v1.3.8:新增 POST /api/ocdup-target(target 失配一键切换)——identify 认出
 //  的家族与当前 target_cfg 不符时,面板胶囊从「复制 set_target 命令给会话」
@@ -99,6 +109,10 @@ const ROUTE_EXPORT = '/api/ocdup-log/export'
 const ROUTE_HELP = '/api/ocdup-log/help'
 const ROUTE_BACKEND = '/api/ocdup-backend'
 const ROUTE_TARGET = '/api/ocdup-target' // v1.3.8:失配胶囊一键切 target_cfg
+const ROUTE_MCP = '/api/ocdup-log/mcp'   // v1.4.0:MCP 启停开关(GET 读状态 / POST 切换)
+
+// host 层 MCP 条目 id(住在 profile patch 里,插件面板/本开关共同管理;不属于本插件)
+const MCP_ENTRY_ID = 'include:mcp-ocdup'
 // 面板动作 → ocdup MCP 工具名(serverName=ocdup → mcp__ocdup__<tool>)
 const BACKEND_ACTION_TOOL = { disconnect: 'mcp__ocdup__disconnect', connect: 'mcp__ocdup__connect' }
 const TARGET_TOOL = 'mcp__ocdup__set_target' // v1.3.8
@@ -201,6 +215,20 @@ module.exports = {
     // 直接走 ctx.tools.execute —— 宿主文档明确这种直接调用只是不受 agent 提醒跟踪。
     const tools = ctx.get('tools')
 
+    // v1.4.0:MCP 启停开关。状态实时读 loader 里对应条目的 disabled(不存偏好,
+    // 重启后、外部改动后都永远说真话);切换走 pluginManager.setPluginEnabled
+    // ——它改 profile patch 的 disabled 并热 reload,无需重启 DSH。
+    const pluginManager = ctx.get('pluginManager')
+    const loaderOf = () => ctx.get('loader') || ctx.loader || null
+    const mcpState = () => {
+      const loader = loaderOf()
+      const entry = loader && typeof loader.entries === 'function'
+        ? loader.entries().find((e) => e.id === MCP_ENTRY_ID)
+        : null
+      if (!entry) return { available: false, enabled: null }
+      return { available: true, enabled: !entry.disabled }
+    }
+
     const file = logPath()
     let offset = 0          // 已读字节偏移
     let remainder = ''      // 半行残留(写入端按行追加,可能读到半行)
@@ -209,6 +237,7 @@ module.exports = {
     let prevTsMs = null     // 上一条记录的毫秒时间戳(Δt 用;坏时间戳不更新基准)
     let rotSeen = null      // 上一轮轮询时 .1 的 {size,mtimeMs}(变了=刚发生过轮转)
     let rotLoaded = null    // 已经补进环的那份 .1(同一份不重复加载)
+    let activeMtimeMs = null // 上一轮轮询时活动文件的 last-write 时间(变了=文件被重写过,v1.4.0)
     const entries = []      // { seq, id, tool, dir, text, tag, ts, len, dtMs },seq 递增
     const stats = { cmd: 0, rsp: 0, sys: 0, err: 0, log: 0, bytes: 0, lastAt: null, exists: false, badLines: 0, logSize: 0, logMtimeMs: null, rotated: false, rotSize: 0, rotMtimeMs: null }
 
@@ -231,6 +260,16 @@ module.exports = {
       return typeof rec.text === 'string' ? Buffer.byteLength(rec.text, 'utf8') : 0
     }
 
+    // v1.4.0：非字符串字段的安全序列化(JSON.stringify 对 BigInt 会抛,兜底 String())
+    const safeText = (v) => {
+      try {
+        const s = JSON.stringify(v)
+        return typeof s === 'string' ? s : String(v)
+      } catch (e) {
+        try { return String(v) } catch (e2) { return '[unserializable]' }
+      }
+    }
+
     const consume = (text) => {
       const data = remainder + text
       const lines = data.split('\n')
@@ -242,6 +281,10 @@ module.exports = {
         if (!s) continue
         let rec
         try { rec = JSON.parse(s) } catch (e) { stats.badLines += 1; continue } // 坏行跳过,不致命
+        // v1.4.0：JSON.parse('null') 也「成功」——非对象记录按坏行计。此前
+        // rec.direction 对 null 取属性会抛,异常逃出 consume 时 offset 已推进,
+        // 该批剩余行永远不再被读(静默丢数据)。
+        if (rec === null || typeof rec !== 'object' || Array.isArray(rec)) { stats.badLines += 1; continue }
         seq += 1
         // direction 归一化小写:cmd/rsp/log 小写、SYS 大写,统一后客户端只处理一套
         const low = String(rec.direction || '').toLowerCase()
@@ -255,13 +298,17 @@ module.exports = {
         const tsMs = Date.parse(rec.timestamp || '')
         const dtMs = Number.isFinite(tsMs) && prevTsMs != null ? Math.max(0, tsMs - prevTsMs) : null
         if (Number.isFinite(tsMs)) prevTsMs = tsMs
+        // v1.4.0：text/tool 入口归一成字符串——面板自己声明了字段约定(全 string),
+        // 非字符串原样透传会让客户端 e.text.length / e.tool.toLowerCase() 直接崩
+        const toolText = typeof rec.tool === 'string' ? rec.tool : (rec.tool == null ? '' : safeText(rec.tool))
+        const bodyText = typeof rec.text === 'string' ? rec.text : (rec.text == null ? '' : safeText(rec.text))
         entries.push({
           seq,
           id: rec.id,
-          tool: rec.tool || '',
+          tool: toolText,
           dir,
           hex: rec.rawHex || '',
-          text: rec.text || '',
+          text: bodyText,
           tag: rec.portTag || '',
           ts: rec.timestamp || '',
           len,
@@ -327,8 +374,14 @@ module.exports = {
         stats.rotated = !!rot
         stats.rotSize = rot ? rot.size : 0
         stats.rotMtimeMs = rot ? rot.mtimeMs : null
-        // 轮转判定:活动文件消失/收缩 且 .1 刚换过 → ocdup 轮转(把 .1 尾部接进来,
-        // 看着面板的人不白屏);.1 没动 → 面板清空或外部截断,照旧全清。
+        // 轮转判定:v1.4.0 从「只看收缩」升级为「.1 换了 + 活动文件自上一拍被重写过」。
+        // 只看收缩不够:轮转后新文件若在一拍内长过旧 offset(慢盘/挂起/大 POLL_MS
+        // 完全可达),收缩判定不触发 → 既不救 .1 尾部,又把新文件的前 offset 字节
+        // 整段跳过,两侧静默丢行。信号用 mtime 不用 birthtime——Windows NTFS 的
+        // 隧道效应会让「改名后同名重建」的文件继承旧创建时间(实测 birthtime 与旧
+        // 文件一致,信号失效);last-write 时间不受隧道影响。
+        // 反向保护:只换 .1 内容而活动文件没动(外部工具/测试)→ activeRewritten
+        // 为假 → 不误判轮转,/rotated 路由照旧手动加载。
         const rotChanged = !!rot && (!rotSeen || rot.size !== rotSeen.size || rot.mtimeMs !== rotSeen.mtimeMs)
         rotSeen = rot
         if (!st) {
@@ -338,10 +391,16 @@ module.exports = {
           }
           return
         }
-        if (st.size < offset) {
-          // 面板清空(截断)或 ocdup 轮转成新文件
-          if (rotChanged) salvageRotated(rot)
-          else reset()
+        const activeRewritten = activeMtimeMs != null && st.mtimeMs !== activeMtimeMs
+        activeMtimeMs = st.mtimeMs
+        if (rotChanged && activeRewritten) {
+          // ocdup 轮转:救 .1 尾部(salvageRotated 内置 reset → offset=0)+ 新文件
+          // 从头读(firstRead=false 关掉尾部窗口,头部不补就又断档)
+          salvageRotated(rot)
+          firstRead = false
+        }
+        else if (st.size < offset) {
+          reset() // 面板清空(截断)或外部截断:.1 没动,旧历史不回流
         }
         if (st.size === offset) return
 
@@ -382,6 +441,7 @@ module.exports = {
       badLines: stats.badLines, logSize: stats.logSize,
       logMtimeMs: stats.logMtimeMs, rotated: stats.rotated,
       rotSize: stats.rotSize, rotMtimeMs: stats.rotMtimeMs,
+      mcp: mcpState(),
     })
 
     /**
@@ -632,6 +692,45 @@ module.exports = {
         }
       },
     }), 'dsh-ocdup-panel: ' + ROUTE_HELP)
+
+    // v1.4.0:MCP 启停开关。GET 返回当前状态(随主路由 view() 一并给面板轮询);
+    // POST {enabled:bool} 切条目。注意:切换只影响「新会话」的工具注册——
+    // 已开会话的工具列表是快照,不会变(UI 需提示,别让用户以为立刻生效)。
+    ctx.effect(() => webServer.register({
+      kind: 'exact',
+      path: ROUTE_MCP,
+      async handler(req, res) {
+        try {
+          if (req.method === 'GET') {
+            jsonResponse(res, 200, { ok: true, mcp: mcpState() })
+            return
+          }
+          if (req.method !== 'POST') {
+            jsonResponse(res, 405, { ok: false, error: 'GET or POST only' })
+            return
+          }
+          const current = mcpState()
+          if (!current.available) {
+            jsonResponse(res, 404, { ok: false, error: 'mcp entry not found: ' + MCP_ENTRY_ID })
+            return
+          }
+          if (!pluginManager || typeof pluginManager.setPluginEnabled !== 'function') {
+            jsonResponse(res, 501, { ok: false, error: 'pluginManager service unavailable' })
+            return
+          }
+          const body = await readJsonBody(req)
+          const enabled = !!(body && body.enabled === true)
+          if (current.enabled === enabled) {
+            jsonResponse(res, 200, { ok: true, mcp: current, changed: false })
+            return
+          }
+          await pluginManager.setPluginEnabled(MCP_ENTRY_ID, enabled)
+          jsonResponse(res, 200, { ok: true, mcp: mcpState(), changed: true })
+        } catch (error) {
+          jsonResponse(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) })
+        }
+      },
+    }), 'dsh-ocdup-panel: ' + ROUTE_MCP)
 
     return () => {
       clearInterval(timer)

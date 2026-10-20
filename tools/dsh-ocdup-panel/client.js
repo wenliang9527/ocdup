@@ -1,16 +1,31 @@
 'use strict'
 // ============================================================
-//  dsh-ocdup-panel — Client 半区(浏览器面板,永久 cordis 插件)  v1.3.9
+//  dsh-ocdup-panel — Client 半区(浏览器面板,永久 cordis 插件)  v1.4.0
 //
-//  v1.3.9:轮询链自愈(用户实测:面板视图冻死 3 分钟不刷新,卡片停在旧状态):
-//   * fetch 走 fetchWithTimeout(10s AbortController 超时)——以前一个挂起的
-//     请求会把整条 setTimeout 链永久楔住(inFlightRef 永远 true,之后每一拍都被
-//     `if (inFlightRef.current)` 挡在 fetch 之外,连 visibilitychange 的立即
-//     刷新也救不回来);现在超时 abort 落回 catch/finally,下一拍自动恢复;
-//   * kick():切回本标签(tabVisible false→true)/ 窗口重新聚焦(focus 事件)/
-//     visibilitychange 都立即补一拍——后台这些拍可能整段没收到(挂起/节流),
-//     回到前台不该还看着旧状态;
-//   * fetchWithTimeout 与 POLL_FETCH_TIMEOUT_MS 进 _test(T30 覆盖正常/超时两条路径)。
+//  v1.4.0:对照 ocdup v0.4.30 全项目复查(面板侧 3×P1 + 8×P2,断言 210→234),
+//  Client 半区收 P1-1/P1-2 与 P2-4~9:
+//   * P1-1 默认(流水)视图也有烧录进度条与「烧录中」保护:配对结果单独提
+//     paired memo,flashCall 两种视图都从它取(以前流水视图的 basis 是原始行、
+//     没有 kind=call 项 → lastFlashCall 置 null,进度条不渲染;断开后端 /
+//     切换 target 两处「烧录中」二次确认也不触发);「仍是最新动态」提为纯函数
+//     flashStillLatest(调用视图比对象同一性/流水视图比应答行 seq);
+//   * P1-2 后端芯片段不再显示陈旧「已连接」:启动失败(did not become
+//     ready)/端口无监听(nothing is listening)/TCL-RPC 通道打不开/心跳丢失
+//     (heartbeat lost)统一归一成 stopped;仅当外部实例 still running 才当
+//     running——以前只认成功连上的 SYS 行,循环跳过失败行扫到最早的
+//     started openocd,断线或换错 cfg 后芯片一直显示已连接;
+//   * P2-4 探针段只从非 ERROR 开头的 SYS 行解析(启动失败文案里也嵌
+//     probeNote,deriveLinkInfo 死等解析 → connect 失败后「返回」卡显示一个
+//     像活着的链路);
+//   * P2-5 kick/tick 排新定时器前先 clearTimeout——收尾竞态曾各自多挂一条
+//     无主线程链;
+//   * P2-6 target/backend 两个 POST 加客户端 AbortController 15s——Host 的
+//     10s abort 只在宿主 tools.execute 传 signal 时才收住,按钮曾卡「切换中」;
+//   * P2-7 匹配主题截到 ROW_PAYLOAD_MAX 与行显示同源(命行落在截断尾部时
+//     高亮脱);matcherHit 拆细粒度标签(空 tag 时视图返回 '');
+//   * P2-8 芯片回退标签 chipFallbackLabel:只剩 dev_id 时显示 dev <id>,
+//     不再显示蹩脚的「已连接」;
+//   * P2-9 gap 行服从 port 过滤(port === 'ALL' 才插)。
 //
 //  v1.3.8:失配胶囊从「复制命令」升级为「一键切换」(用户实测:403 板插着、
 //  cfg 钉在 423 钥匙板上 → connect 每次崩 openocd,「连上就自己断开」):
@@ -205,6 +220,7 @@ window.__ModuleLoader__.load({
     const ROUTE_ROTATED = '/api/ocdup-log/rotated'
     const ROUTE_BACKEND = '/api/ocdup-backend'
     const ROUTE_TARGET = '/api/ocdup-target' // v1.3.8:失配胶囊一键切 target_cfg
+    const ROUTE_MCP = '/api/ocdup-log/mcp'   // v1.4.0:MCP 启停开关
     const LS = 'dsh-ocdup-panel/prefs/v1'
 
     const POLL_ACTIVE_MS = 700   // 刚拿到数据:贴近写入端节奏
@@ -267,13 +283,19 @@ window.__ModuleLoader__.load({
     // 「backend restarted」,StopAsync(disconnect)写「backend stopped …」或
     // 「backend was not running …」(本来就没跑,同样是断开态)。
     // 面板不碰硬件,这里只是把「AI 已经做过的事」镜像成一眼状态。
+    // v1.4.0：失败类 SYS 行也归一成断开态——启动失败(did not become ready)、
+    // 端口无监听(nothing is listening)、TCL-RPC 通道打不开、心跳丢失(heartbeat
+    // lost)都是「后端没了」。此前只认成功形态:拔线/换错 cfg 后再调任意硬件工具,
+    // 循环会跳过失败行扫到更早的「started openocd」→ 卡片继续显示陈旧的「已连接」。
+    // 「still running … cannot stop it」(外部实例)是唯一反例:监听确实还活着 → running。
     const backendStateOf = (entries) => {
       for (let i = entries.length - 1; i >= 0; i--) {
         const e = entries[i]
         if (!e || e.kind === 'gap' || e.tool !== 'backend') continue
         const t = e.text || ''
         if (/backend stopped|was not running/i.test(t)) return 'stopped'
-        if (/started openocd|already present|restarted/i.test(t)) return 'running'
+        if (/^ERROR:|did not become ready|nothing is listening|cannot open the .*TCL-RPC|heartbeat lost/i.test(t)) return 'stopped'
+        if (/started openocd|already present|restarted|still running/i.test(t)) return 'running'
       }
       return null
     }
@@ -307,11 +329,24 @@ window.__ModuleLoader__.load({
       return q.toLowerCase()
     }
 
-    const matcherHit = (matcher, e) => (matcher instanceof RegExp
-      ? matcher.test(e.text || '') || matcher.test(e.tool || '') || matcher.test(e.tag || '')
-      : (e.text && e.text.toLowerCase().indexOf(matcher) >= 0)
-        || (e.tool && e.tool.toLowerCase().indexOf(matcher) >= 0)
-        || (e.tag && e.tag.toLowerCase().indexOf(matcher) >= 0))
+    // v1.4.0：text 的匹配主题与行显示同源(截到 ROW_PAYLOAD_MAX)——命中落在截断
+    // 尾部时不再「行保留但高亮丢」;顺带把用户正则的回溯面从整条 4000 字符
+    // (调用视图还拼 cmd+rsp+logs)收窄到同一上限
+    const matchSubject = (e) => {
+      const t = typeof e.text === 'string' ? e.text : ''
+      return t.length > ROW_PAYLOAD_MAX ? t.slice(0, ROW_PAYLOAD_MAX) : t
+    }
+
+    const matcherHit = (matcher, e) => {
+      const subject = matchSubject(e)
+      // 末位 Boolean():e.tag 为空时 `e.tag && …` 会短路成 ''——调用方写
+      // `=== false` 就炸(此前只有真值断言没暴露)。契约收紧为恒布尔。
+      return matcher instanceof RegExp
+        ? matcher.test(subject) || matcher.test(e.tool || '') || matcher.test(e.tag || '')
+        : Boolean((subject.toLowerCase().indexOf(matcher) >= 0)
+          || (e.tool && e.tool.toLowerCase().indexOf(matcher) >= 0)
+          || (e.tag && e.tag.toLowerCase().indexOf(matcher) >= 0))
+    }
 
     // ---- 一次性样式:底纹/hover/选中/关键行/进度流光/窄宽度降级 ----
     // (inline style 写不了 :hover、animation 与容器查询,统一在这里注入)
@@ -350,6 +385,7 @@ window.__ModuleLoader__.load({
           '.op-btn[data-on="1"] { border-color: var(--dsw-alias-label-primary, #222); background: var(--dsw-alias-label-primary, #222); color: var(--dsw-alias-bg-layer-2, #fff); font-weight: 600; }',
           '.op-btn[data-tone="warn"] { border-color: var(--dsw-alias-state-warn-primary, #f59e0b); background: rgba(245,158,11,.10); color: var(--dsw-alias-state-warn-primary, #b45309); }',
           '.op-btn[data-tone="danger"] { border-color: var(--dsw-alias-state-error-primary, #ef4444); background: rgba(239,68,68,.10); color: var(--dsw-alias-state-error-primary, #dc2626); font-weight: 600; }',
+          '.op-btn[data-tone="ok"] { border-color: var(--dsw-alias-state-success-primary, #22c55e); background: rgba(34,197,94,.10); color: var(--dsw-alias-state-success-primary, #15803d); }',
           // 分段控件(流水/调用):选中段墨色填充,压在被选相邻段之上
           '.op-seg { position: relative; white-space: nowrap; border: 1px solid var(--dsw-alias-border-l2, #d9d9d9); background: var(--dsw-alias-bg-layer-3, #fff); color: var(--dsw-alias-label-secondary, #555); transition: background-color .12s ease, border-color .12s ease, color .12s ease; }',
           '.op-seg:first-child { border-radius: 6px 0 0 6px; }',
@@ -615,6 +651,18 @@ window.__ModuleLoader__.load({
       return null
     }
 
+    // v1.4.0：烧录进度「仍是最新动态」判定(纯函数,可单测):调用中恒显示;
+    // 已结束时——调用视图 basis 末项就是该调用对象本身(对象同一性),流水视图
+    // basis 是原始行、末行是该次烧录的应答行(seq 与 rspSeq 相等)。两种视图
+ // 一套语义,默认的流水视图从此也有进度条与「烧录中」二次确认。
+    const flashStillLatest = (call, items) => {
+      if (!call) return false
+      if (call.state === 'open') return true
+      const last = items[items.length - 1]
+      if (!last) return true
+      return last === call || (call.rspSeq != null && last.seq === call.rspSeq)
+    }
+
     // ---- 链路状态解析(v1.2.1):探针 / 芯片 / Flash 布局 ----
     // 数据源全是现有流量,不碰硬件:connect 的 backend SYS(探针自动识别)、
     // identify_chip 的 rsp(CPUID/dev_id/family)、flash_info 的 rsp(bank 行)。
@@ -741,6 +789,12 @@ window.__ModuleLoader__.load({
       return { text: core + (dev ? ' · dev ' + dev : ''), identified: false, head: core, tail: dev ? 'dev ' + dev : '' }
     }
 
+    // v1.4.0：芯片段没有完整读数时的回退标签(纯函数,可单测):只剩 dev_id
+    // (CPUID 读失败但 DEV_ID 读到)时显示 dev id——此前写死 '已连接',看着像
+    // 链路状态而不是芯片读数
+    const chipFallbackLabel = (chip) =>
+      (chip && chip.devId && !isBogusDev(chip.devId)) ? 'dev ' + chip.devId : '已连接'
+
     // 芯片段 tooltip:实测数据为主,cfg 线索(model)明确标注「非实测」
     const chipTip = (c) => {
       if (!c) return ''
@@ -793,7 +847,10 @@ window.__ModuleLoader__.load({
       for (let i = entries.length - 1; i >= 0; i--) {
         const e = entries[i]
         if (e.kind === 'gap') continue
-        if (!out.probe && e.dir === 'sys' && e.tool === 'backend') {
+        if (!out.probe && e.dir === 'sys' && e.tool === 'backend' && !/^ERROR/i.test(e.text || '')) {
+          // v1.4.0：只从非失败行解析探针——启动失败文案里也嵌 probeNote
+          // (BuildFailureMessage 带上次选了哪个接口脚本),照解析会让链路行的
+          // 「探针」段在 connect 失败后显示一个像是活着的链路
           const p = parseProbeNote(e.text)
           if (p) out.probe = p
         }
@@ -1019,9 +1076,18 @@ window.__ModuleLoader__.load({
           setSt('busy')
           setErr('')
           try {
-            const r = await fetch(ROUTE_TARGET, {
-              method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ preset: mismatch.action }),
-            })
+            // v1.4.0：客户端自己的超时——Host 侧 10s AbortController 只在宿主
+            // tools.execute 认 signal 时才收得住;不认时挂起的请求会把按钮
+            // 永久卡在「切换中…」。15s = Host 10s + 余量。
+            const ac = new AbortController()
+            const to = setTimeout(() => ac.abort(), 15000)
+            let r
+            try {
+              r = await fetch(ROUTE_TARGET, {
+                method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ preset: mismatch.action }),
+                signal: ac.signal,
+              })
+            } finally { clearTimeout(to) }
             const j = await r.json()
             if (j && j.ok) {
               setSt('done')
@@ -1292,6 +1358,9 @@ window.__ModuleLoader__.load({
 
         const schedule = (delay) => {
           if (!alive) return
+          // v1.4.0：排新定时器前清掉旧的——kick 与在飞 tick 的收尾竞态曾各自
+          // 排一条,无主的那条fire 后多跑一次冗余轮询(每竞态一次,累积)
+          if (timer !== null) { clearTimeout(timer); timer = null }
           timer = setTimeout(tick, delay)
         }
 
@@ -1406,6 +1475,26 @@ window.__ModuleLoader__.load({
         } catch (e) { /* 忽略 */ }
       }
 
+      // ---- v1.4.0:MCP 启停开关(状态来自 Host view().mcp,随主路由轮询一并刷新) ----
+      const mcp = stats && stats.mcp ? stats.mcp : null
+      const mcpAvailable = !!(mcp && mcp.available)
+      const mcpOn = !!(mcp && mcp.enabled)
+      const toggleMcp = async () => {
+        if (!mcpAvailable) return
+        const next = !mcpOn
+        try {
+          const r = await fetch(ROUTE_MCP, {
+            method: 'POST', cache: 'no-store',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ enabled: next }),
+          })
+          const j = await r.json()
+          if (j && j.ok && j.mcp) {
+            setStats((prev) => (prev ? Object.assign({}, prev, { mcp: j.mcp }) : prev))
+          }
+        } catch (e) { /* 忽略:下一轮轮询会纠正显示 */ }
+      }
+
       // ---- v1.3.6:加载轮转文件 .1 的尾部窗口(空态按钮;Host 同路径也被轮转
       // 自动续接复用)。合并规则与轮询增量一致:seq 断档插 gap 标记、归零整体替换
       const showRotNote = (text) => {
@@ -1456,14 +1545,20 @@ window.__ModuleLoader__.load({
       const matcher = React.useMemo(() => compileMatcher(search, useRegex), [search, useRegex])
 
       // 视图基准:流水 = 原始条目;调用 = 配对后的调用项(call/原样条目/gap)
-      const basis = React.useMemo(() => (view === 'calls' ? pairCalls(entries) : entries), [entries, view])
+      // v1.4.0：配对结果单独提一个 memo——烧录进度与「烧录中」二次确认两种视图
+      // 都要用(此前 flashCall 只从 basis 取,默认的流水视图里没有 kind=call 项,
+      // 进度条与两处确认保护整个不出现)。
+      const paired = React.useMemo(() => pairCalls(entries), [entries])
+      const basis = React.useMemo(() => (view === 'calls' ? paired : entries), [paired, entries, view])
 
       const visible = React.useMemo(() => {
         const out = []
         for (let i = 0; i < basis.length; i++) {
           const it = basis[i]
           if (it.kind === 'gap') {
-            if (dir === 'ALL' && !matcher && tool === 'ALL') out.push(it)
+            // v1.4.0：gap 行也服从 port 过滤——按 host:port 筛的时候不该插一条
+            // 与当前目标无关的「已省略 N 条」
+            if (dir === 'ALL' && !matcher && tool === 'ALL' && port === 'ALL') out.push(it)
             continue
           }
           if (view === 'stream') {
@@ -1476,7 +1571,11 @@ window.__ModuleLoader__.load({
           if (port !== 'ALL' && (it.tag || '') !== port) continue
           if (matcher) {
             if (it.kind === 'call') {
-              const hay = (it.cmd || '') + '\n' + (it.rsp || '') + '\n' + (it.logs || []).join('\n')
+              // v1.4.0：haystack 截到 ROW_PAYLOAD_MAX——与行显示的截断同源,
+              // 命中落在截断尾部时不再「行被保留但高亮丢失」;同时把用户正则的
+              // 回溯面从 cmd+rsp+logs 拼起来的 ~12KB 收到与单行同一上限
+              const hay = ((it.cmd || '') + '\n' + (it.rsp || '') + '\n' + (it.logs || []).join('\n'))
+                .slice(0, ROW_PAYLOAD_MAX)
               const hit = matcher instanceof RegExp ? matcher.test(hay) : hay.toLowerCase().indexOf(matcher) >= 0
               if (!hit) continue
             } else if (!matcherHit(matcher, it)) continue
@@ -1499,10 +1598,11 @@ window.__ModuleLoader__.load({
 
       // 烧录进度:最近一次 flash_write/flash_erase_sector 调用(仅在其仍处于
       // 「最新动态」时显示——进行中,或它之后还没有别的新调用)
-      const flashCall = React.useMemo(() => lastFlashCall(basis), [basis])
+      // v1.4.0：flashCall 从 paired 取(两种视图都有);「仍是最新动态」用纯函数
+      // flashStillLatest 判(调用视图对象同一性 / 流水视图应答行 seq 相等)
+      const flashCall = React.useMemo(() => lastFlashCall(paired), [paired])
       const flashProg = flashCall ? flashProgressOfCall(flashCall) : null
-      const flashShow = !!(flashCall && (flashCall.state === 'open'
-        || basis[basis.length - 1] === flashCall))
+      const flashShow = !!flashStillLatest(flashCall, basis)
       const errCount = (stats && stats.err) || 0
 
       // v1.3.2:统一控件皮相(尺寸/圆角/focus 环走 CSS 类,行内只留布局)。
@@ -1703,6 +1803,13 @@ window.__ModuleLoader__.load({
           btn(follow && autoSuspended ? '已挂起' : '跟随', () => setFollow(!follow), effectiveFollow,
             follow && autoSuspended ? '翻看历史中已自动挂起,回到底部或再点恢复' : '自动滚动到最新',
             follow && autoSuspended ? 'warn' : '', h(TailGlyph)),
+          btn(mcpOn ? 'MCP 开' : 'MCP 关', toggleMcp, mcpOn,
+            mcpAvailable
+              ? (mcpOn
+                ? '停用 ocdup MCP:新会话不再注册 mcp__ocdup__* 工具(省 token);当前会话工具列表不变'
+                : '启用 ocdup MCP:新会话才会注册 mcp__ocdup__* 工具;热生效,无需重启 DSH')
+              : 'MCP 开关不可用(pluginManager 服务缺失)',
+            mcpAvailable ? (mcpOn ? 'ok' : 'warn') : ''),
           portSelect,
         ),
         h('div', { style: { ...toolbarBar, flexWrap: 'wrap', rowGap: 6 } },
@@ -1827,9 +1934,16 @@ window.__ModuleLoader__.load({
       const backendAct = async (action) => {
         setBackendBusy(true)
         try {
-          const r = await fetch(ROUTE_BACKEND, {
-            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action }),
-          })
+          // v1.4.0：同 SwitchTargetBtn——客户端超时兜底(Host 的 abort 不一定被认)
+          const ac = new AbortController()
+          const to = setTimeout(() => ac.abort(), 15000)
+          let r
+          try {
+            r = await fetch(ROUTE_BACKEND, {
+              method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action }),
+              signal: ac.signal,
+            })
+          } finally { clearTimeout(to) }
           const j = await r.json()
           const ok = !!(j && j.ok)
           const text = ok ? (j.text || '') : ('失败:' + ((j && j.error) || ('HTTP ' + r.status)))
@@ -1933,7 +2047,7 @@ window.__ModuleLoader__.load({
                     style: { fontWeight: 400, color: TONE_WARN },
                   }, '型号未识别'),
                 ]
-                : '已连接',
+                : chipFallbackLabel(link.chip),
               chipTip(link.chip),
               // 型号未识别时图标转警示色:窄面板看不到文字也能一眼看出「这片只认到内核」
               () => { setView('calls'); setTool('identify_chip') }, true,
@@ -1971,9 +2085,11 @@ window.__ModuleLoader__.load({
           },
             h('div', { style: { opacity: 0.45 } }, h(ChipGlyph, { size: 30 })),
             h('div', { style: { fontSize: 13, color: 'var(--dsw-alias-label-secondary, #666)' } },
-              stats && stats.exists
-                ? '日志已连接,等待 AI 调用 ocdup 工具…'
-                : '尚未发现 ' + ((stats && stats.logPath) || 'mcp-traffic.jsonl') + ' — 首次 AI 硬件操作后自动出现'),
+              mcpAvailable && !mcpOn
+                ? 'ocdup MCP 已停用 — 点工具条「MCP 开」启用;启用后新会话才会注册 mcp__ocdup__* 工具'
+                : stats && stats.exists
+                  ? '日志已连接,等待 AI 调用 ocdup 工具…'
+                  : '尚未发现 ' + ((stats && stats.logPath) || 'mcp-traffic.jsonl') + ' — 首次 AI 硬件操作后自动出现'),
             stats && stats.exists
               ? h('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-tertiary, #999)' } },
                   '让 Agent 调 mcp__ocdup__connect 试试(连接探针后就有流量)')
@@ -2233,9 +2349,9 @@ window.__ModuleLoader__.load({
       _test: {
         highlight, highlightRe, compileMatcher, matcherHit, hueOf, fmtDt, sameStats,
         parseFlashProgress, flashProgressOf, flashProgressOfCall, pairCalls, callDtMs, isSessionSep,
-        sessionRuns, applyCollapse, toolOptions, rowMark, lastFlashCall, isFlashTool,
+        sessionRuns, applyCollapse, toolOptions, rowMark, lastFlashCall, flashStillLatest, isFlashTool,
         fmtSize, parseProbeNote, parseChipIdentity, parseFlashInfo, deriveLinkInfo, baseName,
-        friendlyProbeName, probeLabel, isBogusDev, chipLabel, chipTip, fmtKb, coreShort,
+        friendlyProbeName, probeLabel, isBogusDev, chipLabel, chipFallbackLabel, chipTip, fmtKb, coreShort,
         parseTargetMismatch, dirLegend, counterLabel, backendStateOf, backendVerdict,
         fmtStamp, fetchWithTimeout, POLL_FETCH_TIMEOUT_MS,
       },
