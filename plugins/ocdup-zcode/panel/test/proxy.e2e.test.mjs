@@ -100,9 +100,10 @@ test("tools/list：白名单 + panel 锚点，转发工具 visibility=['app']", 
     const panel = tools.find((t) => t.name === "panel");
     assert.equal(panel._meta?.ui?.resourceUri, RESOURCE_URI);
     assert.equal(panel._meta?.ui?.visibility, undefined); // 模型可见
-    // 侧栏直开：surface 必须指向插件声明的 surface id，displayMode 必须是 fullscreen
+    // 侧栏直开：surface 指向插件声明的 surface id；显示模式走 openai/ui（宿主只认这个位置）
     assert.equal(panel._meta?.ui?.surface, "ocdup-panel");
-    assert.equal(panel._meta?.ui?.preferredDisplayMode, "fullscreen");
+    assert.equal(panel._meta?.["openai/ui"]?.preferredModelDisplayMode, "fullscreen");
+    assert.equal(panel._meta?.ui?.preferredDisplayMode, undefined, "写在这里宿主不读，别再放回去");
     // v0.4.2 新增的三个转发工具
     for (const n of ["ocdup_disconnect", "ocdup_set_target", "ocdup_verify_image"]) {
       assert.ok(names.includes(n), `missing ${n}`);

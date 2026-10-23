@@ -265,9 +265,12 @@ export function createPanelProxy(upstream, htmlProvider = loadPanelHtml) {
   });
 
   // ── 打开面板的锚点工具：宿主看到 _meta.ui.resourceUri 就会渲染面板 ──
-  // surface = plugin.json 里声明的 surface id（宿主据此把面板做成单例实例，重复打开复用）；
-  // preferredDisplayMode = "fullscreen" 让宿主直接开进侧栏（宿主内部 onOpenSidePane），
-  // 而不是先渲染成对话内联卡片再让用户点展开。
+  // surface = plugin.json 里声明的 surface id（宿主据此把面板做成单例实例，重复打开复用）。
+  //
+  // 显示模式必须写在 _meta["openai/ui"].preferredModelDisplayMode：
+  // 宿主的 presentation 解析（bOr）只从 openai/ui 读 preferredModelDisplayMode，
+  // 再映射成内部的 preferredDisplayMode；写进 _meta.ui.preferredDisplayMode 会被 schema
+  // 接受但无人读取 —— 面板就会退回对话内联卡片，不会开侧栏。
   registerAppTool(
     server,
     PANEL_TOOL,
@@ -275,7 +278,10 @@ export function createPanelProxy(upstream, htmlProvider = loadPanelHtml) {
       title: "Ocdup 调试面板",
       description: "打开 Ocdup 调试面板：连接状态、Flash 扇区图、寄存器查看器、操作时间线。只读打开，不做任何操作。",
       inputSchema: z.object({}),
-      _meta: { ui: { resourceUri: RESOURCE_URI, surface: SURFACE_ID, preferredDisplayMode: "fullscreen" } },
+      _meta: {
+        ui: { resourceUri: RESOURCE_URI, surface: SURFACE_ID },
+        "openai/ui": { preferredModelDisplayMode: "fullscreen" },
+      },
     },
     async () => ({
       content: [{ type: "text", text: "Ocdup 调试面板已打开（侧栏）。面板内的操作会经代理转发到用户级 ocdup 服务器。" }],
