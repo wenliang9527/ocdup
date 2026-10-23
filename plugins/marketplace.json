@@ -2,15 +2,15 @@
   "name": "ocdup-local",
   "owner": { "name": "温良" },
   "metadata": {
-    "description": "Ocdup 本地插件市场：把 Ocdup 烧录工具链的知识层（skill + 命令）打包为 ZCode 插件"
+    "description": "Ocdup 本地插件市场：把 Ocdup 烧录工具链的知识层（skill + 命令 + MCP App 面板）打包为 ZCode 插件"
   },
   "plugins": [
     {
       "name": "ocdup-zcode",
       "source": "./ocdup-zcode",
-      "description": "Ocdup 烧录工具链知识层：ocdup-flash skill + /ocdup-status、/ocdup-flash 命令。MCP server 沿用用户级配置，插件不重复声明。",
+      "description": "Ocdup 烧录工具链：ocdup-flash skill + /ocdup-status、/ocdup-flash 命令 + MCP App 调试面板（连接状态/Flash/寄存器/时间线，经插件内代理转发用户级 ocdup server）。",
       "category": "developer-tools",
-      "version": "0.2.8"
+      "version": "0.4.5"
     }
   ]
 }

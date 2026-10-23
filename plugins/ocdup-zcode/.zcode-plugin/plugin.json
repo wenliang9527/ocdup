@@ -1,6 +1,27 @@
 {
   "name": "ocdup-zcode",
-  "version": "0.2.7",
-  "description": "Ocdup 烧录工具链知识层：ocdup-flash skill（烧录流程/权限闸纪律/探针与端口纪律）+ /ocdup-status、/ocdup-flash 快捷命令。MCP server 不随插件分发——沿用用户级已配置的 ocdup server，避免双进程与工具重复。",
-  "keywords": ["flash", "ocdup", "mcp", "embedded", "openocd", "hardware"]
+  "version": "0.4.5",
+  "description": "Ocdup 烧录工具链：ocdup-flash skill + /ocdup-status、/ocdup-flash 命令 + MCP App 调试面板（连接状态/Flash 扇区图/寄存器查看器/操作时间线）。面板经插件内代理服务器转发到用户级 ocdup server（mcp.servers.ocdup），不重复拉起 OpenOCD 门面。",
+  "keywords": ["flash", "ocdup", "mcp", "mcp-app", "embedded", "openocd", "hardware"],
+  "mcpServers": {
+    "ocdup-panel": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${ZCODE_PLUGIN_ROOT}/panel/server/server.mjs"],
+      "env": {
+        "NODE_ENV": "production"
+      }
+    }
+  },
+  "ui": {
+    "surfaces": [
+      {
+        "id": "ocdup-panel",
+        "title": { "zh-CN": "Ocdup 调试面板", "en": "Ocdup Debug Panel" },
+        "server": "ocdup-panel",
+        "resourceUri": "ui://ocdup-zcode/panel.html",
+        "availability": "session"
+      }
+    ]
+  }
 }

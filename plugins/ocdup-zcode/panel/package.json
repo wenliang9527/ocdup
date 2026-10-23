@@ -1,0 +1,26 @@
+{
+  "name": "ocdup-panel",
+  "version": "0.1.0",
+  "description": "Ocdup 调试面板（MCP App）：连接状态、Flash 扇区图、寄存器查看器、操作时间线",
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "start": "node server/server.mjs",
+    "test": "node --test test/parsers.test.mjs test/proxy.e2e.test.mjs test/ui.smoke.test.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/client": "^2.3.1",
+    "@modelcontextprotocol/ext-apps": "^2.0.3",
+    "@modelcontextprotocol/server": "^2.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  },
+  "private": true
+}
