@@ -53,9 +53,26 @@ npm run build      # esbuild 内联为单文件 dist/panel.html（校验 ≤4 Mi
 
 1. ZCode → Settings → Plugin Management → Discover → `+` → 添加本地目录
    `<Ocdup 仓库目录>\plugins`（含 `marketplace.json`，即本仓库的 `plugins/` 目录）
-2. 安装并启用 `ocdup-zcode`（会话自动重载；实测目录市场对 bump 版本后的
-   Refresh 不一定生效，卸载重装最可靠）
+2. 安装并启用 `ocdup-zcode`
 3. 验证：新会话里输入 `/ocdup-status`；或让 AI「打开 Ocdup 调试面板」→ 调 `panel` 工具
+
+## 更新（不需要卸载重装）
+
+目录型市场有两层副本，**顺序不能反**：先刷新市场（把仓库内容重新拷进
+`marketplaces/<market>/`），再更新插件（从市场存储拷进 `cache/<market>/<plugin>/<version>/`）。
+只点「更新插件」而不刷新市场，拿到的仍是上一次的旧副本。
+
+```powershell
+# CLI（推荐，等价于界面里的「刷新市场」+「更新插件」）
+node <ZCode安装目录>/resources/glm/zcode.cjs plugins marketplace update ocdup-local
+node <ZCode安装目录>/resources/glm/zcode.cjs plugins update ocdup-zcode
+```
+
+界面等价路径：Plugin Management → 市场右侧 ↻ 刷新 → 插件卡片点「更新」。
+之后**重启 ZCode** 生效（更新提示会写明 "Restart zcode to apply"）。
+
+维护纪律：改完面板/知识层 → `npm test` + `npm run build` → 同步 bump
+`plugin.json` 与 `marketplace.json` 的版本号 → 上面两条命令 → 重启。
 
 ## 面板手动验证清单（真机 / 无板分两档）
 
