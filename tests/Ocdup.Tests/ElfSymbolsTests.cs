@@ -1,4 +1,6 @@
 using Ocdup.Backend;
+using Ocdup.Config;
+using Ocdup.Tools;
 
 namespace Ocdup.Tests;
 
@@ -120,5 +122,60 @@ public sealed class ElfSymbolsTests
         BitConverter.GetBytes(1u).CopyTo(elf, shoff + 40 + 4);
         var ex = Assert.Throws<ElfParseException>(() => ElfSymbols.ParseObjects(elf));
         Assert.Contains("symtab", ex.Message);
+    }
+
+    // ── v0.4.30：SymbolTools.LoadSymbols 的解析缓存（read/write_variable 的热路径）──
+
+    [Fact]
+    public void LoadSymbols_CachesByPathAndMtime_SameInstanceUntilTheFileChanges()
+    {
+        var elfPath = Path.Combine(Path.GetTempPath(), "ocdup-elf-cache-" + Guid.NewGuid().ToString("n") + ".elf");
+        try
+        {
+            File.WriteAllBytes(elfPath, BuildElf(("gCounter", 0x20000004, 4, 1)));
+            var cfg = OcdConfig.LoadFrom(Path.Combine(Path.GetTempPath(), "ocdup-no-such-config-" + Guid.NewGuid().ToString("n") + ".json"));
+
+            var first = SymbolTools.LoadSymbols(cfg, elfPath);
+            var second = SymbolTools.LoadSymbols(cfg, elfPath);
+
+            Assert.Same(first, second); // 同一份缓存：重复调用不再全量解析
+
+            // 重新「构建」：mtime 变化 → 缓存失效、重新解析（新实例）
+            File.SetLastWriteTimeUtc(elfPath, DateTime.UtcNow.AddMinutes(5));
+            var third = SymbolTools.LoadSymbols(cfg, elfPath);
+
+            Assert.NotSame(first, third);
+            Assert.Equal("gCounter", third[0].Name);
+        }
+        finally
+        {
+            try { File.Delete(elfPath); } catch { /* 清理失败不影响结论 */ }
+        }
+    }
+
+    [Fact]
+    public void LoadSymbols_RebuiltFileWithSameMtimeButDifferentLength_Reparses()
+    {
+        // 长度进缓存键：mtime 被钉死成同一个值，只有长度变——验证缓存键不只是 mtime。
+        var elfPath = Path.Combine(Path.GetTempPath(), "ocdup-elf-cache-len-" + Guid.NewGuid().ToString("n") + ".elf");
+        try
+        {
+            File.WriteAllBytes(elfPath, BuildElf(("gCounter", 0x20000004, 4, 1)));
+            var pinned = new DateTime(2026, 10, 13, 12, 0, 0, DateTimeKind.Utc);
+            File.SetLastWriteTimeUtc(elfPath, pinned);
+            var cfg = OcdConfig.LoadFrom(Path.Combine(Path.GetTempPath(), "ocdup-no-such-config-" + Guid.NewGuid().ToString("n") + ".json"));
+
+            var first = SymbolTools.LoadSymbols(cfg, elfPath);
+            File.WriteAllBytes(elfPath, BuildElf(("gCounter", 0x20000004, 4, 1), ("flag", 0x20000010, 1, 1)));
+            File.SetLastWriteTimeUtc(elfPath, pinned); // 同 mtime、不同长度
+            var second = SymbolTools.LoadSymbols(cfg, elfPath);
+
+            Assert.NotSame(first, second);
+            Assert.Equal(2, second.Count);
+        }
+        finally
+        {
+            try { File.Delete(elfPath); } catch { /* 清理失败不影响结论 */ }
+        }
     }
 }

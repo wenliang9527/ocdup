@@ -123,4 +123,16 @@ public sealed class WatchCliTests
         var line = WatchCli.RenderPretty(new DateTime(2026, 10, 6, 10, 0, 1, 123), vars, [0x42, 1]);
         Assert.Equal("10:00:01.123  gCounter=0x00000042 (66)  flag    =0x01 (1)", line);
     }
+
+    // ── v0.4.30：csv 形态的人读信息走 stderr（stdout 只许表头+数据行）──
+
+    [Theory]
+    [InlineData("csv", true)]
+    [InlineData("CSV", true)]   // 大小写不敏感
+    [InlineData("pretty", false)]
+    [InlineData("", false)]
+    public void NotesToStderr_OnlyForCsv(string format, bool expected)
+    {
+        Assert.Equal(expected, WatchCli.NotesToStderr(format));
+    }
 }

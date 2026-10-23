@@ -202,26 +202,31 @@ public static class MemoryTools
             return $"ERROR: the backend produced no file at '{resolved}'. " +
                    $"Backend output: {(output.Length == 0 ? "(none)" : output)}";
 
+        // v0.4.30：sha256 与前 64 字节预览单趟读完（原先哈希一遍、预览又开一遍文件）。
+        long actual;
         string sha16;
+        var preview = new byte[64];
+        var previewLen = 0;
         using (var stream = File.OpenRead(resolved))
         using (var sha = SHA256.Create())
         {
-            sha16 = Convert.ToHexString(sha.ComputeHash(stream), 0, 8);
-        }
-
-        long actual = new FileInfo(resolved).Length;
-        var preview = new byte[Math.Min(64, actual)];
-        using (var stream = File.OpenRead(resolved))
-        {
-            var read = 0;
-            while (read < preview.Length)
+            var buffer = new byte[64 * 1024];
+            int read;
+            while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
             {
-                var n = stream.Read(preview, read, preview.Length - read);
-                if (n == 0) break;
-                read += n;
+                sha.TransformBlock(buffer, 0, read, buffer, 0);
+                var take = Math.Min(read, preview.Length - previewLen);
+                if (take > 0)
+                {
+                    Buffer.BlockCopy(buffer, 0, preview, previewLen, take);
+                    previewLen += take;
+                }
             }
-            if (read < preview.Length) preview = preview[..read];
+            sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+            sha16 = Convert.ToHexString(sha.Hash!, 0, 8);
+            actual = stream.Length;
         }
+        if (previewLen < preview.Length) preview = preview[..previewLen];
 
         var report = FormatDumpReport(start, length, resolved, actual, sha16, preview);
         return LooksLikeError(output)

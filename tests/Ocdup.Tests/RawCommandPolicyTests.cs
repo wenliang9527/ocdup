@@ -159,6 +159,36 @@ public sealed class RawCommandPolicyTests : IDisposable
         Assert.Contains("allow_exec", blocked);
     }
 
+    // ── v0.4.30：断点/观察点同归执行控制（此前是 Passthrough 漏洞）──
+
+    [Theory]
+    [InlineData("bp 0x08000100")]
+    [InlineData("bp 0x08000100 4 hw")]
+    [InlineData("rbp 0x08000100")]
+    [InlineData("rbp all")]
+    [InlineData("wp 0x20000000 4 w")]
+    [InlineData("rwp 0x20000000")]
+    [InlineData("rwp all")]
+    public void BreakpointAndWatchpointCommands_FollowAllowExecGate(string command)
+    {
+        // 放行时与 reset/halt 同态：allow_exec 开了就过（raw 通道本身另有过 allow_raw_command 闸）
+        Assert.Null(RawCommandPolicy.Evaluate(Load("""{ "allow_raw_command": true }"""), command));
+
+        var blocked = RawCommandPolicy.Evaluate(Load("""{ "allow_exec": false }"""), command);
+
+        Assert.NotNull(blocked);
+        Assert.Contains("allow_exec", blocked);
+    }
+
+    [Fact]
+    public void SmuggledBreakpoint_AfterHarmlessCommand_IsBlocked()
+    {
+        var blocked = RawCommandPolicy.Evaluate(Load("""{ "allow_exec": false }"""), "mdb 0x0 1; bp 0x08000100");
+
+        Assert.NotNull(blocked);
+        Assert.Contains("allow_exec", blocked);
+    }
+
     // ── PC 侧落盘：dump_image 重定向 dump_memory（保留白名单/上限的意义）──
 
     [Fact]

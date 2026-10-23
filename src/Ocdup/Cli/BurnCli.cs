@@ -46,13 +46,15 @@ public static class BurnCli
         return MapExitCode(outcome);
     }
 
-    /// <summary>退出码映射（纯函数，可单测）：Ok 与否不直接决定成败——verdict 才是。</summary>
+    /// <summary>退出码映射（纯函数，可单测）：Ok 与否不直接决定成败——verdict 才是。
+    /// v0.4.30：ProgrammedVerifyInconclusive（CRC 算法没跑起来）归 exit 1——没验成就不是通过，
+    /// 与 verify CLI 的 INCONCLUSIVE 同族；报告措辞已说明「这不表示固件不匹配」。</summary>
     internal static int MapExitCode(FlashTools.CoreOutcome outcome) =>
         outcome.Ok
             ? outcome.Verdict is FlashTools.FlashWriteVerdict.ProgrammedVerified
                 or FlashTools.FlashWriteVerdict.Unverified
                 ? 0
-                : 1 // ProgrammedButVerifyFailed / WriteFailed：流程跑完但固件没站住
+                : 1 // ProgrammedButVerifyFailed / WriteFailed / ProgrammedVerifyInconclusive：流程跑完但固件没站住/没验成
             : outcome.Failure switch
             {
                 FlashTools.CoreFailure.Usage => 2,
@@ -76,7 +78,9 @@ public static class BurnCli
 
         exit codes:
           0  programmed and verified (or explicitly --no-verify)
-          1  programmed but read-back MISMATCH, or the write step failed
+          1  programmed but read-back MISMATCH, the write step failed, or the
+             read-back was INCONCLUSIVE (backend CRC algorithm could not run -
+             not a mismatch; halt the target and retry)
           2  usage / config error / permission gate (BLOCKED)
           3  backend or control-channel failure
 

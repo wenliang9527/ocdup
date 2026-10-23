@@ -98,6 +98,7 @@ public sealed class BurnCliTests
     [Theory]
     [InlineData("ProgrammedButVerifyFailed")]
     [InlineData("WriteFailed")]
+    [InlineData("ProgrammedVerifyInconclusive")] // v0.4.30：CRC 算法没跑起来 = 没验成，不是通过
     public void ExitCode_VerdictFailures_AreOne(string verdictName)
     {
         // 用字符串承载枚举：public 测试签名不能暴露 internal 枚举（CS0051）

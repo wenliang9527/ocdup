@@ -165,6 +165,29 @@ const ok = (cond, label, extra) => {
     r = await call('/api/ocdup-log', { method: 'GET', url: '/?since=0' })
     ok(r.entries.length === 2 && r.entries[1].dir === 'log', 'T7b log 方向归一化为小写', r.entries.map((e) => e.dir))
     ok(r.stats.log === 1 && r.stats.cmd === 1, 'T7b log 计数入 stats', { log: r.stats.log, cmd: r.stats.cmd })
+
+    // T7c v1.4.0：字面量 null 行 + 非字符串字段。JSON.parse('null') 也「成功」,
+    // 此前 rec.direction 对 null 取属性抛异常,异常逃出 consume 时 offset 已推进,
+    // 该批后续行永远不再被读(静默丢数据);text/tool 非字符串原样透传会让客户端
+    // e.text.length / e.tool.toLowerCase() 直接崩。
+    await call('/api/ocdup-log/clear', { method: 'POST', url: '/' })
+    await sleep(500)
+    fs.writeFileSync(logFile, [
+      'null',
+      line(300, 'cmd', 'after-null-1'),
+      JSON.stringify({ id: 301, tool: { nested: true }, timestamp: '2026-10-01T10:00:00.000+08:00', direction: 'rsp', text: 12345, portTag: '' }),
+      line(302, 'rsp', 'after-null-2'),
+    ].join('\n') + '\n')
+    await sleep(600)
+    r = await call('/api/ocdup-log', { method: 'GET', url: '/?since=0' })
+    const t7cTexts = r.entries.map((e) => e.text)
+    ok(r.entries.length === 3 && t7cTexts.indexOf('after-null-1') >= 0 && t7cTexts.indexOf('after-null-2') >= 0,
+      'T7c null 行按坏行计,不吞后续行(曾因逃逸异常静默丢整批)', t7cTexts)
+    ok(r.stats.badLines === 1, 'T7c null 行计入 badLines', r.stats.badLines)
+    const t7cObj = r.entries.find((e) => e.id === 301)
+    ok(t7cObj && t7cObj.text === '12345' && typeof t7cObj.text === 'string'
+      && typeof t7cObj.tool === 'string' && t7cObj.tool.indexOf('nested') >= 0,
+      'T7c 非字符串 text/tool 入口归一成字符串(客户端不再崩)', t7cObj && { text: t7cObj.text, tool: t7cObj.tool })
   }
 
   if (mode === 'window') {
@@ -327,6 +350,31 @@ const ok = (cond, label, extra) => {
     ok(rRot.ok && rRot.note === 'loaded' && rRot.entries.length === 3,
       'T12 清空后同一份 .1 仍可再加载(rotLoaded 已重置)', { note: rRot.note, n: rRot.entries.length })
 
+    // T12c v1.4.0(放最后:会改写 .1 内容):轮转后新文件一拍内长过旧 offset——
+    // 只靠「收缩」判定会两侧丢行:不救 .1 尾部(白屏),又把新文件的前 offset
+    // 字节整段跳过(头部丢失)。修法:判定补「.1 换了 + 活动文件被重写过」
+    // (mtime 信号;NTFS 隧道效应下 birthtime 不可靠,实测过)→ 救 .1 + 从头读。
+    await call('/api/ocdup-log/clear', { method: 'POST', url: '/' })
+    await sleep(500)
+    const preLines = []
+    for (let i = 1; i <= 5; i++) preLines.push(line(600 + i, 'cmd', 'pre-' + i))
+    fs.writeFileSync(logFile, preLines.join('\n') + '\n')
+    await sleep(600)
+    let rT12 = await call('/api/ocdup-log', { method: 'GET', url: '/?since=0' })
+    const oldOffset = fs.statSync(logFile).size
+    ok(rT12.entries.length === 5 && oldOffset > 100, 'T12c 前置:轮转前 5 条在环里', { n: rT12.entries.length, oldOffset })
+    // 同一拍内:整体移成 .1 + 新文件首行就写到远超旧 offset(旧代码从这里开始丢行)
+    fs.renameSync(logFile, logFile + '.1')
+    const bigHead = 'x'.repeat(oldOffset + 500)
+    fs.writeFileSync(logFile, line(700, 'cmd', bigHead) + '\n' + line(701, 'rsp', 'post-big') + '\n')
+    await sleep(600)
+    rT12 = await call('/api/ocdup-log', { method: 'GET', url: '/?since=0' })
+    const tT = rT12.entries.map((e) => e.text)
+    ok(tT.indexOf('pre-1') >= 0 && tT.indexOf('pre-5') >= 0,
+      'T12c 新文件变大也救 .1 尾部(不白屏)', tT.slice(0, 8))
+    ok(tT.indexOf(bigHead) >= 0 && tT.indexOf('post-big') >= 0,
+      'T12c 新文件头部不跳(从 offset 中段起读曾把首行整段吞掉)', { hasBig: tT.indexOf(bigHead) >= 0, hasPost: tT.indexOf('post-big') >= 0 })
+
     // T12b v1.3.8 POST /api/ocdup-target(失配胶囊一键切换):经 ctx.tools.execute
     // 调 mcp__ocdup__set_target——MCP 工具在 Host 侧就是普通工具,v1.3.4 的后端
     // 路由同款路径。fresh 实例 + tools 桩,不碰真实探针。
@@ -441,6 +489,15 @@ const ok = (cond, label, extra) => {
     ok(hitRe === true, 'T14 matcherHit 正则命中 text 字段', hitRe)
     const hitTool = mod._test.matcherHit(cm('flash_write', false), { text: 'program x', tool: 'flash_write', tag: '' })
     ok(hitTool === true, 'T14 matcherHit 子串命中 tool 字段', hitTool)
+    // v1.4.0：text 的匹配主题与行显示同源(截到 ROW_PAYLOAD_MAX)——命中落在截断
+    // 尾部时不再「行保留但高亮丢」;顺带把用户正则的回溯面从整条 4000 字符收窄
+    const longText = 'a'.repeat(4000) + 'NEEDLE' + 'b'.repeat(300)
+    ok(mod._test.matcherHit(cm('NEEDLE', false), { text: longText, tool: 't', tag: '' }) === false,
+      'T14 命中落在显示截断尾部之外 → 不命中(与行显示一致)', 'len=' + longText.length)
+    ok(mod._test.matcherHit(cm('NEEDLE', false), { text: 'NEEDLE at head', tool: 't', tag: '' }) === true,
+      'T14 截断窗口内的命中照常')
+    const hitNonString = mod._test.matcherHit(cm('x', false), { text: 12345, tool: 't', tag: '' })
+    ok(hitNonString === false, 'T14 非字符串 text 不炸(入口已归一,这里双保险)', hitNonString)
     const hr = mod._test.highlightRe('ab', /x*/)
     ok(Array.isArray(hr) && hr.length >= 2, 'T14 正则高亮零长匹配不死循环', hr.map((x) => (typeof x === 'string' ? x : x.type)))
     const hr2 = mod._test.highlightRe('a1b2', /\d/)
@@ -539,6 +596,20 @@ const ok = (cond, label, extra) => {
       && mod._test.lastFlashCall([{ kind: 'call', tool: 'read_memory' }]) === null
       && mod._test.lastFlashCall([]) === null,
       'T17 最近一次烧录类调用(非烧录流 → null)', mod._test.lastFlashCall(callsFlow).tool)
+
+    // T17b v1.4.0 flashStillLatest:烧录进度「仍是最新动态」两种视图一套语义
+    const fsl = mod._test.flashStillLatest
+    const openCall = { kind: 'call', tool: 'flash_write', state: 'open', seq: 1 }
+    const doneCall = { kind: 'call', tool: 'flash_write', state: 'ok', seq: 1, rspSeq: 2 }
+    const staleCall = { kind: 'call', tool: 'flash_write', state: 'ok', seq: 1, rspSeq: 2, cmd: 'a', rsp: '', logs: [] }
+    ok(fsl(null, []) === false, 'T17b 无烧录调用 → 不显示', fsl(null, []))
+    ok(fsl(openCall, [openCall]) === true, 'T17b 进行中的烧录恒显示(两种视图)')
+    ok(fsl(doneCall, [doneCall]) === true,
+      'T17b 调用视图:末项就是该调用(对象同一性)→ 完成后仍显示')
+    ok(fsl(doneCall, [mk(2, 'rsp', 'flash_write', 'b')]) === true,
+      'T17b 流水视图:末行是该次烧录的应答行(seq 相等)→ 默认视图也有进度条')
+    ok(fsl(staleCall, [mk(2, 'rsp', 'flash_write', 'b'), mk(3, 'cmd', 'read_memory', 'c')]) === false,
+      'T17b 之后来了新调用 → 不再当最新动态')
 
     // T18 关键行标记(驱动行高亮)
     const rm = mod._test.rowMark
@@ -640,6 +711,28 @@ const ok = (cond, label, extra) => {
     ok(liPinned.chip && liPinned.chip.core === 'Cortex-M0+ r0p1' && liPinned.chip.devId === '0xbc0' && liPinned.flash === null,
       'T19 connect 自动识别的芯片镜像(tool=connect 的 rsp 也解析)', liPinned.chip)
     ok(liPinned.chip.family.indexOf('unknown') === 0, 'T19 family=unknown 原样带出(ocd.json 未配 chip_id_map)')
+
+    // v1.4.0：启动失败文案里也嵌 probeNote(BuildFailureMessage 带上次选了哪个
+    // 接口脚本)——照解析会让链路行「探针」段在 connect 失败后显示一个像活着的链路
+    const liFail = mod._test.deriveLinkInfo([
+      mkLink(1, 'sys', 'backend', 'ERROR: D:/atopenocd/bin/openocd.exe did not become ready: unable to find a matching CMSIS-DAP device\ninterface: interface/cmsis-dap.cfg\n--- recent openocd output ---\nError: unable to find a matching CMSIS-DAP device'),
+    ])
+    ok(liFail.probe === null,
+      'T19b 失败 SYS 行不解析探针(链路行不假装活着)', liFail.probe)
+    const liFailAfterOk = mod._test.deriveLinkInfo([
+      mkLink(1, 'sys', 'backend', 'started openocd (pid 1) (probe auto-detected: AT-Link -> interface/atlink_dap_v2.cfg (evidence: 0x0B6E:0001))'),
+      mkLink(2, 'sys', 'backend', 'ERROR: openocd did not become ready: the command port did not come up\nprobe auto-detected: AT-Link -> interface/atlink_dap_v2.cfg (evidence: 0x0B6E:0001)'),
+    ])
+    ok(liFailAfterOk.probe && liFailAfterOk.probe.kind === 'AT-Link',
+      'T19b 失败行被跳过,探针段保留上一次成功识别的结果', liFailAfterOk.probe)
+
+    // v1.4.0：芯片段回退标签——只剩 dev_id(CPUID 读失败)时显示 dev id,不再写死「已连接」
+    const cfl = mod._test.chipFallbackLabel
+    ok(cfl({ devId: '0xbc0', core: '' }) === 'dev 0xbc0'
+      && cfl({ devId: '0x0', core: '' }) === '已连接'
+      && cfl({ devId: '0x000', core: '' }) === '已连接'
+      && cfl(null) === '已连接' && cfl({ core: '' }) === '已连接',
+      'T19b 芯片卡回退:有效 dev_id → dev id;假 dev/空 → 已连接', [cfl({ devId: '0xbc0' }), cfl(null)])
 
     // v1.2.3:探针硬件名 / 芯片型号 / Flash KB / 无效 dev 隐藏
     const fpn = mod._test.friendlyProbeName
@@ -786,6 +879,21 @@ const ok = (cond, label, extra) => {
       'T23 后端状态:重新 connect 后又回 running')
     ok(bs2([]) === null && bs2([mkBackend(1, 'unrelated chatter')]) === null,
       'T23 后端状态:没有 backend 行 → null(界面显示「未知」)')
+
+    // v1.4.0:失败类 SYS 行也是断开态——此前只认成功形态,拔线/换错 cfg 后再调
+    // 硬件工具,循环会跳过失败行扫到更早的「started openocd」→ 卡片显示陈旧「已连接」
+    ok(bs2([mkBackend(1, 'started openocd (pid 1)'), mkBackend(2, 'ERROR: D:/atopenocd/bin/openocd.exe did not become ready: unable to find a matching CMSIS-DAP device')]) === 'stopped',
+      'T23b 启动失败(did not become ready)→ stopped(不再显示陈旧已连接)')
+    ok(bs2([mkBackend(1, 'started openocd'), mkBackend(2, 'ERROR: nothing is listening on 127.0.0.1:6666. Call connect to start the backend')]) === 'stopped',
+      'T23b 端口无监听(nothing is listening)→ stopped')
+    ok(bs2([mkBackend(1, 'started openocd'), mkBackend(2, 'ERROR: cannot open the OpenOCD TCL-RPC channel on 127.0.0.1:6666: connection refused')]) === 'stopped',
+      'T23b TCL-RPC 通道打不开 → stopped')
+    ok(bs2([mkBackend(1, 'started openocd'), mkBackend(2, 'heartbeat lost (no TCL-RPC response within 60s) - the backend appears gone')]) === 'stopped',
+      'T23b 心跳丢失 → stopped(后端没了,下次调用自动重连)')
+    ok(bs2([mkBackend(1, 'backend stopped'), mkBackend(2, 'backend on 127.0.0.1:6666 is still running and ocdup cannot stop it: that listener was started outside ocdup')]) === 'running',
+      'T23b 外部实例杀不动(still running)→ running(监听确实还活着)')
+    ok(bs2([mkBackend(1, 'ERROR: did not become ready'), mkBackend(2, 'started openocd (pid 9); command port 127.0.0.1:6666 is up')]) === 'running',
+      'T23b 失败后又成功启动 → 回到 running(取最近一条)')
 
     // v1.3.5 结论压缩:卡片只放一个词,完整文案进 tooltip / 流水镜像
     const bv = mod._test.backendVerdict
@@ -1092,7 +1200,7 @@ const ok = (cond, label, extra) => {
       lastNodes.filter((n) => n && n.type === 'button').map((n) => btnTexts(n)))
     const tgCalls = []
     globalThis.fetch = (url, opts) => {
-      tgCalls.push({ url: String(url), method: opts && opts.method, body: opts && opts.body })
+      tgCalls.push({ url: String(url), method: opts && opts.method, body: opts && opts.body, signal: !!(opts && opts.signal) })
       return Promise.resolve({
         json: () => Promise.resolve({ ok: true, text: "target switched to 'AT32F403A' -> target/at32f403axG.cfg" }),
       })
@@ -1105,6 +1213,10 @@ const ok = (cond, label, extra) => {
       && tgCalls[1].url === '/api/ocdup-backend' && tgCalls[1].method === 'POST'
       && JSON.parse(tgCalls[1].body).action === 'connect',
       'T29 点胶囊 → POST /api/ocdup-target {preset} → 成功后自动 connect 刷新链路行', tgCalls)
+    // v1.4.0：两个 POST 都带 AbortController 的 signal——Host 侧 10s abort 只在
+    // 宿主 tools.execute 认 signal 时收得住,不认时按钮会永久卡在「切换中…」
+    ok(tgCalls.every((c) => c.signal),
+      'T29b target/backend 的 POST 都带客户端超时信号', tgCalls.map((c) => c.signal))
     // 失败路径(如只读会话被 ocdup 拦成 BLOCKED):只发一次 target 请求,不自动重连
     const tgCalls2 = []
     globalThis.fetch = (url, opts) => {

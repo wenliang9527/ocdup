@@ -175,6 +175,31 @@ def handle_command(cmd):
                 "0: INPUT 128 0")
     if c == "rtt stop":
         return ""
+    # ── v0.4.30 断点/观察点（命令面按 2026-10-19 真机核定：atopenocd-py32）──
+    if c == "bp":
+        return ""  # 裸 bp = 列断点，空列表无输出
+    if c.startswith("bp "):
+        # 真机：length 必填（缺了只回 usage 文本）；运行态软断点被拒、硬件断点可设
+        if " hw" not in c and TARGET_HALTED is False:
+            return "target at32f403axx.cpu is not halted (add breakpoint)\ncan't add breakpoint: target running"
+        return "breakpoint set"
+    if c.startswith("rbp "):
+        return ""  # rbp <addr> / rbp all 都静默成功
+    if c == "wp":
+        # 裸 wp = 列观察点，空列表无输出；__e2e_arm_wp_list__ 之后回真机形态列表
+        # （remove_watchpoint 全清的数据源——fork 没有 rwp all 形态）
+        if STATE.get("wp_list"):
+            listing = STATE["wp_list"]
+            STATE["wp_list"] = None
+            return listing
+        return ""
+    if c.startswith("wp "):
+        # 真机：length 必填（wp <addr> <len> <access> [value]），运行态一律被拒
+        if TARGET_HALTED is False:
+            return "target at32f403axx.cpu is not halted (add watchpoint)\ncan't add write watchpoint, target running"
+        return ""
+    if c.startswith("rwp "):
+        return ""  # rwp 只认地址（'rwp all' → Invalid command argument）
     if c.startswith("mdw") or c.startswith("mdh") or c.startswith("mdb"):
         parts = c.split()
         addr = int(parts[1], 16)
@@ -263,6 +288,16 @@ class FakeBackend(threading.Thread):
                     # v0.4.27：arm 后，下一条 rtt server start 只回成功、不开数据端口
                     if inner == "__e2e_no_rtt_server__":
                         STATE["no_rtt_server"] = True
+                        try:
+                            conn.sendall(b"armed" + DELIM)
+                        except OSError:
+                            return
+                        continue
+                    # v0.4.30 真机核定：arm 后下一条裸 wp 回真机形态的观察点列表
+                    # （remove_watchpoint 无地址 = 先列再逐个 rwp 的数据源）
+                    if inner == "__e2e_arm_wp_list__":
+                        STATE["wp_list"] = ("address: 0x20000000, len: 0x00000004, r/w/a: 1, value: 0x00000000, mask: 0xffffffff\n"
+                                            "address: 0x20000100, len: 0x00000002, r/w/a: 2, value: 0x00000000, mask: 0xffffffff")
                         try:
                             conn.sendall(b"armed" + DELIM)
                         except OSError:
@@ -614,6 +649,21 @@ def main():
             assert "halt" in crc, "CRC failure must tell the caller to halt and retry"
             print("  [%s] -> INCONCLUSIVE with halt guidance OK" % label)
 
+        banner("CRC-algorithm failure on the BURN path (v0.4.30): same verdict family as verify_image")
+        # v0.4.29 只修了 verify 侧；burn/flash_write 此前把「没验成」误报成 VERIFY FAILED。
+        # arm 后 burn 的读回应回 CRC 算法失败原文：exit 1（没验成 ≠ 通过）+ INCONCLUSIVE 措辞。
+        print(mcp.call("run_command", {"command": "__e2e_arm_crc_running__"}))
+        burn_crc = subprocess.run(
+            ["dotnet", DLL, "burn", "--file", "build/fw.bin", "--address", "0x08000000"],
+            cwd=work, env=dict(env), capture_output=True, text=True, encoding="utf-8", timeout=90)
+        print("  exit:", burn_crc.returncode)
+        print("  head:", burn_crc.stdout.strip().splitlines()[-3:] if burn_crc.stdout.strip() else "(no stdout)")
+        assert burn_crc.returncode == 1, "burn with an inconclusive read-back must exit 1, got %d" % burn_crc.returncode
+        assert "VERIFY INCONCLUSIVE" in burn_crc.stdout, "burn must carry the INCONCLUSIVE verdict"
+        assert "does not match the target flash" not in burn_crc.stdout, \
+            "burn must NOT claim the firmware differs when the CRC algorithm could not run"
+        print("  -> INCONCLUSIVE (not a mismatch) OK")
+
         banner("SVD layer L2 (v0.4.21): load_svd / read_peripheral_register (decode + reset compare) / write gate")
         MINI_SVD = """<?xml version="1.0"?>
 <device>
@@ -680,6 +730,64 @@ def main():
         print(mcp.call("resume", {}))
         print(mcp.call("reset", {"mode": "run"}))
         print(mcp.call("reset", {"mode": "halt"}))
+
+        banner("breakpoints / watchpoints (M-bp, v0.4.30): add/list/remove + gating")
+        # 命令面按 2026-10-19 真机核定（AT32F403AVGT7 + atopenocd-py32）：bp/wp 的
+        # length 必填恒显式；rwp 只认地址（无 all 形态，全清走「列出逐个删」）
+        r = mcp.call("add_breakpoint", {"address": "0x08000100"})
+        print(r)
+        assert any(c.startswith("bp 0x08000100 2") for c in backend.commands), \
+            "add_breakpoint must issue 'bp <addr> <len>' (length is mandatory on the atopenocd fork)"
+        print(mcp.call("add_breakpoint", {"address": "0x08000200", "length": 4, "hw": True}))
+        assert any(c == "bp 0x08000200 4 hw" for c in backend.commands), "length+hw must both reach the command"
+        print(mcp.call("add_breakpoint", {"address": "nope"}))
+        print(mcp.call("add_breakpoint", {"address": "0x08000100", "length": 0}))
+        print(mcp.call("list_breakpoints", {}))
+        assert "bp" in backend.commands, "list_breakpoints must issue bare 'bp'"
+        print(mcp.call("remove_breakpoint", {"address": "0x08000100"}))
+        assert any(c == "rbp 0x08000100" for c in backend.commands), "remove_breakpoint must issue 'rbp <addr>'"
+        print(mcp.call("remove_breakpoint", {}))
+        assert "rbp all" in backend.commands, "remove_breakpoint without address must clear all"
+        print(mcp.call("add_watchpoint", {"address": "0x20000000", "length": 4, "access": "w"}))
+        assert any(c == "wp 0x20000000 4 w" for c in backend.commands), "watchpoint command shape"
+        print(mcp.call("add_watchpoint", {"address": "0x20000010", "access": "r"}))
+        assert any(c == "wp 0x20000010 4 r" for c in backend.commands), \
+            "watchpoint length defaults to 4 and access stays explicit"
+        print(mcp.call("add_watchpoint", {"address": "0x20000000", "access": "x"}))
+        # 全清观察点：fork 没有 'rwp all'（真机：Invalid command argument）——先 wp 列、
+        # 再逐个 rwp。假后端此时回 echo（无地址可解析）→ 如实报告「没有可删的」
+        r_wall = mcp.call("remove_watchpoint", {})
+        print(r_wall)
+        assert "no watchpoints to remove" in r_wall, \
+            "an unparseable watchpoint listing must report honestly, not claim success"
+        assert "rwp all" not in backend.commands, "no 'rwp all' - the fork rejects it (real-machine finding)"
+        # arm 一份真机形态的 wp 列表 → 全清走「列出 + 逐个 rwp」
+        print(mcp.call("run_command", {"command": "__e2e_arm_wp_list__"}))
+        r_wall2 = mcp.call("remove_watchpoint", {})
+        print(r_wall2)
+        assert "removed 2 watchpoint(s)" in r_wall2 and "0x20000000" in r_wall2 and "0x20000100" in r_wall2, \
+            "remove-all must list then remove each watchpoint by address"
+        assert any(c == "rwp 0x20000000" for c in backend.commands) \
+            and any(c == "rwp 0x20000100" for c in backend.commands), \
+            "each watchpoint is removed by its own address"
+        print(mcp.call("remove_watchpoint", {"address": "0x20000000"}))
+        assert any(c == "rwp 0x20000000" for c in backend.commands), "remove_watchpoint by address"
+        # 闸门：bp/wp 与 halt/resume 同一条 allow_exec（v0.4.30 起裸通道同样分类）
+        write_config(work, read_only=False, allow_exec=False)
+        print(mcp.call("show_config", {"reload": True}))
+        blocked = mcp.call("add_breakpoint", {"address": "0x08000100"})
+        print(blocked)
+        assert blocked.startswith("BLOCKED:") and "allow_exec" in blocked, "breakpoints must follow allow_exec"
+        blocked_wp = mcp.call("add_watchpoint", {"address": "0x20000000"})
+        assert blocked_wp.startswith("BLOCKED:") and "allow_exec" in blocked_wp, "watchpoints must follow allow_exec"
+        listed = mcp.call("list_breakpoints", {})
+        assert not listed.startswith("BLOCKED:"), "list_breakpoints is a pure read - no gate"
+        # 裸通道同样分类：allow_raw_command 开着，bp 仍被 allow_exec 拦（RawCommandPolicy v0.4.30）
+        raw_bp = mcp.call("run_command", {"command": "bp 0x08000100"})
+        print(raw_bp)
+        assert raw_bp.startswith("BLOCKED:") and "allow_exec" in raw_bp, "raw 'bp' must be exec-classified too"
+        write_config(work, read_only=False)
+        print(mcp.call("show_config", {"reload": True}))
 
         banner("read_memory count=4000 (over memory_read_max_bytes)")
         print(mcp.call("read_memory", {"address": "0x20000000", "count": 4000}))

@@ -76,11 +76,52 @@ public sealed class FlashToolsTests
     }
 
     [Fact]
+    public void ClassifyFlashWrite_CrcAlgorithmFailure_IsInconclusive_NotMismatch()
+    {
+        // v0.4.30：burn/flash_write 与 verify_image 同一份判据——CRC 算法起不来（固件在跑时
+        // 真机复现）必须落 INCONCLUSIVE，而不是 WriteFailed / ProgrammedButVerifyFailed。
+        var verdict = FlashTools.ClassifyFlashWrite(
+            verifyEnabled: true,
+            programOutput: "** Programming Finished **",
+            verifyProblem: "no 'verified N bytes' confirmation in the output",
+            crcProblem: "the backend could not run its CRC algorithm over the target (...)");
+
+        Assert.Equal(FlashTools.FlashWriteVerdict.ProgrammedVerifyInconclusive, verdict);
+    }
+
+    [Fact]
+    public void ClassifyFlashWrite_CrcProblem_BeatsScaryProgramOutput()
+    {
+        // 与「verify 通过压过写相虚假错误」同构：CRC 判定优先，program 文本不再参与定性。
+        var verdict = FlashTools.ClassifyFlashWrite(
+            verifyEnabled: true,
+            programOutput: "Error: Failed to write memory (spurious Puya AHB error)",
+            verifyProblem: "the backend reported an error",
+            crcProblem: "the backend could not run its CRC algorithm over the target (...)");
+
+        Assert.Equal(FlashTools.FlashWriteVerdict.ProgrammedVerifyInconclusive, verdict);
+    }
+
+    [Fact]
+    public void ClassifyFlashWrite_NoCrcProblem_KeepsTheOldVerdicts()
+    {
+        // 第四参默认 null：既有三态不受影响（回归护栏）。
+        Assert.Equal(
+            FlashTools.FlashWriteVerdict.ProgrammedVerified,
+            FlashTools.ClassifyFlashWrite(verifyEnabled: true, programOutput: "", verifyProblem: null));
+        Assert.Equal(
+            FlashTools.FlashWriteVerdict.ProgrammedButVerifyFailed,
+            FlashTools.ClassifyFlashWrite(verifyEnabled: true, programOutput: "ok", verifyProblem: "mismatch"));
+    }
+
+    [Fact]
     public void ShouldResetRun_OnlyAfterVerifiedOrCleanUnverified()
     {
         Assert.True(FlashTools.ShouldResetRun(FlashTools.FlashWriteVerdict.ProgrammedVerified, "Error: ignored"));
         Assert.False(FlashTools.ShouldResetRun(FlashTools.FlashWriteVerdict.ProgrammedButVerifyFailed, ""));
         Assert.False(FlashTools.ShouldResetRun(FlashTools.FlashWriteVerdict.WriteFailed, "Error: bank missing"));
+        // v0.4.30：没验成同样不放行 reset——「不知道成没成」不是「成了」。
+        Assert.False(FlashTools.ShouldResetRun(FlashTools.FlashWriteVerdict.ProgrammedVerifyInconclusive, ""));
 
         // verify=false:没有读回判据,退回文本嗅探作门控(辅助判据,此时没有更好的)。
         Assert.True(FlashTools.ShouldResetRun(FlashTools.FlashWriteVerdict.Unverified, "** Programming Finished **"));

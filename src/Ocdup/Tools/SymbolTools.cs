@@ -204,6 +204,38 @@ public static class SymbolTools
             throw new FileNotFoundException(
                 $"'{resolved}' does not exist. Pass the path of the built (unstripped) .elf; " +
                 "relative paths are resolved against the ocd.json directory.");
-        return ElfSymbols.ParseObjects(File.ReadAllBytes(resolved));
+        return ParseObjectsCached(resolved);
+    }
+
+    // ── v0.4.30：ELF 解析缓存（按「完整路径 + mtime + 长度」）──
+    // read/write_variable 每次调用都走 LoadSymbols；此前每次都 File.ReadAllBytes + 全 symtab
+    // 扫描（1 MB 级 ELF 是毫秒到几十毫秒的纯浪费）。与 SvdTools.GetOrParse 同款纪律：
+    // 重新构建后 mtime 变化自动失效；缓存条数有界（最旧先走），防长时间会话里反复构建攒条目。
+    // 返回的列表按只读使用——调用方（list/read/write/watch）都不修改它。
+    private static readonly object SymbolCacheSync = new();
+    private static readonly Dictionary<string, (DateTime MtimeUtc, long Length, List<ElfSymbol> Symbols)> SymbolCache =
+        new(StringComparer.OrdinalIgnoreCase);
+    private const int MaxCachedElves = 8;
+
+    private static List<ElfSymbol> ParseObjectsCached(string resolved)
+    {
+        var mtime = File.GetLastWriteTimeUtc(resolved);
+        var length = new FileInfo(resolved).Length;
+
+        lock (SymbolCacheSync)
+        {
+            if (SymbolCache.TryGetValue(resolved, out var hit) && hit.MtimeUtc == mtime && hit.Length == length)
+                return hit.Symbols;
+        }
+
+        var parsed = ElfSymbols.ParseObjects(File.ReadAllBytes(resolved));
+
+        lock (SymbolCacheSync)
+        {
+            if (SymbolCache.Count >= MaxCachedElves && !SymbolCache.ContainsKey(resolved))
+                SymbolCache.Remove(SymbolCache.Keys.First());
+            SymbolCache[resolved] = (mtime, length, parsed);
+        }
+        return parsed;
     }
 }

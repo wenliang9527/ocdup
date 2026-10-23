@@ -200,7 +200,8 @@ public static class BackendTools
         "Write-class commands are classified: 'program'/'flash write_image'/'load_image', 'dump_image' and 'shutdown'/'exit' " +
         "are BLOCKED with a redirect to flash_write / dump_memory / disconnect; 'flash erase_sector'/'erase_address' is gated " +
         "by allow_flash_erase, 'flash fill*'/protect by allow_flash, 'mww/mwh/mwb' by allow_memory_write and " +
-        "'reset'/'halt'/'resume'/'step' by allow_exec - the same switches their dedicated tools use " +
+        "'reset'/'halt'/'resume'/'step' plus breakpoint/watchpoint commands ('bp'/'rbp'/'wp'/'rwp') by allow_exec - " +
+        "the same switches their dedicated tools use " +
         "(';'-separated statements are classified per segment). " +
         "Single-line command only. Gated by read_only and allow_raw_command (default false) - a BLOCKED answer means the " +
         "settings forbid it (see show_config).")]

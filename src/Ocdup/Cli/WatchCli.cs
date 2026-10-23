@@ -85,11 +85,15 @@ public static class WatchCli
         }
 
         var pad = watchable.Max(s => s.Name.Length);
-        Console.WriteLine($"ocdup watch: {watchable.Count} variable(s) every {options.IntervalMs}ms " +
-                          $"(format={options.Format}, halt={options.Halt switch { true => "on (firmware pauses each sample)", false => "off" }})");
+        // v0.4.30：csv 形态下人读信息（banner/变量清单/收尾）一律走 stderr——stdout 只许出现
+        // CSV 表头与数据行，`> log.csv` 才拿得到干净可画曲线的文件（与 rtt 的「数据 stdout /
+        // 进度 stderr」同一纪律；此前 banner 混进 stdout，绘图工具直接噎住）。
+        var notes = WatchCli.NotesToStderr(options.Format) ? Console.Error : Console.Out;
+        notes.WriteLine($"ocdup watch: {watchable.Count} variable(s) every {options.IntervalMs}ms " +
+                        $"(format={options.Format}, halt={options.Halt switch { true => "on (firmware pauses each sample)", false => "off" }})");
         foreach (var s in watchable)
-            Console.WriteLine($"  {s.Name.PadRight(pad)} @ {Parsing.Hex(s.Address)} ({s.Size} bytes)");
-        Console.WriteLine("Ctrl+C to stop.");
+            notes.WriteLine($"  {s.Name.PadRight(pad)} @ {Parsing.Hex(s.Address)} ({s.Size} bytes)");
+        notes.WriteLine("Ctrl+C to stop.");
 
         using var cts = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) =>
@@ -144,9 +148,16 @@ public static class WatchCli
             // Ctrl+C：正常收尾
         }
 
-        Console.WriteLine($"done: {samples} sample(s).");
+        notes.WriteLine($"done: {samples} sample(s).");
         return 0;
     }
+
+    /// <summary>
+    /// 人读信息（banner/变量清单/收尾行）是否走 stderr（纯函数，可单测）：csv 形态走——
+    /// stdout 是数据通道（表头 + 行），重定向进文件的就是纯 CSV；pretty 形态无所谓，走 stdout。
+    /// </summary>
+    internal static bool NotesToStderr(string format) =>
+        string.Equals(format, "csv", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>采一拍：逐变量 mdw 对齐字；--halt 时先 halt 200ms 再读、finally 里 resume。</summary>
     private static async Task<List<uint>> SampleAsync(OcdConfig cfg, List<ElfSymbol> vars, bool halt, CancellationToken ct)
@@ -205,6 +216,9 @@ public static class WatchCli
           --elf <path>    .elf image (default: "elf_path" in ocd.json; relative to it)
           --interval <ms> sampling period, 20..600000 (default 250)
           --format <f>    pretty (default) or csv - csv rows: time,value1,value2,...
+                          (in csv mode stdout carries ONLY the header+rows; the
+                          banner, variable list and summary go to stderr, so
+                          `> log.csv` yields a clean file for plotting)
           --halt          pause the firmware (halt/resume) around each sample for
                           consistent reads; needs allow_exec and pauses the target
           --count <n>     stop after n samples (default: until Ctrl+C)

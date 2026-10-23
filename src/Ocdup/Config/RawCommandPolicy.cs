@@ -7,6 +7,8 @@ namespace Ocdup.Config;
 /// 后端控制（shutdown/exit）在 raw 通道上无法可靠校验，直接 BLOCKED 并指引专用工具。
 /// 定位是纵深防御而非唯一边界：分类清单之外的命令仍会透传，通道本身的闸是
 /// allow_raw_command（默认 false，见 OcdConfig）。
+/// v0.4.30 起断点/观察点命令（bp/rbp/wp/rwp）也归 ExecControl 类——它们改变目标的执行
+/// 行为（命中即停），与 halt/resume 同级，不能留在 Passthrough 里绕过 allow_exec。
 /// </summary>
 public static class RawCommandPolicy
 {
@@ -83,6 +85,9 @@ public static class RawCommandPolicy
             "program" or "load_image" => Class.FlashFileWrite,
             "mww" or "mwh" or "mwb" => Class.MemoryWrite,
             "reset" or "halt" or "resume" or "step" => Class.ExecControl,
+            // v0.4.30：断点/观察点同属执行控制——命中即停，与 halt/resume 同一条 allow_exec 闸
+            // （此前它们是 Passthrough：allow_raw_command 一开就能绕过硬闸）。
+            "bp" or "rbp" or "wp" or "rwp" => Class.ExecControl,
             "dump_image" => Class.PcDump,
             "shutdown" or "exit" => Class.BackendControl,
             _ => Class.Passthrough,

@@ -74,7 +74,9 @@ public static class FlashTools
         "address (hex load address like '0x08000000'; required for raw .bin images, ignored for .elf/.hex), verify (default true), " +
         "reset (default true: run 'reset run' after programming). " +
         "The outcome is decided by a read-back: after 'program', a separate 'verify_image' step is the authoritative verdict - " +
-        "'programmed + verified' (reset runs), 'programmed but verify FAILED' / 'write failed' (reset is skipped). " +
+        "'programmed + verified' (reset runs), 'programmed but verify FAILED' / 'write failed' / " +
+        "'verify INCONCLUSIVE' (the backend could not run its CRC algorithm - that says nothing about a mismatch; halt the target and retry verify_image) " +
+        "(reset is skipped for all non-clean verdicts). " +
         "Error text from the program step is advisory only (some drivers emit spurious errors, e.g. PY32's fake AHB error). " +
         "With verify=false the outcome is 'programmed (unverified)' and only that advisory text gates the reset. " +
         "While running, openocd's log lines (erased sectors / wrote bytes) are forwarded as MCP progress notifications " +
@@ -178,6 +180,10 @@ public static class FlashTools
         }
 
         string? verifyProblem = null;
+        // v0.4.30：CRC 算法起不来 ≠ 镜像不匹配（真机实测 2026-10-13）——burn/flash_write 与
+        // verify_image 工具用同一份 <see cref="DetectCrcAlgorithmFailure"/> 判定，否则固件在跑时
+        // 读回验不成会被误报成「VERIFY FAILED」（v0.4.29 只在 verify 侧修掉，burn 侧漏了同一误报）。
+        string? crcProblem = null;
         if (verify)
         {
             var verifyCommand = new StringBuilder("verify_image ").Append(Tcl.Quote(resolved));
@@ -193,10 +199,11 @@ public static class FlashTools
                 verifyOutput = ex.Message; // 校验通道失败：按存疑判失败（保守），reset 不会执行
             }
 
+            crcProblem = DetectCrcAlgorithmFailure(verifyOutput);
             verifyProblem = InterpretVerifyOutput(verifyOutput);
         }
 
-        var verdict = ClassifyFlashWrite(verify, programOutput, verifyProblem);
+        var verdict = ClassifyFlashWrite(verify, programOutput, verifyProblem, crcProblem);
 
         var sb = new StringBuilder();
         sb.AppendLine($"programmed: {resolved} ({image.Length} bytes)");
@@ -215,6 +222,13 @@ public static class FlashTools
             case FlashWriteVerdict.WriteFailed:
                 sb.AppendLine($"WRITE FAILED: the program step reported an error, and the read-back does not confirm the image ({image.Length} bytes).");
                 sb.AppendLine($"problem: {verifyProblem}");
+                break;
+            case FlashWriteVerdict.ProgrammedVerifyInconclusive:
+                // v0.4.30：与 verify_image 的 INCONCLUSIVE 同款措辞——「没验成」不是「固件坏了」，
+                // 否则模型会无谓重烧（真机实测：同一条命令目标静止时 verified、运行态时 CRC 起不来）。
+                sb.AppendLine("VERIFY INCONCLUSIVE: the read-back did not run to completion, so this says nothing about " +
+                              $"whether {resolved} ({image.Length} bytes) matches the target flash.");
+                sb.AppendLine($"reason: {crcProblem}");
                 break;
             case FlashWriteVerdict.Unverified:
                 sb.AppendLine("unverified: verify=false skipped the read-back check - run mcp__ocdup__verify_image to confirm what landed.");
@@ -448,11 +462,14 @@ public static class FlashTools
     /// <summary>flash_write 的结论分类（P0-2，纯函数可单测）：verify 读回是唯一判据；
     /// program 输出的错误文本降级为辅助信息，用来区分两种失败形态——
     /// WriteFailed（写步骤已报错，固件很可能没写入/只写入一部分）与
-    /// ProgrammedButVerifyFailed（写声称成功但读回不符，最危险，结论单列）。</summary>
-    internal enum FlashWriteVerdict { ProgrammedVerified, ProgrammedButVerifyFailed, WriteFailed, Unverified }
+    /// ProgrammedButVerifyFailed（写声称成功但读回不符，最危险，结论单列）。
+    /// v0.4.30 增 ProgrammedVerifyInconclusive：后端 CRC 算法没跑起来（目标在跑时真机复现），
+    /// 「没验成」既不是通过也不是不匹配——reset 不放行，burn exit 1，但措辞必须说清原因。</summary>
+    internal enum FlashWriteVerdict { ProgrammedVerified, ProgrammedButVerifyFailed, WriteFailed, Unverified, ProgrammedVerifyInconclusive }
 
-    internal static FlashWriteVerdict ClassifyFlashWrite(bool verifyEnabled, string programOutput, string? verifyProblem) =>
+    internal static FlashWriteVerdict ClassifyFlashWrite(bool verifyEnabled, string programOutput, string? verifyProblem, string? crcProblem = null) =>
         !verifyEnabled ? FlashWriteVerdict.Unverified
+        : crcProblem is not null ? FlashWriteVerdict.ProgrammedVerifyInconclusive
         : verifyProblem is null ? FlashWriteVerdict.ProgrammedVerified
         : LooksLikeFailure(programOutput) ? FlashWriteVerdict.WriteFailed
         : FlashWriteVerdict.ProgrammedButVerifyFailed;
