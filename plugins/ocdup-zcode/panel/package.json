@@ -1,6 +1,6 @@
 {
   "name": "ocdup-panel",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Ocdup 调试面板（MCP App）：连接状态、Flash 扇区图、寄存器查看器、操作时间线",
   "scripts": {
     "build": "node build.mjs",

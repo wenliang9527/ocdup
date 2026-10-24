@@ -22,6 +22,10 @@ public sealed class ParsingTests
     [InlineData("hello")]
     [InlineData("0x")]
     [InlineData("12g4")]
+    [InlineData("-5")]     // A-11：NumberStyles.HexNumber 默认收带符号值，地址参数一律拒绝
+    [InlineData("+5")]
+    [InlineData("0x-10")]
+    [InlineData("-0x10")]
     public void TryParseHex_RejectsInvalidInput(string text)
     {
         Assert.False(Parsing.TryParseHex(text, out _));

@@ -365,12 +365,14 @@ class Mcp:
 
 def build_mini_elf():
     """最小合法 ELF32 LE（.symtab + .strtab）：list/read/write_variable 的 e2e 夹具。
-    符号：gCounter(0x20000004,4 OBJECT) / s_local(0x20000010,1 OBJECT) / doThing(FUNC,应被排除)。"""
-    strtab = b"\x00gCounter\x00s_local\x00doThing\x00"
+    符号：gCounter(0x20000004,4 OBJECT) / s_local(0x20000010,1 OBJECT) / doThing(FUNC,应被排除)
+    / gUnaligned(0x20000012,4 OBJECT，骑 word 边界的 packed 变量——A-3 非对齐场景用)。"""
+    strtab = b"\x00gCounter\x00s_local\x00doThing\x00gUnaligned\x00"
     symtab = (struct.pack("<IIIBBH", 0, 0, 0, 0, 0, 0)
               + struct.pack("<IIIBBH", 1, 0x20000004, 4, 1, 0, 1)
               + struct.pack("<IIIBBH", 10, 0x20000010, 1, 1, 0, 1)
-              + struct.pack("<IIIBBH", 18, 0x08000100, 88, 2, 0, 1))
+              + struct.pack("<IIIBBH", 18, 0x08000100, 88, 2, 0, 1)
+              + struct.pack("<IIIBBH", 26, 0x20000012, 4, 1, 0, 1))
     ehsize, shentsize, shnum = 52, 40, 4
     sym_off, str_off, shoff = ehsize, ehsize + len(symtab), ehsize + len(symtab) + len(strtab)
 
@@ -816,6 +818,22 @@ def main():
         print(mcp.call("read_variable", {"name": "gCounter"}))
         print(mcp.call("read_variable", {"name": "missing_var"}))
         print(mcp.call("write_variable", {"name": "gCounter", "value": "0x42"}))
+
+        banner("A-3 (v0.4.31): unaligned variable access - one aligned mdw read, byte-wise mwb write chain")
+        # gUnaligned@0x20000012(u32) 骑在 word 边界：读=对齐 mdw 0x20000010 起两字再小端摘字节，
+        # 写=非对齐退化逐字节 mwb（0xAABBCCDD 小端 → dd cc bb aa）
+        r_un = mcp.call("read_variable", {"name": "gUnaligned"})
+        print(r_un)
+        assert any(c == "mdw 0x20000010 2" for c in backend.commands), \
+            "unaligned u32 read must be one aligned mdw covering both words"
+        # 假后端 mdw 回 addr 本身：word0=0x20000010 word1=0x20000014，摘 offset2 四字节=0x00142000
+        assert "0x00142000" in r_un, "unaligned read must extract little-endian bytes from the word pair"
+        w_un = mcp.call("write_variable", {"name": "gUnaligned", "value": "0xAABBCCDD"})
+        print(w_un)
+        for cmd in ("mwb 0x20000012 0xdd", "mwb 0x20000013 0xcc",
+                    "mwb 0x20000014 0xbb", "mwb 0x20000015 0xaa"):
+            assert cmd in backend.commands, \
+                "unaligned u32 write must degrade to a byte-wise mwb chain (missing %s)" % cmd
 
         banner("ocd.json -> read_only=true; show_config(reload) then flash_write")
         write_config(work, read_only=True)

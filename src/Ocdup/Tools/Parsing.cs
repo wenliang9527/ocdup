@@ -18,6 +18,8 @@ public static class Parsing
         if (trimmed.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
             trimmed = trimmed[2..];
         if (trimmed.Length == 0) return false;
+        // NumberStyles.HexNumber 的 .NET 实现默默接受正负号（"-5" → -5），地址参数不接受带符号值
+        if (trimmed[0] is '+' or '-') return false;
 
         return long.TryParse(trimmed, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out value);
     }

@@ -3,21 +3,41 @@
 //  dsh-ocdup-panel — Host 半区行为测试(无框架,纯 node)
 //
 //  运行(在插件目录下):
-//    node test.js core     # 增量/半行/切片/批量裁剪/轮转/清空/方法守卫/方向归一化
-//    node test.js window   # 首次挂载只读尾部窗口(大日志不全量读入)
-//    node test.js api      # Δt/compact/导出/help/轮转续接+rotated路由(需要 MAX_ENTRIES≥40)
-//    node test.js client   # client.js 注册结构冒烟 + 纯函数契约 + 渲染冒烟(stub React,不起浏览器)
+//    node test.js            # 全四套件依次跑(R4-2,默认;任一失败 exit 1)
+//    node test.js core       # 增量/半行/切片/批量裁剪/轮转/清空/方法守卫/方向归一化
+//    node test.js window     # 首次挂载只读尾部窗口(大日志不全量读入)
+//    node test.js api        # Δt/compact/导出/help/轮转续接+rotated路由(需要 MAX_ENTRIES≥40)
+//    node test.js client     # client.js 注册结构冒烟 + 纯函数契约 + 渲染冒烟(stub React,不起浏览器)
 //
 //  各模式需要的插件常量(如 MAX_ENTRIES/FIRST_TAIL)由 test.js 按 mode 自行设置,
 //  日志默认落临时目录——上面那行零配置可跑;手动设 env 可覆盖,压别的边界用。
-//  说明:插件在 require 时读取这些常量,所以 env 必须在 require 之前设置。
+//  说明:插件在 require 时读取这些常量,所以 env 必须在 require 之前设置——
+//  无参跑全四套件时逐模式起子进程,就是为了不让上一模式的 env 泄给下一模式。
 // ============================================================
 
 const fs = require('fs')
 const path = require('path')
 const os = require('os')
 
-const mode = process.argv[2] || 'core'
+if (!process.argv[2]) {
+  // R4-2(v0.4.33):无参=全四套件。此前默认只跑 core(23 项),本地快验容易误判全绿。
+  const { spawnSync } = require('child_process')
+  const modes = ['core', 'window', 'api', 'client']
+  const failed = []
+  for (const m of modes) {
+    console.log(`\n==== dsh-ocdup-panel suite: ${m} ====`)
+    const r = spawnSync(process.execPath, [__filename, m], { stdio: 'inherit' })
+    if (r.status !== 0) failed.push(m)
+  }
+  if (failed.length) {
+    console.log(`\nFAILED ${failed.length}/${modes.length} suites: ${failed.join(', ')}`)
+    process.exit(1)
+  }
+  console.log(`\nALL PASS (${modes.length} suites: ${modes.join(' / ')})`)
+  process.exit(0)
+}
+
+const mode = process.argv[2]
 
 // 各模式对插件常量的要求不同(插件 require 时读 env,所以必须现在就设)。
 // 已显式设置的值不动——想压别的边界时环境变量仍然优先。

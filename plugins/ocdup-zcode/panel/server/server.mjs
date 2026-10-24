@@ -30,6 +30,7 @@ import {
   RESOURCE_MIME_TYPE,
 } from "@modelcontextprotocol/ext-apps/server";
 import { readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -39,11 +40,12 @@ export const OCDUP_SERVER_NAME = "ocdup"; // 用户级 config.json → mcp.serve
 export const RESOURCE_URI = "ui://ocdup-zcode/panel.html";
 export const SURFACE_ID = "ocdup-panel"; // 与 plugin.json ui.surfaces[0].id 一致
 export const PANEL_TOOL = "panel"; // 打开面板的锚点工具（model 点它即渲染面板）
-export const PROXY_VERSION = "0.3.0";
 const MAX_PANEL_BYTES = 4 * 1024 * 1024;
 const CALL_TIMEOUT_MS = 10 * 60_000; // 烧录大镜像可能很慢，与宿主默认超时解耦
 
 const here = dirname(fileURLToPath(import.meta.url));
+// A-16（v0.4.33）：版本单一源 = panel/package.json（此前硬编码 0.3.0 与包版本 0.1.0 各自漂移）
+export const PROXY_VERSION = JSON.parse(readFileSync(join(here, "..", "package.json"), "utf8")).version;
 // 源码态 server.mjs 在 server/ 下，产物态与 dist/ 同级——两处都找
 const HTML_CANDIDATES = [join(here, "dist", "panel.html"), join(here, "..", "dist", "panel.html")];
 

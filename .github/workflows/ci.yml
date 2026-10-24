@@ -24,6 +24,9 @@ jobs:
       - name: End-to-end (fake TCL-RPC backend + real MCP stdio session)
         run: python tools/e2e_fake_backend.py
 
+      - name: Tool description byte budget (regression guard, v0.4.33)
+        run: python tools/measure_tools.py --budget 25500
+
   panel-tests:
     runs-on: windows-latest
     steps:

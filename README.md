@@ -406,9 +406,10 @@ python tools/e2e_fake_backend.py          # 端到端：假 TCL-RPC 后端 + 真
   target_cfg 不符时，点击复制 `mcp__ocdup__set_target` 调用）；**v1.3.1**：Flash 段报 bank 合计（双 bank 一片多大一眼可见）、工具栏下排分组、stats 方向色图例、调用视图列头条、链路卡左色条；
   **v1.3.2**：界面精修（按钮/文字/配色）——控件不折行、engaged 态统一墨色实底（不再撞宿主品牌色）、
   方向过滤改「通道 chip」、工具条单行横滚、链路读数条值/段名层级翻转、搜索框内嵌正则开关；**v1.3.3**：修「侧栏图标点了没反应」（注册契约对齐宿主 0.2.0-rc.2：侧栏行自己绑 `selectPanel(id)`，只认 main 里同一个 id，旧版 body 注册在右栏槽 → 缺 key 抛错 → 静默）；**v1.3.4**：入口回右栏 guide 卡（左侧图标移除）+ 链路行第四段「后端」断开/恢复开关（`POST /api/ocdup-backend` → Host `ctx.tools.execute` → `mcp__ocdup__disconnect`，探针让给别的 agent 软件；MCP 门面不断，connect 即恢复）；**v1.3.5**：后端段结论压缩成一个词（完整文案进 tooltip/流水）、「后端」调到段首、链路行窄停靠换 2×2 网格；**v1.3.6**：轮转的历史不再从面板上消失——Host 尾随判定「活动文件收缩且 .1 刚换过」即 ocdup 轮转（非清空），自动把 .1 尾部窗口接进内存环（正在看的面板不白屏），空态给出 .1 大小/时间 + 「加载 .1 尾部」按钮（`POST /api/ocdup-log/rotated`，同一份不重复灌入）；**v1.3.7**：空态也要能控后端——链路行常驻，没流量时也有「后端」断开/恢复卡（单卡在窄停靠满整行），顺带修掉「清空后加载备注还说已加载 N 条」和「清空后同一份 .1 不能再加载」两个自家 bug；**v1.3.8**：失配胶囊从「复制 set_target 命令」升级为一键直调（点击 → `POST /api/ocdup-target` → Host `ctx.tools.execute` → `mcp__ocdup__set_target`，切换=重启后端；成功后自动 connect 刷新链路行，烧录进行中需二次确认）——用户实测 403 板插着而 cfg 钉在 423 钥匙板上，connect 每次崩 openocd（DEV_ID 读 0 → flash probe 断言 abort），表现为「连上就自己断开」；**v1.3.9**：轮询链自愈——fetch 加 10s AbortController 超时（挂起的请求曾把整条链永久楔住：`inFlightRef` 永远 true，连切标签的立即刷新都被挡死，用户实测视图冻死 3 分钟）+ kick 机制（切回本标签/窗口聚焦/visibilitychange 立即补一拍）；**v1.4.0**：全项目复查面板侧修三个 P1（默认流水视图没有烧录进度条/烧录中保护——flashCall 两种视图都从配对结果取；后端卡片在启动失败/心跳丢失后显示陈旧「已连接」——失败 SYS 行归一 stopped、外部实例 still running 归 running；轮转漏救两侧丢行——判定升级为「.1 换了 + 活动文件 mtime 被重写」，信号选型避开 NTFS 隧道效应下的 birthtime）+ 八个边角（探针段不解析失败文案 / kick 定时器泄漏 / 两个 POST 加客户端超时 / 匹配主题与显示同截断 / 芯片卡 dev 回退 / gap 行服从 port 过滤 / null 行不吞后续批 / Host 入口类型归一）。零依赖行为测试
-  `node test.js core|window|api|client`（234 项断言）；改代码只改真源目录再 `deploy.cmd`。
+  `node test.js`（v1.5.2 起无参默认跑全四套件；`node test.js core|window|api|client` 可单跑，234 项断言）；改代码只改真源目录再 `deploy.cmd`。
 - **发布**：根目录 `publish.cmd`（单测 Release → publish → 提示重启 DSH；检测到
-  ocdup.exe 在跑会拒绝执行）。CI：`.github/workflows/ci.yml`（build + 单测 + e2e）。
+  ocdup.exe 在跑会拒绝执行）。CI：`.github/workflows/ci.yml`（build + 单测 + e2e +
+  工具描述字节预算门禁 `measure_tools.py --budget 25500`，v0.4.33 起）。
 
 ### 🔒 文件锁：两种成因，别混
 
@@ -435,12 +436,13 @@ dotnet build Ocdup.sln && dotnet test Ocdup.sln --no-build -v q
 
 | 里程碑 | 状态 |
 |---|---|
-| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 398 个单测 + 假后端 e2e 覆盖（46 个检查段） |
+| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 405 个单测 + 假后端 e2e 覆盖（47 个检查段） |
 | S4 真机联调 | ✅ AT32F403AVGT7 + CMSIS-DAP v2（DAPLink `0D28:0204`）+ atopenocd：`connect` → `flash_info` → `flash_write`（擦 25 扇区、写 + Verified OK、reset run）→ `read_memory` 运行态读回向量表。**2026-10-13 第二轮**：`burn`/`verify` 治具链路 dump → burn → verify → dump 闭环 sha256 一致；实烧 SL150 v4.0 固件（74.4KB）后 hex 覆盖区逐字节零差异、固件正常运行 |
 | 安全与正确性加固（v0.4.12–v0.4.16） | ✅ `run_command` 内容分类（写类命令与专用工具同权/重定向）、`flash_write` 以独立读回校验为权威判据、断链只读自动重放 + 空闲心跳、烧录/擦除/dump 执行期 progress notification |
 | doctor CLI | ✅ `ocdup doctor` 五项环境体检（ocd.json / OCD_BIN / scripts / 探针 / 后端端口），换机第一步 |
 | 全项目优化轮（v0.4.30） | ✅ burn/flash_write 的读回判据与 verify_image 对齐（CRC 起不来 = INCONCLUSIVE，不再误报不匹配）；watch csv 形态人读信息改走 stderr（重定向得干净 CSV）；raw 通道补断点/观察点分类（bp/wp 归 allow_exec）；ELF 符号解析加 mtime 缓存 + dump 哈希/预览单趟读；**M-bp 断点/观察点五件落地**（30 工具；2026-10-19 真机核定：length 恒下发、运行态仅硬件断点可设、观察点全清走「列出逐个删」）；`ocdup --version`/`--help` |
 | 第三轮复查（v0.4.31–v0.4.32，docs/audit-2026-10-24.md） | ✅ watch --halt Ctrl+C 窗口收尾 resume 必达（不再残留 halted）+ watch 退出码对齐家族；bp 五件 op 各归其名（list_breakpoints 断链重放生效）；read/write_variable 非对齐地址修复；SVD 数组寄存器 `[%s]` 按名可达 + svd_path 损坏时报真因；BackendSession 定向失效（不再误杀并发新连接）；工具描述瘦身 25,963→24,900 B（契约逐条保留） |
+| 第四轮批次A（v0.4.33，docs/round4-plan.md） | ✅ TryParseHex 拒带符号 hex；launcher host/transport 进 TCL 前转义（配置侧注入面收口）；ConfigStore 读-改-写单锁（并发 set_permissions/set_target 不丢更新）；doctor 探测进程补 Dispose；插件面板版本单一源（PROXY_VERSION 派生自 package.json，0.1.0→0.3.0）；插件 0.4.7（携带第三轮 SKILL.md 变更，原生 CLI 更新可达）；DSH 面板 test.js 无参跑全四套件（v1.5.2）；e2e 补非对齐 read/write_variable 场景；CI 第五道门禁：工具描述字节预算 `--budget 25500` |
 | S5 打包与客户端注册 | 🟡 已注册进 DSH（desktop + web 两个 profile）与 ZCode（`mcp.servers` 条目 + `ocdup-zcode` 插件，均指 `publish/ocdup.exe`）；换机第一步先跑 `ocdup doctor`（v0.4.15） |
 
 后续里程碑（条件断点、L3 协议字典、与 acccom 的串口协同、多后端注册表 Q8 等）见

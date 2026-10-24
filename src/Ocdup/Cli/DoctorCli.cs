@@ -185,6 +185,10 @@ public static class DoctorCli
             try { if (process is { HasExited: false }) process.Kill(entireProcessTree: true); } catch { /* 尽力而为 */ }
             return null;
         }
+        finally
+        {
+            process?.Dispose();
+        }
     }
 
     // ── 渲染与退出码（纯函数，可单测）──

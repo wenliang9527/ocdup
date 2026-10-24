@@ -16,17 +16,24 @@
 
 ## 批次 A：v0.4.33 —— 零契约风险清偿（直接执行）
 
-| 项 | 内容 | 证据/位置 | 测试 |
+> **执行记录（2026-10-24）**：已全部落地并过五道门禁（build 0 警告 / 单测 405 / e2e 47 段 /
+> 面板四套件 234 / 预算 24,900 ≤ 25,500）。设计期 A-16 证据路径有误，实际版本漂移在
+> **ZCode 插件面板**（`plugins/ocdup-zcode/panel/`），DSH 面板（`tools/dsh-ocdup-panel/`，
+> 1.5.x）一直维护良好——已按下表「实际做法」执行。
+
+| 项 | 内容 | 证据/位置 | 实际做法（v0.4.33） |
 | --- | --- | --- | --- |
-| R4-1 | 插件两处版本 0.4.6 → 0.4.7 | `plugins/marketplace.json`、`.zcode-plugin/plugin.json` | 原生 CLI 更新后核对已装副本（人工验收）+ README 插件版本史 |
-| A-11 | TryParseHex 拒绝带符号 hex（`+5`/`-5` 不再悄悄变 0xFF…FB） | `Parsing.cs` TryParseHex | Parsing Theory（正号/负号/边界值） |
-| A-13 | OpenOcdLauncher 把 host/transport 拼进 `-c` TCL 串前转义 | `OpenOcdLauncher.cs:141,148` | BuildArguments 断言引号形态 |
-| A-14 | DoctorCli OCD_BIN 探测 Process 补 Dispose | `DoctorCli.cs:162-186` | 行为回归（输出不变） |
-| A-15 | ConfigStore 读-改-写（ApplyRuntimePatch/ApplyTargetSwitch）收敛到单锁 | `ConfigStore.cs` | 并发 patch 交错小压测 |
-| A-16 | 面板版本源定案：package.json(0.1.0) / PROXY_VERSION(0.3.0) / README 面板史(1.4.x) 三处语义定一案并同源 | `tools/dsh-ocdup-panel/package.json`、`server.js` | test.js client 套件加一致性断言 |
-| R4-2 | test.js 无参默认跑全四套件（保留单模式参数） | `test.js:20` | 四套件本尊 |
-| e2e | 补 A-3 场景：非对齐 read/write_variable 的命令形态（对齐 mdw + mwb 链）在假后端钉死 | `tools/e2e_fake_backend.py` | 新场景 |
-| CI | 第五道门禁：measure_tools.py 加 `--budget`（建议 25,500 B = 现 24,900 + 余量），ci.yml 加一步 | `tools/measure_tools.py`、`.github/workflows/ci.yml` | CI 自身 |
+| R4-1 | 插件两处版本 0.4.6 → 0.4.7 | `plugins/marketplace.json`、`.zcode-plugin/plugin.json` | 已 bump（原生 CLI 更新后核对已装副本=人工验收） |
+| A-11 | TryParseHex 拒绝带符号 hex（`+5`/`-5` 不再悄悄变 0xFF…FB） | `Parsing.cs` TryParseHex | 已修；Parsing Rejects Theory +4 行（`-5`/`+5`/`0x-10`/`-0x10`） |
+| A-13 | OpenOcdLauncher 把 host/transport 拼进 `-c` TCL 串前转义 | `OpenOcdLauncher.cs:141,148` | 已修（`Tcl.Quote` 大括号字面量）；LauncherArgumentsTests 断言更新 + 注入值用例 |
+| A-14 | DoctorCli OCD_BIN 探测 Process 补 Dispose | `DoctorCli.cs:162-186` | 已修（finally Dispose）；行为回归 |
+| A-15 | ConfigStore 读-改-写（ApplyRuntimePatch/ApplyTargetSwitch）收敛到单锁 | `ConfigStore.cs` | 已修（`_writeLock` 包读-改-写，Reload 同锁）；并发补丁不丢更新测试 ×2 |
+| A-16 | 面板版本源定案：**ZCode 插件面板** package.json(0.1.0) / server.mjs PROXY_VERSION(0.3.0) 不同源；DSH 面板（1.5.x）无此问题 | `plugins/ocdup-zcode/panel/package.json`、`panel/server/server.mjs:42` | 定案：package.json 为单一源（0.1.0→0.3.0，握手值不变），PROXY_VERSION 改为派生读取——漂移在结构上不可能；`npm test` 47 过 |
+| R4-2 | test.js 无参默认跑全四套件（保留单模式参数） | `test.js:20` | 已改（无参=spawnSync 逐模式子进程，exit 码聚合）；四套件本尊验证 |
+| e2e | 补 A-3 场景：非对齐 read/write_variable 的命令形态（对齐 mdw + mwb 链）在假后端钉死 | `tools/e2e_fake_backend.py` | 已加（夹具增 gUnaligned@0x20000012；断言 `mdw 0x20000010 2` + 四条 mwb + 摘字节值 0x00142000） |
+| CI | 第五道门禁：measure_tools.py 加 `--budget`（建议 25,500 B = 现 24,900 + 余量），ci.yml 加一步 | `tools/measure_tools.py`、`.github/workflows/ci.yml` | 已加（`--budget 25500`，超预算 exit 1）；本地实测 PASS |
+
+另：DSH 面板 package.json 1.5.1 → 1.5.2（test.js 行为变更随包版本记录）。
 
 ## 批次 B：v0.4.34 —— 契约变更类（**停，等确认再动**）
 

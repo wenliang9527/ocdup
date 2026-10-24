@@ -213,4 +213,48 @@ public sealed class OcdConfigTests : IDisposable
         Assert.Equal("(runtime via set_target)", next.Sources["target_cfg"]);
         Assert.Equal("target_py32f002a_lock.cfg", cfg.TargetCfg); // 原实例不动
     }
+
+    // ── A-15（v0.4.33）：ConfigStore 读-改-写并发不丢更新 ──
+
+    [Fact]
+    public async Task ConfigStore_ConcurrentRuntimePatches_AllKeysSurvive()
+    {
+        // 无锁的读-改-写会丢更新：两个补丁都基于同一旧实例计算，后写者覆盖先写者。
+        // 每个键多线程反复打：锁修复后终态必须包含全部变更。
+        var store = new ConfigStore(new OcdConfig());
+        var patches = new[]
+        {
+            "{\"allow_flash_erase\": true}",
+            "{\"allow_raw_command\": true}",
+            "{\"allow_exec\": false}",
+            "{\"allow_memory_write\": false}",
+            "{\"flash_max_bytes\": 2097152}",
+            "{\"memory_read_max_bytes\": 8192}",
+        };
+        var tasks = patches
+            .SelectMany(p => Enumerable.Range(0, 8).Select(_ => Task.Run(() => store.ApplyRuntimePatch(p))))
+            .ToArray();
+        await Task.WhenAll(tasks);
+
+        var c = store.Current;
+        Assert.True(c.AllowFlashErase);
+        Assert.True(c.AllowRawCommand);
+        Assert.False(c.AllowExec);
+        Assert.False(c.AllowMemoryWrite);
+        Assert.Equal(2097152L, c.FlashMaxBytes);
+        Assert.Equal(8192L, c.MemoryReadMaxBytes);
+    }
+
+    [Fact]
+    public void ConfigStore_TargetSwitchAndPatchShareOneCurrent()
+    {
+        // set_target 与 set_permissions 共用写锁：先后应用时互不覆盖对方字段
+        var store = new ConfigStore(new OcdConfig());
+
+        store.ApplyTargetSwitch("target/at32f403axx.cfg");
+        store.ApplyRuntimePatch("{\"allow_flash_erase\": true}");
+
+        Assert.Equal("target/at32f403axx.cfg", store.Current.TargetCfg);
+        Assert.True(store.Current.AllowFlashErase);
+    }
 }

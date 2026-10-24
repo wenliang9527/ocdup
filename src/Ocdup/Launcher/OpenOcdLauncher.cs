@@ -138,14 +138,14 @@ public sealed class OpenOcdLauncher : IDisposable
         }
 
         args.Add("-c");
-        args.Add($"bindto {cfg.Host}");
+        args.Add($"bindto {Tcl.Quote(cfg.Host)}");
         args.Add("-f");
         args.Add(interfaceCfg);
 
         if (!string.IsNullOrWhiteSpace(cfg.Transport))
         {
             args.Add("-c");
-            args.Add($"transport select {cfg.Transport}");
+            args.Add($"transport select {Tcl.Quote(cfg.Transport)}");
         }
 
         if (!string.IsNullOrWhiteSpace(cfg.TargetCfg))

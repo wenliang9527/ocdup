@@ -40,9 +40,9 @@ public sealed class LauncherArgumentsTests : IDisposable
         Assert.Equal(new[]
         {
             "-s", @"C:\ocd\scripts",
-            "-c", "bindto 127.0.0.1",
+            "-c", "bindto {127.0.0.1}",
             "-f", "interface/cmsis-dap.cfg",
-            "-c", "transport select swd",
+            "-c", "transport select {swd}",
             "-f", "target/at32f435xx.cfg",
             "-c", "gdb_port disabled",
             "-c", "telnet_port disabled",
@@ -59,7 +59,7 @@ public sealed class LauncherArgumentsTests : IDisposable
 
         Assert.Equal(new[]
         {
-            "-c", "bindto 127.0.0.1",
+            "-c", "bindto {127.0.0.1}",
             "-f", "interface/stlink.cfg",
             "-c", "gdb_port disabled",
             "-c", "telnet_port disabled",
@@ -74,7 +74,21 @@ public sealed class LauncherArgumentsTests : IDisposable
 
         var args = OpenOcdLauncher.BuildArguments(cfg, null, cfg.InterfaceCfg!);
 
-        Assert.Contains("bindto 127.0.0.2", args);
+        Assert.Contains("bindto {127.0.0.2}", args);
         Assert.Contains("tcl_port 1234", args);
+    }
+
+    [Fact]
+    public void BuildArguments_QuotesHostAndTransportAsTclLiterals()
+    {
+        // ocd.json 侧写进 host/transport 的特殊字符不得逃出 TCL 字面量（A-13）：
+        // 大括号分组后 ]; 与空格都是字面量，注入串行不通
+        var cfg = Load("""{ "interface_cfg": "interface/x.cfg", "host": "127.0.0.1]; shutdown", "transport": "swd] ; halt" }""");
+
+        var args = OpenOcdLauncher.BuildArguments(cfg, null, cfg.InterfaceCfg!);
+
+        Assert.Contains("bindto {127.0.0.1]; shutdown}", args);
+        Assert.Contains("transport select {swd] ; halt}", args);
+        Assert.DoesNotContain("bindto 127.0.0.1", args); // 无引号形态必须消失
     }
 }

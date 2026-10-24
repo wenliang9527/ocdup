@@ -13,34 +13,49 @@ public sealed class ConfigStore
     public static ConfigStore Instance => LazyInstance.Value;
 
     private OcdConfig _current;
+    private readonly object _writeLock = new();
 
-    private ConfigStore(OcdConfig initial) => _current = initial;
+    /// <summary>测试接缝：单测用受控初始配置构造，不经磁盘加载。</summary>
+    internal ConfigStore(OcdConfig initial) => _current = initial;
 
     /// <summary>当前有效配置。</summary>
     public OcdConfig Current => Volatile.Read(ref _current);
 
     /// <summary>重新从磁盘加载（对应设计文档 4.3 的「运行时修改」层；编辑 ocd.json 后无需重启服务器）。</summary>
-    public void Reload() => Volatile.Write(ref _current, OcdConfig.Load());
+    public void Reload()
+    {
+        lock (_writeLock)
+        {
+            Volatile.Write(ref _current, OcdConfig.Load());
+        }
+    }
 
     /// <summary>
     /// 运行时权限补丁（set_permissions 通道）：基于当前配置应用 JSON 变更并原子换入。
     /// 调用方（工具层）负责闸门检查与键白名单；reload from disk 会丢弃 runtime 补丁。
+    /// 读-改-写在同一把锁内：并发补丁不会互相覆盖（丢更新）。
     /// </summary>
     public OcdConfig ApplyRuntimePatch(string json)
     {
-        var next = _current.WithRuntimeChanges(json);
-        Volatile.Write(ref _current, next);
-        return next;
+        lock (_writeLock)
+        {
+            var next = _current.WithRuntimeChanges(json);
+            Volatile.Write(ref _current, next);
+            return next;
+        }
     }
 
     /// <summary>
     /// set_target 通道的运行时切换（只换 target_cfg）：与权限补丁分开的另一条路，
-    /// 校验/闸门在工具层。返回新配置实例。
+    /// 校验/闸门在工具层。返回新配置实例。与 <see cref="ApplyRuntimePatch"/> 共用写锁。
     /// </summary>
     public OcdConfig ApplyTargetSwitch(string targetCfg)
     {
-        var next = _current.WithTargetChange(targetCfg);
-        Volatile.Write(ref _current, next);
-        return next;
+        lock (_writeLock)
+        {
+            var next = _current.WithTargetChange(targetCfg);
+            Volatile.Write(ref _current, next);
+            return next;
+        }
     }
 }
