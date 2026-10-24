@@ -67,7 +67,7 @@ public static class SvdFile
         foreach (var r in Named(container, "register"))
         {
             // cluster 内的寄存器带路径前缀（"PWM.CCR"），按名解析与清单展示都用全名
-            var name = prefix + (Text(r, "name") ?? "(unnamed)");
+            var name = StripDimPlaceholder(prefix + (Text(r, "name") ?? "(unnamed)"));
             var offset = baseOffset + (ParseNumber(Text(r, "addressOffset")) ?? 0);
             var size = ParseInt(Text(r, "size")) ?? defaultSize;
             var access = Text(r, "access") ?? "read-write";
@@ -129,6 +129,14 @@ public static class SvdFile
 
     public static SvdRegister? FindRegister(SvdPeripheral peripheral, string name) =>
         peripheral.Registers.FirstOrDefault(r => r.Name.Equals(name.Trim(), StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// SVD &lt;dim&gt; 数组寄存器的名是 "NAME[%s]"（占位符替换形态）。按名寻址只到数组级
+    /// （= 首元素地址，v0.4.31 起剥掉占位符尾巴——此前这种名字永远匹配不上 FindRegister，
+    /// 且报错不提示数组形态）；按索引寻址单个元素需要契约新增参数，刻意未做。
+    /// </summary>
+    internal static string StripDimPlaceholder(string name) =>
+        name.Contains("[%s]", StringComparison.Ordinal) ? name.Replace("[%s]", "") : name;
 
     public static long AbsoluteAddress(SvdPeripheral peripheral, SvdRegister register) =>
         peripheral.BaseAddress + register.AddressOffset;

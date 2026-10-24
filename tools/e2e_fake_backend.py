@@ -520,6 +520,15 @@ def main():
         print(mcp.call("run_command", {"command": "__e2e_arm_drop__"}))
         print(mcp.call("read_memory", {"address": "0x20000000", "count": 1}))
 
+        banner("A-2 (v0.4.31): list_breakpoints is replay-safe (was op:'bp', whitelist entry dead)")
+        print(mcp.call("run_command", {"command": "__e2e_arm_drop__"}))
+        lb = mcp.call("list_breakpoints", {})
+        print(lb)
+        assert not lb.startswith("ERROR:"), \
+            "list_breakpoints must auto-replay after a forced drop (pure read, ReplaySafeOps)"
+        assert "may have taken effect" not in lb, \
+            "a pure read must never be told 'the command may have taken effect'"
+
         banner("ocdup rtt CLI (v0.4.19): stream channel 0 via the fake RTT TCP data plane, stop at --lines 2")
         rtt = subprocess.run(
             ["dotnet", DLL, "rtt", "--channel", "0", "--port", "19221", "--lines", "2", "--seconds", "60"],

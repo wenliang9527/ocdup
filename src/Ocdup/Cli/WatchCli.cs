@@ -14,6 +14,11 @@ namespace Ocdup.Cli;
 /// </summary>
 public static class WatchCli
 {
+    /// <summary>退出码（对齐 burn/verify/rtt 家族 0/1/2/3）：0 = 正常结束（含 Ctrl+C）；
+    /// 2 = 用法/配置/权限（BLOCKED）；3 = 后端或控制通道丢失。v0.4.31 起与家族一致。</summary>
+    internal const int ExitUsage = 2;
+    internal const int ExitBackend = 3;
+
     public static async Task<int> RunAsync(string[] args)
     {
         var options = WatchOptions.Parse(args);
@@ -26,7 +31,7 @@ public static class WatchCli
         {
             foreach (var e in options.Errors) Console.Error.WriteLine("ERROR: " + e);
             Console.Error.WriteLine("run 'ocdup watch --help' for usage.");
-            return 1;
+            return ExitUsage;
         }
 
         var cfg = ConfigStore.Instance.Current;
@@ -35,7 +40,7 @@ public static class WatchCli
         if (options.Halt && PermissionGate.CheckExec(cfg, "watch --halt") is { } blocked)
         {
             Console.Error.WriteLine(blocked);
-            return 1;
+            return ExitUsage;
         }
 
         List<ElfSymbol> symbols;
@@ -46,7 +51,7 @@ public static class WatchCli
         catch (Exception ex)
         {
             Console.Error.WriteLine("ERROR: " + ex.Message);
-            return 1;
+            return ExitUsage;
         }
 
         // 逐名解析：精确命中才可盯；>4 字节警告跳过（watch 只盯标量，大对象用 dump_memory）；
@@ -81,7 +86,7 @@ public static class WatchCli
         if (watchable.Count == 0)
         {
             Console.Error.WriteLine("ERROR: nothing to watch. list_variables shows what the ELF contains.");
-            return 1;
+            return ExitUsage;
         }
 
         var pad = watchable.Max(s => s.Name.Length);
@@ -129,7 +134,7 @@ public static class WatchCli
                     if (failures >= 30)
                     {
                         Console.Error.WriteLine("ERROR: 30 consecutive failed samples - the backend is probably gone. Exiting.");
-                        return 2;
+                        return ExitBackend;
                     }
                     continue;
                 }
@@ -159,19 +164,33 @@ public static class WatchCli
     internal static bool NotesToStderr(string format) =>
         string.Equals(format, "csv", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>采一拍：逐变量 mdw 对齐字；--halt 时先 halt 200ms 再读、finally 里 resume。</summary>
-    private static async Task<List<uint>> SampleAsync(OcdConfig cfg, List<ElfSymbol> vars, bool halt, CancellationToken ct)
+    /// <summary>
+    /// 采一拍：逐变量 mdw 对齐字；--halt 时先 halt 200ms 再读、finally 里 resume。
+    /// 走 BackendSession 单例；测试走 <see cref="SampleCoreAsync"/> 接缝。
+    /// </summary>
+    private static Task<List<uint>> SampleAsync(OcdConfig cfg, List<ElfSymbol> vars, bool halt, CancellationToken ct) =>
+        SampleCoreAsync(BackendSession.Instance.ExecuteAsync, cfg, vars, halt, ct);
+
+    /// <summary>SampleAsync 的执行通道接缝（签名与 BackendSession.ExecuteAsync 一致），测试注入假通道。</summary>
+    internal delegate Task<string> ExecuteFn(OcdConfig cfg, string command, bool startIfNeeded, CancellationToken ct, string op);
+
+    /// <summary>
+    /// 采样核心（内部接缝，可单测）。P1 修复（v0.4.31，RttCli 同款）：Ctrl+C 落在
+    /// halt→读取窗口时，采样 ct 已取消——finally 里的 resume 若还用它，
+    /// 通道闸 WaitAsync(ct) 会直接抛 OCE，resume 永远到不了后端，目标被留在 halted。
+    /// 所以收尾命令一律 <see cref="CancellationToken.None"/>：收尾必须真正发出去。
+    /// </summary>
+    internal static async Task<List<uint>> SampleCoreAsync(ExecuteFn execute, OcdConfig cfg, List<ElfSymbol> vars, bool halt, CancellationToken ct)
     {
         if (halt)
-            await BackendSession.Instance.ExecuteAsync(cfg, "halt 200", startIfNeeded: true, ct, op: "watch").ConfigureAwait(false);
+            await execute(cfg, "halt 200", startIfNeeded: true, ct, "watch").ConfigureAwait(false);
         try
         {
             var values = new List<uint>(vars.Count);
             foreach (var s in vars)
             {
                 var aligned = s.Address & ~3L;
-                var output = await BackendSession.Instance
-                    .ExecuteAsync(cfg, $"mdw {Parsing.Hex(aligned)} 1", startIfNeeded: !halt, ct, op: "watch").ConfigureAwait(false);
+                var output = await execute(cfg, $"mdw {Parsing.Hex(aligned)} 1", startIfNeeded: !halt, ct, "watch").ConfigureAwait(false);
                 if (!Parsing.TryParseMemoryOutput(output, 32, 1, out var words))
                     throw new BackendException($"could not read '{s.Name}' @ {Parsing.Hex(s.Address)}: {output.ReplaceLineEndings(" ").Trim()}");
                 values.Add(WatchValue.Extract((uint)words[0], s.Address, (int)s.Size));
@@ -184,7 +203,7 @@ public static class WatchCli
             {
                 try
                 {
-                    await BackendSession.Instance.ExecuteAsync(cfg, "resume", startIfNeeded: false, ct, op: "watch").ConfigureAwait(false);
+                    await execute(cfg, "resume", startIfNeeded: false, CancellationToken.None, "watch").ConfigureAwait(false);
                 }
                 catch (BackendException)
                 {
@@ -223,6 +242,11 @@ public static class WatchCli
                           consistent reads; needs allow_exec and pauses the target
           --count <n>     stop after n samples (default: until Ctrl+C)
           --help          this text
+
+        exit codes:
+          0  stopped normally (count reached or Ctrl+C)
+          2  usage / config error / permission gate (BLOCKED) / no watchable symbol
+          3  backend or control-channel lost (30 consecutive failed samples)
 
         config/backend come from ocd.json (OCD_CONFIG) exactly like the MCP tools;
         the OpenOCD backend is started on demand and cleaned up on exit.

@@ -75,13 +75,18 @@ public sealed class BackendSession
     /// </summary>
     public async Task<string> ExecuteAsync(OcdConfig cfg, string command, bool startIfNeeded, CancellationToken ct = default, string op = "tcl")
     {
+        ChannelResult used = default;
         try
         {
-            return await ExecuteOnceAsync(cfg, command, startIfNeeded, ct, op).ConfigureAwait(false);
+            used = await ExecuteOnceAsync(cfg, command, startIfNeeded, ct, op).ConfigureAwait(false);
+            return used.Output;
         }
         catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException or TimeoutException)
         {
-            Invalidate(); // 连接已坏，下次调用重新建立
+            // 连接已坏，下次调用重新建立。v0.4.31 定向失效：只丢真正失败的那条连接——
+            // 此前无条件 Invalidate 会把「失败与清理之间」别的调用刚 Acquire 的新连接一起杀掉
+            //（B 得到伪 ObjectDisposedException，写类 op 还会误报「命令可能已生效」）。
+            if (used.Client is not null) InvalidateClient(used.Client); else Invalidate();
             _traffic.Record(op, "err", $"control channel failed: {ex.Message}", Endpoint(cfg));
 
             if (!IsReplaySafe(op))
@@ -92,14 +97,14 @@ public sealed class BackendSession
             // P1-5：只读命令重放安全——自动重连并重放一次；写操作维持「不重放」。
             try
             {
-                var replayed = await ExecuteOnceAsync(cfg, command, startIfNeeded, ct, op).ConfigureAwait(false);
+                used = await ExecuteOnceAsync(cfg, command, startIfNeeded, ct, op).ConfigureAwait(false);
                 _traffic.Record("backend", "SYS", $"read-only op '{op}' replayed once after reconnect", Endpoint(cfg));
-                return replayed;
+                return used.Output;
             }
             catch (Exception retry) when (retry is IOException or SocketException or ObjectDisposedException
                 or TimeoutException or BackendException)
             {
-                Invalidate();
+                if (used.Client is not null) InvalidateClient(used.Client); else Invalidate();
                 throw new BackendException(
                     $"ERROR: the control channel failed while running '{command}', and the read-only replay " +
                     $"after reconnect failed too: {retry.Message} (original failure: {ex.Message}). " +
@@ -108,7 +113,10 @@ public sealed class BackendSession
         }
     }
 
-    private async Task<string> ExecuteOnceAsync(OcdConfig cfg, string command, bool startIfNeeded, CancellationToken ct, string op)
+    /// <summary>一次通道往返的结果：输出 + 实际承载它的连接（失败时据此定向失效）。</summary>
+    private readonly record struct ChannelResult(string Output, TclRpcClient? Client);
+
+    private async Task<ChannelResult> ExecuteOnceAsync(OcdConfig cfg, string command, bool startIfNeeded, CancellationToken ct, string op)
     {
         // 通道串行（P1-5）：同一时刻只允许一条命令占用 TCL-RPC 连接——业务命令与心跳互斥。
         await _channelGate.WaitAsync(ct).ConfigureAwait(false);
@@ -119,7 +127,7 @@ public sealed class BackendSession
             var output = await client.CommandAsync(command, ct).ConfigureAwait(false);
             Volatile.Write(ref _lastChannelActivityTicks, Environment.TickCount64);
             _traffic.Record(op, "rsp", output, Endpoint(cfg));
-            return output;
+            return new ChannelResult(output, client);
         }
         finally
         {
@@ -194,6 +202,21 @@ public sealed class BackendSession
 
     /// <summary>丢弃当前连接（后端可能已被外部重启或半死）。</summary>
     public void Invalidate() => Interlocked.Exchange(ref _client, null)?.Dispose();
+
+    /// <summary>
+    /// 定向失效（v0.4.31）：仅当 <paramref name="current"/> 仍是 <paramref name="failed"/>
+    /// 时清空并 Dispose；期间被别的调用换上的新连接原样保留（返回 false，什么都不动）。
+    /// 纯 CompareExchange 语义，internal 供单测。
+    /// </summary>
+    internal static bool DropIfCurrent(ref TclRpcClient? current, TclRpcClient failed)
+    {
+        if (!ReferenceEquals(Interlocked.CompareExchange(ref current, null, failed), failed))
+            return false;
+        failed.Dispose();
+        return true;
+    }
+
+    private void InvalidateClient(TclRpcClient failed) => DropIfCurrent(ref _client, failed);
 
     /// <summary>
     /// 重启后端（set_target 的切换通道）：丢连接 → 杀 ocdup 自己拉起的 openocd（外部
@@ -354,19 +377,19 @@ public sealed class BackendSession
             if (!ShouldProbe(connected, idle)) return;
 
             if (!await _channelGate.WaitAsync(0).ConfigureAwait(false)) return; // 业务命令在跑：让路
+            var client = Volatile.Read(ref _client);
+            if (client is null) return;
             try
             {
                 var (stillConnected, stillIdle) = ChannelState;
                 if (!ShouldProbe(stillConnected, stillIdle)) return;
-                var client = Volatile.Read(ref _client);
-                if (client is null) return;
 
                 await client.CommandAsync("version", CancellationToken.None).ConfigureAwait(false);
                 Volatile.Write(ref _lastChannelActivityTicks, Environment.TickCount64);
             }
             catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException or TimeoutException)
             {
-                Invalidate();
+                InvalidateClient(client); // 定向失效：只丢探测失败的那条，不碰别的调用新建的连接
                 _traffic.Record("backend", "SYS",
                     $"heartbeat lost ({ex.Message}) - the backend appears gone; the next call will reconnect automatically.",
                     Endpoint(ConfigStore.Instance.Current));

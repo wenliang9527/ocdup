@@ -106,8 +106,11 @@ public static class SvdTools
         CancellationToken ct = default)
     {
         var cfg = ConfigStore.Instance.Current;
-        var device = GetLoaded(cfg);
-        if (device is null)
+        var loaded = GetLoaded(cfg);
+        if (loaded.Problem is { } svdProblem)
+            return $"ERROR: {svdProblem}\n" +
+                   "Run load_svd(file=...) for the full diagnostic, or fix \"svd_path\" in ocd.json (see show_config).";
+        if (loaded.Device is not { } device)
             return "ERROR: no SVD file is loaded. Call load_svd(file=\"vendor.svd\") first, or set \"svd_path\" in ocd.json " +
                    "(show_config shows whether it is set).";
 
@@ -158,8 +161,11 @@ public static class SvdTools
         if (PermissionGate.CheckMemoryWrite(cfg, "write_peripheral_register") is { } blocked)
             return blocked;
 
-        var device = GetLoaded(cfg);
-        if (device is null)
+        var loaded = GetLoaded(cfg);
+        if (loaded.Problem is { } svdProblem)
+            return $"ERROR: {svdProblem}\n" +
+                   "Run load_svd(file=...) for the full diagnostic, or fix \"svd_path\" in ocd.json (see show_config).";
+        if (loaded.Device is not { } device)
             return "ERROR: no SVD file is loaded. Call load_svd(file=\"vendor.svd\") first, or set \"svd_path\" in ocd.json " +
                    "(show_config shows whether it is set).";
 
@@ -202,33 +208,43 @@ public static class SvdTools
 
     // ── 加载与解析辅助 ──
 
-    private static SvdDevice? GetLoaded(OcdConfig cfg)
+    internal readonly record struct LoadedSvd(SvdDevice? Device, string? Problem);
+
+    /// <summary>
+    /// 取当前可用的 SVD 设备（internal 供单测）。Problem 非空 = svd_path 配了但不可用
+    /// （解析失败/路径不存在）——v0.4.31 起如实透出真实原因，此前吞掉 InvalidDataException
+    /// 会让 read/write_peripheral_register 误报「no SVD file is loaded」（用户明明已设 svd_path）。
+    /// Problem 为空且 Device 为空 = 没配 svd_path（调用方报「未加载」引导）。
+    /// </summary>
+    internal static LoadedSvd GetLoaded(OcdConfig cfg)
     {
         var latest = Volatile.Read(ref _latest);
-        if (latest is not null) return latest;
+        if (latest is not null) return new(latest, null);
 
-        if (string.IsNullOrWhiteSpace(cfg.SvdPath)) return null;
+        if (string.IsNullOrWhiteSpace(cfg.SvdPath)) return default;
 
         string resolved;
         try
         {
             resolved = cfg.ResolvePath(cfg.SvdPath);
         }
-        catch
+        catch (Exception ex)
         {
-            return null;
+            return new(null, $"svd_path '{cfg.SvdPath}' is not a usable path: {ex.Message}");
         }
 
-        if (!File.Exists(resolved)) return null;
+        if (!File.Exists(resolved))
+            return new(null, $"svd_path points to '{resolved}', which does not exist.");
+
         try
         {
             var device = GetOrParse(resolved);
             Volatile.Write(ref _latest, device);
-            return device;
+            return new(device, null);
         }
-        catch (InvalidDataException)
+        catch (InvalidDataException ex)
         {
-            return null;
+            return new(null, $"the file at \"svd_path\" could not be parsed: {ex.Message}");
         }
     }
 

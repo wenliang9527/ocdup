@@ -67,7 +67,7 @@ public static class BpTools
             return $"ERROR: length must be between 1 and {MaxLengthBytes} bytes.";
 
         var command = BreakpointCommand(addr, length, hw);
-        return await RunAsync(cfg, command, ct,
+        return await RunAsync(cfg, command, ct, op: "add_breakpoint",
             $"breakpoint set @ {Parsing.Hex(addr)}" + (hw ? " (hardware)" : "")).ConfigureAwait(false);
     }
 
@@ -85,12 +85,13 @@ public static class BpTools
             return blocked;
 
         if (string.IsNullOrWhiteSpace(address))
-            return await RunAsync(cfg, RemoveBreakpointCommand(null), ct, "all breakpoints removed").ConfigureAwait(false);
+            return await RunAsync(cfg, RemoveBreakpointCommand(null), ct, op: "remove_breakpoint",
+                "all breakpoints removed").ConfigureAwait(false);
 
         if (!Parsing.TryParseHex(address, out var addr))
             return $"ERROR: address '{address}' is not a hex value. Use a hex string like '0x08000100'.";
 
-        return await RunAsync(cfg, RemoveBreakpointCommand(Parsing.Hex(addr)), ct,
+        return await RunAsync(cfg, RemoveBreakpointCommand(Parsing.Hex(addr)), ct, op: "remove_breakpoint",
             $"breakpoint removed @ {Parsing.Hex(addr)}").ConfigureAwait(false);
     }
 
@@ -102,7 +103,7 @@ public static class BpTools
     public static async Task<string> ListBreakpoints(CancellationToken ct = default)
     {
         var cfg = ConfigStore.Instance.Current;
-        return await RunAsync(cfg, "bp", ct, "breakpoints listed").ConfigureAwait(false);
+        return await RunAsync(cfg, "bp", ct, op: "list_breakpoints", "breakpoints listed").ConfigureAwait(false);
     }
 
     [McpServerTool(Name = "add_watchpoint")]
@@ -143,7 +144,7 @@ public static class BpTools
         }
 
         var command = WatchpointCommand(addr, length, normalizedAccess, matchValue);
-        return await RunAsync(cfg, command, ct,
+        return await RunAsync(cfg, command, ct, op: "add_watchpoint",
             $"watchpoint set @ {Parsing.Hex(addr)} ({normalizedAccess})").ConfigureAwait(false);
     }
 
@@ -168,7 +169,7 @@ public static class BpTools
         if (!Parsing.TryParseHex(address, out var addr))
             return $"ERROR: address '{address}' is not a hex value. Use a hex string like '0x20000000'.";
 
-        return await RunAsync(cfg, RemoveWatchpointCommand(Parsing.Hex(addr)), ct,
+        return await RunAsync(cfg, RemoveWatchpointCommand(Parsing.Hex(addr)), ct, op: "remove_watchpoint",
             $"watchpoint removed @ {Parsing.Hex(addr)}").ConfigureAwait(false);
     }
 
@@ -196,7 +197,7 @@ public static class BpTools
         var removed = new List<string>();
         foreach (var addr in addresses)
         {
-            var result = await RunAsync(cfg, RemoveWatchpointCommand(addr), ct,
+            var result = await RunAsync(cfg, RemoveWatchpointCommand(addr), ct, op: "remove_watchpoint",
                 $"watchpoint removed @ {addr}").ConfigureAwait(false);
             if (!result.StartsWith("ERROR:", StringComparison.OrdinalIgnoreCase))
                 removed.Add(addr);
@@ -206,12 +207,14 @@ public static class BpTools
                (removed.Count == addresses.Count ? "" : $"\nnote: {addresses.Count - removed.Count} removal(s) reported an error - see the lines above.");
     }
 
-    /// <summary>执行并回报（与 halt/resume 同一形态：命令回显 + 透传输出，空输出给一句说明）。</summary>
-    private static async Task<string> RunAsync(OcdConfig cfg, string command, CancellationToken ct, string what)
+    /// <summary>执行并回报（与 halt/resume 同一形态：命令回显 + 透传输出，空输出给一句说明）。
+    /// op 是发起调用的工具名（流量镜像的 tool 字段 + 断链重放白名单的判定键——v0.4.31 起
+    /// 五个工具各传各的，此前恒 "bp"，list_breakpoints 的重放白名单条目因此从未生效）。</summary>
+    private static async Task<string> RunAsync(OcdConfig cfg, string command, CancellationToken ct, string op, string what)
     {
         try
         {
-            var output = (await BackendSession.Instance.ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: "bp")).Trim();
+            var output = (await BackendSession.Instance.ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: op)).Trim();
             return $"{what} ({command}).\n" +
                    (output.Length == 0 ? "(no output - the backend accepted it silently)" : output);
         }

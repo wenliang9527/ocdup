@@ -83,38 +83,66 @@ public static class SymbolTools
         if (PermissionGate.CheckReadLimit(cfg, totalBytes, "read_variable") is { } blocked)
             return blocked;
 
-        var count = (int)((totalBytes + 3) / 4);
+        // mdw 只能读 4 字节对齐字（WatchCli 同款纪律）：packed struct 里的变量会落在
+        // 非对齐地址——对齐到字边界、多读半字，再按小端摘出属于变量的那几个字节。
+        var (readAddress, wordCount) = ReadPlan(symbol.Address, totalBytes);
         string output;
         try
         {
             output = (await BackendSession.Instance
-                .ExecuteAsync(cfg, $"mdw {Parsing.Hex(symbol.Address)} {count}", startIfNeeded: true, ct, op: "read_variable")).Trim();
+                .ExecuteAsync(cfg, $"mdw {Parsing.Hex(readAddress)} {wordCount}", startIfNeeded: true, ct, op: "read_variable")).Trim();
         }
         catch (BackendException ex)
         {
             return ex.Message;
         }
 
-        if (!Parsing.TryParseMemoryOutput(output, 32, count, out var words))
-            return $"ERROR: could not parse the backend output as {count} x 32-bit words. Raw output:\n{output}";
+        if (!Parsing.TryParseMemoryOutput(output, 32, wordCount, out var words))
+            return $"ERROR: could not parse the backend output as {wordCount} x 32-bit words. Raw output:\n{output}";
+
+        var bytes = ExtractBytes(words, symbol.Address, totalBytes);
 
         var sb = new StringBuilder();
         sb.Append($"{symbol.Name} @ {Parsing.Hex(symbol.Address)} ({totalBytes} bytes): ");
         // 小端逐字节呈现：1/2/4 字节给出单值解释，更大的对象给 hex 串
-        if (totalBytes == 1) sb.Append($"0x{words[0] & 0xFF:x2}");
-        else if (totalBytes == 2) sb.Append($"0x{(words[0] & 0xFFFF):x4}");
-        else if (totalBytes == 4) sb.Append($"0x{words[0] & 0xFFFFFFFF:x8}");
+        if (totalBytes == 1) sb.Append($"0x{bytes[0]:x2}");
+        else if (totalBytes == 2) sb.Append($"0x{BitConverter.ToUInt16(bytes):x4}");
+        else if (totalBytes == 4) sb.Append($"0x{BitConverter.ToUInt32(bytes):x8}");
         else
         {
-            var bytes = new byte[totalBytes];
-            for (var i = 0; i < count; i++)
-                for (var b = 0; b < 4 && i * 4 + b < totalBytes; b++)
-                    bytes[i * 4 + b] = (byte)(words[i] >> (8 * b));
             sb.Append(Convert.ToHexString(bytes, 0, (int)Math.Min(totalBytes, 64)).ToLowerInvariant());
             if (totalBytes > 64) sb.Append($" ... ({totalBytes} bytes total, little-endian)");
         }
         sb.Append("\nraw words: ").Append(output);
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// 变量读取计划（纯函数，可单测，v0.4.31 非对齐修复）：mdw 按字读，
+    /// 起点对齐到 4 字节边界，字数覆盖「对齐损失 + 变量全部字节」。
+    /// </summary>
+    internal static (long AlignedAddress, int WordCount) ReadPlan(long address, long sizeBytes)
+    {
+        var aligned = address & ~3L;
+        var end = address + sizeBytes;
+        var words = (int)((end - aligned + 3) / 4);
+        return (aligned, words);
+    }
+
+    /// <summary>
+    /// 从 mdw 字序列摘出变量的字节（纯函数，可单测）：小端，起点按
+    /// (address &amp; 3) 偏移——与 <see cref="ReadPlan"/> 配对使用。
+    /// </summary>
+    internal static byte[] ExtractBytes(long[] words, long address, long sizeBytes)
+    {
+        var offsetInWord = (int)(address & 3);
+        var bytes = new byte[sizeBytes];
+        for (var i = 0; i < sizeBytes; i++)
+        {
+            var pos = offsetInWord + i;
+            bytes[i] = (byte)((words[pos / 4] >> (8 * (pos % 4))) & 0xFF);
+        }
+        return bytes;
     }
 
     [McpServerTool(Name = "write_variable")]
@@ -144,21 +172,52 @@ public static class SymbolTools
         if (!Parsing.TryParseHex(value, out var parsed))
             return $"ERROR: value '{value}' is not a hex value. Use forms like '0x42' or '42'.";
 
-        var width = (int)symbol.Size * 8;
-        var writer = symbol.Size switch { 1 => "mwb", 2 => "mwh", _ => "mww" };
-        var command = $"{writer} {Parsing.Hex(symbol.Address)} {Parsing.HexValue(parsed, width)}";
-
+        var commands = WritePlan(symbol.Address, (int)symbol.Size, parsed);
+        string lastOutput = "";
         try
         {
-            var output = (await BackendSession.Instance
-                .ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: "write_variable")).Trim();
-            return $"wrote {name} ({symbol.Size} byte(s)) @ {Parsing.Hex(symbol.Address)} = {Parsing.HexValue(parsed, width)}:\n" +
-                   (output.Length == 0 ? "(no output - write completed silently)" : output);
+            foreach (var command in commands)
+            {
+                lastOutput = (await BackendSession.Instance
+                    .ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: "write_variable")).Trim();
+            }
         }
         catch (BackendException ex)
         {
             return ex.Message;
         }
+
+        var width = (int)symbol.Size * 8;
+        return $"wrote {name} ({symbol.Size} byte(s)) @ {Parsing.Hex(symbol.Address)} = {Parsing.HexValue(parsed, width)}:\n" +
+               (lastOutput.Length == 0 ? "(no output - write completed silently)" : lastOutput);
+    }
+
+    /// <summary>
+    /// 变量写入计划（纯函数，可单测，v0.4.31 非对齐修复）：mww/mwh 只认对齐地址——
+    /// 非对齐时退化为逐字节 mwb（小端拆分），对齐时维持单条 mw* 命令不变。
+    /// </summary>
+    internal static IReadOnlyList<string> WritePlan(long address, int sizeBytes, long value)
+    {
+        var aligned = sizeBytes switch
+        {
+            4 => address % 4 == 0,
+            2 => address % 2 == 0,
+            _ => true,
+        };
+        if (aligned)
+        {
+            var width = sizeBytes * 8;
+            var writer = sizeBytes switch { 1 => "mwb", 2 => "mwh", _ => "mww" };
+            return [$"{writer} {Parsing.Hex(address)} {Parsing.HexValue(value, width)}"];
+        }
+
+        var commands = new List<string>(sizeBytes);
+        for (var i = 0; i < sizeBytes; i++)
+        {
+            var b = (value >> (8 * i)) & 0xFF;
+            commands.Add($"mwb {Parsing.Hex(address + i)} 0x{b:x2}");
+        }
+        return commands;
     }
 
     private record SymbolLookup(ElfSymbol? Symbol, string? Problem);

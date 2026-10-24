@@ -33,6 +33,7 @@ public static class DoctorCli
         exit codes:
           0  no FAIL items (warnings are fine - a cold start has no backend yet)
           1  at least one FAIL item - fix the listed items and re-run
+          2  usage error (unknown option) - run 'ocdup doctor --help'
 
         typical first command on a new machine; config/backend come from ocd.json
         (OCD_CONFIG) exactly like the MCP tools.
