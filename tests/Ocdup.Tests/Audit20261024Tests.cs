@@ -73,9 +73,6 @@ public sealed class Audit20261024Tests : IDisposable
     public async Task WatchSample_WithoutHalt_DoesNotTouchExecCommands()
     {
         var commands = new List<string>();
-        Task<string> Execute(OcdConfig cfg, string command, bool startIfNeeded, CancellationToken ct, string op) =>
-            Task.FromResult("0x20000000: 44332211");
-
         var vars = new List<ElfSymbol> { new("gCounter", 0x20000000, 4) };
         var values = await WatchCli.SampleCoreAsync(
             (cfg, cmd, start, ct, op) => { lock (commands) commands.Add(cmd); return Task.FromResult("0x20000000: 44332211"); },
