@@ -70,19 +70,17 @@ public static class FlashTools
 
     [McpServerTool(Name = "flash_write")]
     [Description(
-        "Download an image to the target flash. Parameters: file (path to .elf/.hex/.bin; relative paths resolve against the ocd.json directory), " +
-        "address (hex load address like '0x08000000'; required for raw .bin images, ignored for .elf/.hex), verify (default true), " +
-        "reset (default true: run 'reset run' after programming). " +
-        "The outcome is decided by a read-back: after 'program', a separate 'verify_image' step is the authoritative verdict - " +
-        "'programmed + verified' (reset runs), 'programmed but verify FAILED' / 'write failed' / " +
-        "'verify INCONCLUSIVE' (the backend could not run its CRC algorithm - that says nothing about a mismatch; halt the target and retry verify_image) " +
-        "(reset is skipped for all non-clean verdicts). " +
-        "Error text from the program step is advisory only (some drivers emit spurious errors, e.g. PY32's fake AHB error). " +
-        "With verify=false the outcome is 'programmed (unverified)' and only that advisory text gates the reset. " +
-        "While running, openocd's log lines (erased sectors / wrote bytes) are forwarded as MCP progress notifications " +
-        "when the caller requested a progress token. " +
+        "Download an image to the target flash. Parameters: file (.elf/.hex/.bin; relative paths resolve against the ocd.json directory), " +
+        "address (hex load address like '0x08000000'; required for raw .bin, ignored for .elf/.hex), verify (default true), " +
+        "reset (default true: 'reset run' after programming). " +
+        "The verdict comes from an independent read-back verify_image step: 'programmed + verified' (reset runs), " +
+        "'programmed but verify FAILED' / 'write failed' / 'verify INCONCLUSIVE' (the backend could not run its CRC algorithm - " +
+        "that says nothing about a mismatch; halt the target and retry verify_image). " +
+        "reset is skipped for every non-clean verdict. Error text from the program step is advisory only " +
+        "(some drivers emit spurious errors, e.g. PY32's fake AHB error); with verify=false it is also what gates the reset. " +
+        "While running, openocd's log lines are forwarded as MCP progress notifications when the caller requested a progress token. " +
         "Gated by read_only / allow_flash / flash_allowed_paths / flash_max_bytes - a BLOCKED answer means the settings forbid it (see show_config). " +
-        "The same orchestration is available outside MCP as 'ocdup burn <file>' (v0.4.20).")]
+        "Same orchestration outside MCP as 'ocdup burn <file>'.")]
     public static async Task<string> FlashWrite(
         [Description("Path to the image to program (.elf/.hex/.bin).")] string file,
         [Description("Load address for raw .bin images, hex string like '0x08000000'. Ignored for .elf/.hex.")] string? address = null,
@@ -259,15 +257,14 @@ public static class FlashTools
 
     [McpServerTool(Name = "verify_image")]
     [Description(
-        "Compare an image file against the target flash WITHOUT writing anything (backend command 'verify_image'). " +
-        "Use it to answer 'what firmware is actually on the board' - e.g. re-verify a previously flashed build. " +
-        "Parameters: file (.elf/.hex/.bin; relative paths resolve against the ocd.json directory), " +
+        "Compare an image file against the target flash WITHOUT writing anything (backend command 'verify_image') - " +
+        "answers 'what firmware is actually on the board'. Parameters: file (.elf/.hex/.bin; relative paths resolve against the ocd.json directory), " +
         "address (required for raw .bin, hex string like '0x08000000'; ignored for .elf/.hex). " +
         "Read-only: no permission gate applies and no file is written on this PC. " +
         "IMPORTANT: the backend's flash-verify algorithm needs a stably halted core. If the firmware is running, " +
         "the answer can be 'VERIFY INCONCLUSIVE' (the CRC algorithm could not run) - that says NOTHING about whether " +
         "the content matches; halt (allow_exec), verify again, then resume. " +
-        "The same comparison is available outside MCP as 'ocdup verify <file>' (v0.4.26, exit-code mapped).")]
+        "Also available outside MCP as 'ocdup verify <file>' (exit-code mapped).")]
     public static async Task<string> VerifyImage(
         [Description("Path to the image to verify against target flash (.elf/.hex/.bin).")] string file,
         [Description("Offset for raw .bin images, hex string like '0x08000000'. Ignored for .elf/.hex.")] string? address = null,

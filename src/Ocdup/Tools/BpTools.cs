@@ -42,9 +42,7 @@ public static class BpTools
 
     [McpServerTool(Name = "add_breakpoint")]
     [Description(
-        "Set a breakpoint at an address (backend command 'bp <address> <length> [hw]'). Parameters: address (hex string like '0x08000100'), " +
-        "length (bytes, default 2 - ARM Thumb instruction width; always sent because some backends reject a bare address), " +
-        "hw (default false - force a hardware breakpoint). " +
+        "Set a breakpoint at an address (backend command 'bp <address> <length> [hw]'). " +
         "REAL-MACHINE BOUNDARY (atopenocd-py32, verified 2026-10-19): SOFTWARE breakpoints (flash region) need a HALTED target - " +
         "with the firmware running the backend answers \"can't add breakpoint: target running\"; halt first (allow_exec), set, then resume. " +
         "HARDWARE breakpoints (hw=true) can be set while the target runs. " +
@@ -109,9 +107,6 @@ public static class BpTools
     [McpServerTool(Name = "add_watchpoint")]
     [Description(
         "Set a data watchpoint: halt when the target accesses a memory range (backend command 'wp <address> <length> <access> [value]'). " +
-        "Parameters: address (hex string), length (bytes, default 4 - always sent because some backends require it), " +
-        "access ('r' = read, 'w' = write (default), 'a' = either), value (optional hex mask-and-match value; " +
-        "the backend compares accesses against it). " +
         "REAL-MACHINE BOUNDARY (atopenocd-py32, verified 2026-10-19): watchpoints need a HALTED target " +
         "(\"can't add write watchpoint ... target running\") - halt first (allow_exec), set, then resume. " +
         "Hardware watchpoints are a scarce resource (typically 4-8 per Cortex-M) - the backend reports when they run out. " +

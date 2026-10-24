@@ -15,11 +15,12 @@ public static class MemoryTools
 {
     [McpServerTool(Name = "read_memory")]
     [Description(
-        "Read target memory at an address. Parameters: address (hex string like '0x20000000'), count (how many units to read, default 16), " +
-        "width (unit size in bits: 8, 16 or 32, default 32), format ('text' = the backend's '<addr>: <values>' lines, default; " +
-        "'json' = structured {address,width,count,bytes,values:[hex strings]} parsed from the same text - an unparseable output returns an ERROR with the raw text). " +
-        "Read-only. If the read fails while the CPU is running, call halt first and resume afterwards (both gated by allow_exec). " +
-        "For large ranges (whole flash bank, big RAM snapshot) use dump_memory instead - this tool is capped by memory_read_max_bytes.")]
+        "Read target memory at an address. Parameters: address (hex string like '0x20000000'), count (units to read, default 16), " +
+        "width (8, 16 or 32 bits, default 32), format ('text' = the backend's '<addr>: <values>' lines, default; " +
+        "'json' = structured {address,width,count,bytes,values:[hex strings]} parsed from the same text - an unparseable output " +
+        "returns an ERROR with the raw text). " +
+        "Read-only. If the read fails while the CPU is running, halt first and resume afterwards (both gated by allow_exec). " +
+        "Large ranges (whole flash bank, big RAM snapshot) belong to dump_memory - this tool is capped by memory_read_max_bytes.")]
     public static async Task<string> ReadMemory(
         [Description("Start address, hex string like '0x20000000'.")] string address,
         [Description("Number of units to read (default 16). The total size is capped by memory_read_max_bytes.")] int count = 16,
@@ -135,9 +136,8 @@ public static class MemoryTools
 
     [McpServerTool(Name = "dump_memory")]
     [Description(
-        "Dump a block of target memory/flash into a file on this PC (backend command 'dump_image'). " +
-        "Use this instead of read_memory for large ranges - a whole flash bank or big RAM snapshot - " +
-        "because read_memory is capped by memory_read_max_bytes and floods the conversation with text. " +
+        "Dump a block of target memory/flash into a file on this PC (backend command 'dump_image') - the large-range alternative " +
+        "to read_memory, which is capped by memory_read_max_bytes and floods the conversation with text. " +
         "Read-only on the target, but it writes one file on this PC: gated by dump_allowed_paths (default 'dumps/' next to ocd.json) " +
         "and dump_max_bytes (default 64 MB, 0 = unlimited). " +
         "While running, openocd's log lines are forwarded as MCP progress notifications (when the caller requested a progress token). " +

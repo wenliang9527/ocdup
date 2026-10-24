@@ -21,10 +21,11 @@ public static class ConfigTools
 
     [McpServerTool(Name = "set_permissions")]
     [Description(
-        "Change permission settings at RUNTIME (no ocd.json edit needed). Gated by allow_set_permissions in ocd.json " +
-        "(default false - loosening permissions is the human's decision, this key is that authorization; a BLOCKED answer means it is not enabled). " +
-        "Pass only the settings you want to change; path whitelists (flash_allowed_paths / dump_allowed_paths) and probe/target config are NOT settable here - only via ocd.json. " +
-        "Runtime changes are lost when ocd.json is reloaded (show_config reload=true) or the server restarts. See show_config afterwards to confirm.")]
+        "Change permission settings at RUNTIME (no ocd.json edit needed). Gated by allow_set_permissions (default false - " +
+        "loosening permissions is the human's decision, this key is that authorization; a BLOCKED answer means it is not enabled). " +
+        "Pass only the settings you want to change; path whitelists (flash_allowed_paths / dump_allowed_paths) and probe/target " +
+        "config are NOT settable here - only via ocd.json. " +
+        "Runtime changes are lost on show_config reload=true or a server restart. See show_config afterwards to confirm.")]
     public static string SetPermissions(
         [Description("Master switch: block all target-changing operations.")] bool? readOnly = null,
         [Description("Gate for write_memory.")] bool? allowMemoryWrite = null,

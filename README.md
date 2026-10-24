@@ -102,10 +102,14 @@ ocdup watch --name adc --halt                    # 每拍暂停固件读一致�
 ocdup watch --help                               # 全部选项
 ```
 
+退出码对齐 burn/verify/rtt 家族：`0` 正常结束（含 Ctrl+C）、`2` 用法/配置/权限（BLOCKED）、
+`3` 后端或控制通道丢失（连续 30 拍失败）。
+
 ### 🩺 doctor CLI（P1-6，v0.4.15）
 
 换机 / 上手排障第一步——把四步外部依赖拼成一张 [OK]/[WARN]/[FAIL] + 如何修的体检单
-（只读：不拉起 openocd、不碰目标；端口已有监听时只做一次只读 version 查询；有 FAIL 退出码 1，可进 CI）：
+（只读：不拉起 openocd、不碰目标；端口已有监听时只做一次只读 version 查询；有 FAIL 退出码 1，
+用法错退出码 2，可进 CI）：
 
 ```bash
 ocdup doctor    # 检查 ocd.json / OCD_BIN(--version 实跑) / OCD_SCRIPTS / 探针 / 后端端口
@@ -431,11 +435,12 @@ dotnet build Ocdup.sln && dotnet test Ocdup.sln --no-build -v q
 
 | 里程碑 | 状态 |
 |---|---|
-| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 381 个单测 + 假后端 e2e 覆盖（45 个检查段） |
+| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 398 个单测 + 假后端 e2e 覆盖（46 个检查段） |
 | S4 真机联调 | ✅ AT32F403AVGT7 + CMSIS-DAP v2（DAPLink `0D28:0204`）+ atopenocd：`connect` → `flash_info` → `flash_write`（擦 25 扇区、写 + Verified OK、reset run）→ `read_memory` 运行态读回向量表。**2026-10-13 第二轮**：`burn`/`verify` 治具链路 dump → burn → verify → dump 闭环 sha256 一致；实烧 SL150 v4.0 固件（74.4KB）后 hex 覆盖区逐字节零差异、固件正常运行 |
 | 安全与正确性加固（v0.4.12–v0.4.16） | ✅ `run_command` 内容分类（写类命令与专用工具同权/重定向）、`flash_write` 以独立读回校验为权威判据、断链只读自动重放 + 空闲心跳、烧录/擦除/dump 执行期 progress notification |
 | doctor CLI | ✅ `ocdup doctor` 五项环境体检（ocd.json / OCD_BIN / scripts / 探针 / 后端端口），换机第一步 |
 | 全项目优化轮（v0.4.30） | ✅ burn/flash_write 的读回判据与 verify_image 对齐（CRC 起不来 = INCONCLUSIVE，不再误报不匹配）；watch csv 形态人读信息改走 stderr（重定向得干净 CSV）；raw 通道补断点/观察点分类（bp/wp 归 allow_exec）；ELF 符号解析加 mtime 缓存 + dump 哈希/预览单趟读；**M-bp 断点/观察点五件落地**（30 工具；2026-10-19 真机核定：length 恒下发、运行态仅硬件断点可设、观察点全清走「列出逐个删」）；`ocdup --version`/`--help` |
+| 第三轮复查（v0.4.31–v0.4.32，docs/audit-2026-10-24.md） | ✅ watch --halt Ctrl+C 窗口收尾 resume 必达（不再残留 halted）+ watch 退出码对齐家族；bp 五件 op 各归其名（list_breakpoints 断链重放生效）；read/write_variable 非对齐地址修复；SVD 数组寄存器 `[%s]` 按名可达 + svd_path 损坏时报真因；BackendSession 定向失效（不再误杀并发新连接）；工具描述瘦身 25,963→24,900 B（契约逐条保留） |
 | S5 打包与客户端注册 | 🟡 已注册进 DSH（desktop + web 两个 profile）与 ZCode（`mcp.servers` 条目 + `ocdup-zcode` 插件，均指 `publish/ocdup.exe`）；换机第一步先跑 `ocdup doctor`（v0.4.15） |
 
 后续里程碑（条件断点、L3 协议字典、与 acccom 的串口协同、多后端注册表 Q8 等）见

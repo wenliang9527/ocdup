@@ -19,12 +19,11 @@ public static class IdentifyTools
     [Description(
         "Identify the connected chip: read the ARM-standard CPUID at 0xE000ED00 (decodes the Cortex-M core - reliable on every Cortex-M) " +
         "and the vendor ID register at dbgmcu_address (default '0xE0042000', the STM32/AT32 DBGMCU_IDCODE convention; override for other vendors), " +
-        "whose low 12 bits are the device ID (DEV_ID). DEV_ID is looked up in the optional \"chip_id_map\" in ocd.json " +
+        "whose low 12 bits are the DEV_ID, looked up in the optional \"chip_id_map\" in ocd.json " +
         "(keys are DEV_ID hex like \"0x410\", values are family names / suggested target_cfg). " +
         "Read-only. If reads fail while the target runs, halt first and resume afterwards (allow_exec). " +
-        "Cross-check with flash_info: the probed flash size helps tell apart same-family variants. " +
-        "Also reports the model inferred from the pinned target_cfg filename (heuristic, not a hardware read) " +
-        "when DEV_ID is not decodable (e.g. chips without the STM32/AT32 DBGMCU_IDCODE convention). " +
+        "Cross-check with flash_info to tell apart same-family variants; falls back to a model inferred from the pinned " +
+        "target_cfg filename (heuristic, not a hardware read) when DEV_ID is not decodable. " +
         "NOTE: connect already runs this automatically after a successful connect, so you rarely need to call it manually.")]
     public static async Task<string> IdentifyChip(
         [Description("Vendor ID register address, hex string (default '0xE0042000', STM32/AT32 DBGMCU_IDCODE convention).")] string dbgmcuAddress = "0xE0042000",

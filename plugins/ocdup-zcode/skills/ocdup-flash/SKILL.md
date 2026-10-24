@@ -43,7 +43,8 @@ reset 比对（簇寄存器带路径，如 `"TIM1.PWM.CCR"`）→ `write_periphe
 另有 **`ocdup watch` 子命令 CLI**（M-watch，不是 MCP 工具）：按符号名定时采样变量
 （`--name` 多个、`--interval`、`--format csv` 重定向画曲线、`--halt` 每拍暂停固件读
 一致快照），长时运行不占 MCP 通道；`ocdup watch --help` 看用法。csv 形态下 stdout
-只出表头+数据行（banner/清单/收尾走 stderr），`> log.csv` 即得干净文件。
+只出表头+数据行（banner/清单/收尾走 stderr），`> log.csv` 即得干净文件；退出码
+对齐 burn/verify/rtt 家族（0=正常结束含 Ctrl+C，2=用法/权限，3=后端丢失）。
 
 另有 **`ocdup rtt` 子命令 CLI**（v0.4.19，不是 MCP 工具）：读固件 printf / RTT 日志流——
 原始字节直通 stdout，`--address`（查 map 文件 `_SEGGER_RTT`）+ `--lines/--seconds` 限长、
@@ -60,7 +61,7 @@ halt 后重试（v0.4.30 起 burn/flash_write 与 verify_image 用同一份判�
 
 另有 **`ocdup doctor` 子命令 CLI**（v0.4.15，不是 MCP 工具）：环境体检，换机/排障
 第一步——把 ocd.json / OCD_BIN / OCD_SCRIPTS / 探针 / 后端端口五项拼成一张
-`[OK]/[WARN]/[FAIL]` + 「如何修」的清单，只读、不拉起后端、不碰目标，有 FAIL 退出码 1。
+`[OK]/[WARN]/[FAIL]` + 「如何修」的清单，只读、不拉起后端、不碰目标，有 FAIL 退出码 1（用法错 2）。
 
 ## 标准烧录流程
 
