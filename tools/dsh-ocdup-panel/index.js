@@ -680,6 +680,8 @@ module.exports = {
             return
           }
           if (helpBody === null) {
+            // AGENTS.md 可选覆盖(部署时可自行放入);仓库里没有这个文件,
+            // 所以常态就是落到下面的 HELP_MD——保留这条路径只为「放进去就生效」。
             try { helpBody = fs.readFileSync(path.join(__dirname, 'AGENTS.md'), 'utf8') } catch (e) { helpBody = HELP_MD }
           }
           res.writeHead(200, {

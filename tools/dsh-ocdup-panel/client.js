@@ -530,12 +530,47 @@ window.__ModuleLoader__.load({
       return null
     }
 
+    // ---- v1.5.3(A-10):OCDUP-RESULT 机器结论行 ----
+    // ocdup v0.4.34 起 flash_write / verify_image / dump_memory 的响应末行追加
+    //   OCDUP-RESULT: <op>=<verdict>
+    // 人读文本一字不动,因此「wrote N bytes」这类进度行在 VERIFY FAILED 时同样存在——
+    // 只按字节数判绿会把校验失败画成绿色 ✓(v1.4.0 起的实测缺陷)。标签存在时它是权威。
+    const RESULT_TAG_RE = /OCDUP-RESULT:\s*([a-z][a-z-]*)\s*=\s*([A-Z][A-Z-]*)/g
+
+    // 一条文本里出现的全部结论标签(同步扫描,先重置 lastIndex 防跨调用残留)
+    const parseResultTags = (text) => {
+      const s = String(text || '')
+      const out = []
+      RESULT_TAG_RE.lastIndex = 0
+      let m
+      while ((m = RESULT_TAG_RE.exec(s)) !== null) out.push({ op: m[1], verdict: m[2] })
+      return out
+    }
+
+    // 同一次调用只认最后一个标签(响应末行),前面的历史行不参与判定
+    const lastResultTag = (text) => {
+      const tags = parseResultTags(text)
+      return tags.length ? tags[tags.length - 1] : null
+    }
+
+    // 结论 → 视觉档位。只有 OK 是绿;INCONCLUSIVE/PARTIAL/UNVERIFIED 是「没验成/待验」
+    // 而不是失败(与 ocdup 措辞一致,否则会怂恿用户无谓重烧),给琥珀;FAILED 家族给红。
+    const verdictToneOf = (verdict) => {
+      const v = String(verdict || '').toUpperCase()
+      if (v === 'OK') return { tone: TONE_OK, mark: 'ok' }
+      if (v === 'INCONCLUSIVE' || v === 'PARTIAL' || v === 'UNVERIFIED') return { tone: TONE_WARN, mark: 'warn' }
+      return { tone: TONE_ERR, mark: 'err' }
+    }
+
     // 一次烧录类调用的聚合进度(logs = 归属该调用的 log 文本):
-    // { phase:'idle'|'erase'|'write'|'verify'|'done', sectors, bytes, verified, ok }
+    // { phase:'idle'|'erase'|'write'|'verify'|'done', sectors, bytes, verified, ok, tag }
     // 擦除段无总量(openocd 不预告总扇区数),UI 以流光条表示「进行中、完成度未知」。
+    // v1.5.3:出现结论标签时 ok 只由标签决定——字节数再大也不算通过。
     const flashProgressOf = (logs) => {
-      const out = { phase: 'idle', sectors: 0, bytes: 0, verified: 0, ok: false }
+      const out = { phase: 'idle', sectors: 0, bytes: 0, verified: 0, ok: false, tag: null }
       for (const t of logs || []) {
+        const tag = lastResultTag(t)
+        if (tag) out.tag = tag
         const p = parseFlashProgress(t)
         if (!p) continue
         if (p.type === 'erase') { out.sectors += p.count; if (out.phase === 'idle') out.phase = 'erase' }
@@ -546,6 +581,8 @@ window.__ModuleLoader__.load({
           out.phase = out.ok ? 'done' : 'verify'
         }
       }
+      if (out.tag) out.ok = out.tag.verdict === 'OK'
+      if (out.ok) out.phase = 'done'
       return out
     }
 
@@ -636,12 +673,18 @@ window.__ModuleLoader__.load({
         .map(([name, n]) => ({ name, n }))
     }
 
-    // 关键行标记:烧录/校验成功(ok,绿)/ 错误(err,红),驱动行视觉高亮
+    // 关键行标记:烧录/校验成功(ok,绿)/ 存疑(warn,琥珀)/ 错误(err,红),驱动行视觉高亮
+    // v1.5.3:带 OCDUP-RESULT 的行由标签定性——`programmed but verify FAILED` 这类
+    // 响应里同样有 "verified/differ" 字样,纯正则会把失败行点亮成绿色。
     const rowMark = (e) => {
       if (!e || e.kind === 'gap') return null
       const t = e.text || ''
       if (e.dir === 'err') return 'err'
-      if (e.dir === 'rsp' && (/\*\*\s*Verified OK\s*\*\*/i.test(t) || /verified\s+\d+\s+bytes/i.test(t))) return 'ok'
+      if (e.dir === 'rsp') {
+        const tag = lastResultTag(t)
+        if (tag) return verdictToneOf(tag.verdict).mark
+        if (/\*\*\s*Verified OK\s*\*\*/i.test(t) || /verified\s+\d+\s+bytes/i.test(t)) return 'ok'
+      }
       if (e.dir === 'log' && /^(info\s*:\s*)?error\b/i.test(t.trim())) return 'err'
       return null
     }
@@ -1679,10 +1722,13 @@ window.__ModuleLoader__.load({
         style: { flex: '0 0 auto', fontSize: 11, color: 'var(--dsw-alias-label-tertiary, #767676)' },
       }, text)
 
-      // 烧录进度条文字:进行中(擦除/写入/校验分段)→ 结果(✓ 字节+校验 / ✕ 失败)
+      // 烧录进度条文字:进行中(擦除/写入/校验分段)→ 结果(✓ 字节+校验 / ! 存疑 / ✕ 失败)
+      // v1.5.3:结论行(OCDUP-RESULT)优先。此前 `if (prog.bytes)` 把「写了 N 字节」当成功,
+      // 于是 VERIFY-FAILED / INCONCLUSIVE 也显示绿色 ✓ N 字节——校验失败被画成通过。
       const flashBarText = (call, prog) => {
         const dt = callDtMs(call)
-        if (call.state === 'err') return { text: '✕ 失败' + (dt != null ? ' · ' + fmtDt(dt) : ''), tone: TONE_ERR, active: false }
+        const tail = dt != null ? ' · ' + fmtDt(dt) : ''
+        if (call.state === 'err') return { text: '✕ 失败' + tail, tone: TONE_ERR, active: false }
         if (call.state === 'open') {
           const label = prog.phase === 'erase' ? '擦除中… 已擦 ' + prog.sectors + ' 扇区'
             : prog.phase === 'write' ? '写入中' + (prog.bytes ? ' ' + prog.bytes + ' 字节' : '') + '…'
@@ -1690,9 +1736,20 @@ window.__ModuleLoader__.load({
             : '进行中…'
           return { text: label, tone: TONE_WARN, active: true }
         }
-        if (prog.ok) return { text: '✓ ' + prog.bytes + ' 字节 · 校验 OK' + (dt != null ? ' · ' + fmtDt(dt) : ''), tone: TONE_OK, active: false }
-        if (prog.bytes) return { text: '✓ ' + prog.bytes + ' 字节' + (prog.sectors ? ' · 擦 ' + prog.sectors + ' 扇区' : '') + (dt != null ? ' · ' + fmtDt(dt) : ''), tone: TONE_OK, active: false }
-        return { text: '✓ 完成' + (dt != null ? ' · ' + fmtDt(dt) : ''), tone: TONE_OK, active: false }
+        if (prog.tag) {
+          const t = verdictToneOf(prog.tag.verdict)
+          const glyph = t.mark === 'ok' ? '✓' : t.mark === 'warn' ? '!' : '✕'
+          const size = prog.bytes ? ' ' + prog.bytes + ' 字节' : ''
+          const verb = prog.tag.op === 'verify' ? '校验' : prog.tag.op === 'dump' ? '导出' : '烧录'
+          return {
+            text: glyph + size + ' · ' + verb + ' ' + prog.tag.verdict + tail,
+            tone: t.tone, active: false,
+          }
+        }
+        if (prog.ok) return { text: '✓ ' + prog.bytes + ' 字节 · 校验 OK' + tail, tone: TONE_OK, active: false }
+        // 无结论标签的老版本后端:只有擦除/写入字节而没有校验确认 → 不能说「通过」
+        if (prog.bytes) return { text: '· ' + prog.bytes + ' 字节' + (prog.sectors ? ' · 擦 ' + prog.sectors + ' 扇区' : '') + ' · 未校验' + tail, tone: TONE_WARN, active: false }
+        return { text: '· 完成' + tail, tone: TONE_WARN, active: false }
       }
 
       const toggleView = (v) => {
@@ -2348,11 +2405,15 @@ window.__ModuleLoader__.load({
       // 那两个服务在新宿主仍在,但侧栏图标已经不归它们管了)
       // v1.3.4:右栏 tab 路线回归(用户要右侧停靠),但入口不再押注左侧图标:
       // inject 需要 slots + 两个右栏服务;左侧 panellist 注册整体移除。
-      inject: ['slots', 'sidebarRight', 'sidebarRightTabs'],
+      // v1.5.3:只严格注入 slots。右栏两个服务改为 apply 内 ctx.get() 可选解析——
+      // 严格注入意味着宿主一旦撤掉右栏服务(0.1.5 的 rightbar 迁移方向),整个插件
+      // 直接不激活,连下面的 main 全局面板兜底都走不到,兜底链形同虚设。
+      inject: ['slots'],
       // 纯函数仅供 test.js client 模式断言,生产逻辑不依赖
       _test: {
         highlight, highlightRe, compileMatcher, matcherHit, hueOf, fmtDt, sameStats,
         parseFlashProgress, flashProgressOf, flashProgressOfCall, pairCalls, callDtMs, isSessionSep,
+        parseResultTags, lastResultTag, verdictToneOf,
         sessionRuns, applyCollapse, toolOptions, rowMark, lastFlashCall, flashStillLatest, isFlashTool,
         fmtSize, parseProbeNote, parseChipIdentity, parseFlashInfo, deriveLinkInfo, baseName,
         friendlyProbeName, probeLabel, isBogusDev, chipLabel, chipFallbackLabel, chipTip, fmtKb, coreShort,
@@ -2383,7 +2444,11 @@ window.__ModuleLoader__.load({
             id: 'dsh-ocdup-panel',
             kind: 'ocdup-log',
             multiple: false,            // 单例:一个调试面板够用
-            priority: 'plugin',
+            // v1.5.3:档位只认 extension / builtin / fallback(宿主 RANKS 表)。
+            // 此前写 'plugin' 不在表内 → RANKS['plugin'] === undefined,排名比较得 NaN;
+            // 当前靠 openTab(kind) 按 kind 直开、不参与排名才没炸。插件贡献的类型
+            // 就是 extension(也是宿主 DEFAULT_BAND),显式写出来免得再退化。
+            priority: 'extension',
             title: () => 'OCDUP 调试',
             keepMounted: true,          // 轮询跨切 tab / 收起到浮动 / 切会话都活着
             guide: [{

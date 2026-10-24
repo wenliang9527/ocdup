@@ -1,4 +1,4 @@
-# dsh-ocdup-panel — Ocdup 调试实时面板  v1.5.1
+# dsh-ocdup-panel — Ocdup 调试实时面板  v1.5.3
 
 DeepSeek Harness 的常驻插件:右侧停靠栏的 OCDUP 调试 tab,实时显示
 **AI 通过 Ocdup MCP 工具与 OpenOCD 的全部交互**(TCL 命令、响应、后端生命周期事件),
@@ -272,6 +272,28 @@ ring 491 条全收齐(`?since=343` 能返回含 `started (pid 1888)` 的 148 条
 
 > 教训:单条 setTimeout 链 + 无超时的 fetch = 单点故障;`inFlightRef` 这类互斥位
 > 一旦被挂起的请求占住,所有恢复入口(包括用户主动切标签)都会被它挡死。
+
+## v1.5.3 配套 ocdup v0.4.34:读机器结论行 + 修「校验失败画绿✓」
+
+配套 ocdup **v0.4.34** 的 A-10 契约:`flash_write` / `verify_image` / `dump_memory`
+的响应**末行**追加 `OCDUP-RESULT: <op>=<verdict>`(人读文本一字不动)。面板现在
+把这个标签当**权威结论**,并借此修掉一个真实缺陷。
+
+| # | 级别 | 问题 | 修法 |
+|---|---|---|---|
+| 1 | P1 | **校验失败显示绿色 ✓**:v1.4.0 起 `flashBarText` 用 `if (prog.ok \|\| prog.bytes)` 判成功,而 `wrote 139077 bytes` 在 VERIFY-FAILED / INCONCLUSIVE 时同样存在 → 烧失败也画 ✓ 绿条 | 新增 `parseResultTags` / `lastResultTag` / `verdictToneOf`;`flashProgressOf` 出现标签时 **ok 只由标签决定**,标签压过旧的 `Verified OK` 启发式 |
+| 2 | P2 | **`priority: 'plugin'` 不是合法档位**:宿主 `RANKS` 只有 `extension/builtin/fallback`,`RANKS['plugin'] === undefined` → 排名比较得 NaN。当前靠 `openTab(kind)` 按 kind 直开、不参与排名才没炸 | 改为 `extension`(宿主 `DEFAULT_BAND`,即插件贡献类型的档位) |
+| 3 | P2 | **严格注入锁死兜底链**:`inject: ['slots','sidebarRight','sidebarRightTabs']` 一旦宿主撤掉右栏服务(0.1.5 `rightbar` 迁移方向),插件整体不激活,连 `main` 全局面板兜底都走不到 | `inject` 只留 `'slots'`;两个右栏服务本来就在 `apply` 内用 `ctx.get()` 可选解析,现在才真兜得住 |
+
+结论词表与配色(五态):`OK` 绿 ✓ / `INCONCLUSIVE`·`PARTIAL`·`UNVERIFIED` 琥珀 !
+/ `VERIFY-FAILED`·`WRITE-FAILED`·`FAILED` 红 ✕。「没验成」不判红是有意的——与 ocdup
+侧措辞一致,否则会怂恿无谓重烧。
+
+**兼容**:老后端(v0.4.30 及更早,无标签)仍走原有启发式,但**字节数不再自动判通过**——
+降级为琥珀「· N 字节 · 未校验」,不再撒谎说校验 OK。
+
+断言 169 → **185**(新增 T15b 十六项,覆盖七种标记形态 + 全局正则 `lastIndex` 残留
++ 标签压过启发式 + 老后端降级路径);四套件 234 → **250**。
 
 ## v1.5.1 开关状态对比度
 

@@ -567,6 +567,61 @@ const ok = (cond, label, extra) => {
       && !mod._test.isFlashTool('read_memory') && !mod._test.isFlashTool(undefined),
       'T15 isFlashTool 只认烧录两类')
 
+    // T15b v1.5.3(A-10):OCDUP-RESULT 结论行是权威,字节数不得冒充「通过」
+    const prt = mod._test.parseResultTags
+    const lrt = mod._test.lastResultTag
+    const vto = mod._test.verdictToneOf
+    ok(prt('OCDUP-RESULT: flash-write=OK').length === 1
+      && prt('OCDUP-RESULT: flash-write=OK')[0].op === 'flash-write'
+      && prt('OCDUP-RESULT: flash-write=OK')[0].verdict === 'OK',
+      'T15b 解析 op/verdict 两段', prt('OCDUP-RESULT: flash-write=OK'))
+    ok(prt('OCDUP-RESULT: verify=INCONCLUSIVE')[0].verdict === 'INCONCLUSIVE'
+      && prt('OCDUP-RESULT: dump=PARTIAL')[0].op === 'dump',
+      'T15b 多词表词条(INCONCLUSIVE/PARTIAL)按连字符保留')
+    ok(prt('no tag here').length === 0 && prt('').length === 0 && prt(null).length === 0,
+      'T15b 无标签返回空数组')
+    // 同一次调用里多个标签只认最后一个(响应末行才是本次结论)
+    ok(lrt('earlier\nOCDUP-RESULT: flash-write=OK\nlater\nOCDUP-RESULT: flash-write=VERIFY-FAILED')
+      .verdict === 'VERIFY-FAILED', 'T15b 只取最后一个标签')
+    // 连续调用不能残留 lastIndex(带 g 的正则会)
+    const twice = [prt('OCDUP-RESULT: verify=OK'), prt('OCDUP-RESULT: verify=OK')]
+    ok(twice[0].length === 1 && twice[1].length === 1, 'T15b 全局正则每次调用先重置 lastIndex', twice)
+    ok(vto('OK').mark === 'ok' && vto('INCONCLUSIVE').mark === 'warn' && vto('PARTIAL').mark === 'warn'
+      && vto('UNVERIFIED').mark === 'warn'
+      && vto('VERIFY-FAILED').mark === 'err' && vto('WRITE-FAILED').mark === 'err',
+      'T15b 五态上色:OK 绿 / 没验成琥珀 / 失败家族红')
+    ok(vto('OK').tone !== vto('VERIFY-FAILED').tone, 'T15b 通过色与失败色不相同')
+
+    // 核心回归:写了 N 字节但校验 FAILED —— 旧版 `if (prog.bytes)` 会画绿 ✓
+    const failWrite = ['programmed: fw.bin (139077 bytes)', 'wrote 139077 bytes from file fw.bin',
+      'VERIFY FAILED: the program step reported success, but the read-back does not match',
+      'OCDUP-RESULT: flash-write=VERIFY-FAILED']
+    const pFail = fpg(failWrite)
+    ok(pFail.ok === false && pFail.bytes === 139077 && pFail.tag.verdict === 'VERIFY-FAILED',
+      'T15b 校验失败:有字节数但 ok=false(不再冒充通过)', pFail)
+    const incon = ['wrote 139077 bytes', 'VERIFY INCONCLUSIVE: the read-back did not run',
+      'OCDUP-RESULT: flash-write=INCONCLUSIVE']
+    ok(fpg(incon).ok === false && vto(fpg(incon).tag.verdict).mark === 'warn',
+      'T15b INCONCLUSIVE 不算失败也不算通过(琥珀)', fpg(incon))
+    const okWrite = ['wrote 139077 bytes', 'verified: fw.bin (139077 bytes) matches',
+      'OCDUP-RESULT: flash-write=OK']
+    ok(fpg(okWrite).ok === true && fpg(okWrite).phase === 'done',
+      'T15b OK 才是通过(phase=done)', fpg(okWrite))
+    // 标签优先于旧的 Verified OK 启发式:标签说失败,就算日志里有 Verified 字样也不绿
+    ok(fpg(['** Verified OK **', 'OCDUP-RESULT: flash-write=WRITE-FAILED']).ok === false,
+      'T15b 标签压过 Verified OK 启发式')
+    // 无标签(老后端 0.4.30)仍按老逻辑走,但字节数不再自动判绿
+    const legacy = fpg(['wrote 139077 bytes from file x'])
+    ok(legacy.ok === false && legacy.tag === null && legacy.bytes === 139077,
+      'T15b 老后端无标签时 ok 保持 false(交 UI 显示未校验)', legacy)
+    // rowMark:带标签的失败响应行不能点亮成绿色
+    ok(mod._test.rowMark({ dir: 'rsp', text: 'OCDUP-RESULT: flash-write=VERIFY-FAILED' }) === 'err',
+      'T15b rowMark 标签失败 → err')
+    ok(mod._test.rowMark({ dir: 'rsp', text: 'OCDUP-RESULT: verify=OK' }) === 'ok',
+      'T15b rowMark 标签通过 → ok')
+    ok(mod._test.rowMark({ dir: 'rsp', text: 'verified 28288 bytes in 0.01s' }) === 'ok',
+      'T15b rowMark 无标签时保留旧的 verified 启发式')
+
     // T16 调用配对(控制通道串行 → 同 tool 的 cmd 后必跟 rsp/err)
     const pc = mod._test.pairCalls
     const mk = (seq, dir, tool, text) => ({ seq, dir, tool, text, ts: '2026-10-06T14:00:0' + (seq % 10) + '.000+08:00', tag: '', len: 1, dtMs: null })
@@ -977,9 +1032,14 @@ const ok = (cond, label, extra) => {
     }
     mod.apply(ctxRight)
     const TAB_ID = 'dsh-ocdup-panel'
-    ok(Array.isArray(mod.inject) && mod.inject.includes('slots')
-      && mod.inject.includes('sidebarRight') && mod.inject.includes('sidebarRightTabs'),
-      'T25 inject 声明 slots + 两个右栏服务', mod.inject)
+    // v1.5.3:inject 只留 slots——右栏两服务改为 apply 内可选解析,
+    // 否则宿主撤掉它们时插件整体不激活,main 兜底也走不到。
+    ok(Array.isArray(mod.inject) && mod.inject.length === 1 && mod.inject[0] === 'slots',
+      'T25 inject 只严格依赖 slots(右栏服务走可选解析)', mod.inject)
+    // 档位必须在宿主 RANKS 表内,否则 RANKS[priority] === undefined → 排名比较得 NaN
+    ok(tabDefs[0].priority === 'extension' || tabDefs[0].priority === 'builtin'
+      || tabDefs[0].priority === 'fallback',
+      'T25 priority 是宿主认识的档位(extension/builtin/fallback)', tabDefs[0].priority)
     ok(tabDefs.length === 1 && tabDefs[0].id === TAB_ID && tabDefs[0].kind === 'ocdup-log'
       && tabDefs[0].multiple === false && tabDefs[0].keepMounted === true,
       'T25 右栏 tab 类型(id/kind/单例/keepMounted)', tabDefs[0])
