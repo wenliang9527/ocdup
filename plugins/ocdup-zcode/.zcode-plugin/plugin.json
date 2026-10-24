@@ -1,6 +1,6 @@
 {
   "name": "ocdup-zcode",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "description": "Ocdup 烧录工具链：ocdup-flash skill + /ocdup-status、/ocdup-flash 命令 + MCP App 调试面板（连接状态/Flash 扇区图/寄存器查看器/操作时间线）。面板经插件内代理服务器转发到用户级 ocdup server（mcp.servers.ocdup），不重复拉起 OpenOCD 门面。",
   "keywords": ["flash", "ocdup", "mcp", "mcp-app", "embedded", "openocd", "hardware"],
   "mcpServers": {

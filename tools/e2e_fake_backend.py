@@ -125,6 +125,9 @@ def handle_command(cmd):
             data = bytes(((addr + i) & 0xFF) for i in range(min(length, 1024 * 1024)))
             with open(path, "wb") as f:
                 f.write(data)
+            if STATE.get("dump_error"):
+                STATE["dump_error"] = False
+                return "Error: fake read failure during dump (some words unreadable)"
             return ""
         return "Error: fake backend could not parse dump_image"
     if c.startswith("verify_image"):
@@ -288,6 +291,15 @@ class FakeBackend(threading.Thread):
                     # v0.4.27：arm 后，下一条 rtt server start 只回成功、不开数据端口
                     if inner == "__e2e_no_rtt_server__":
                         STATE["no_rtt_server"] = True
+                        try:
+                            conn.sendall(b"armed" + DELIM)
+                        except OSError:
+                            return
+                        continue
+                    # v0.4.34：arm 后下一条 dump_image 照常落盘、但回带 Error 的输出
+                    #（A-10：dump 的 PARTIAL 词表 = 文件已落 + 后端输出带错）
+                    if inner == "__e2e_arm_dump_error__":
+                        STATE["dump_error"] = True
                         try:
                             conn.sendall(b"armed" + DELIM)
                         except OSError:
@@ -473,7 +485,10 @@ def main():
         print(mcp.call("read_memory", {"address": "0x20000000", "count": 8, "format": "json"}))
 
         banner("verify_image build/fw.bin @0x08000000 (read-only compare)")
-        print(mcp.call("verify_image", {"file": "build/fw.bin", "address": "0x08000000"}))
+        r_verify = mcp.call("verify_image", {"file": "build/fw.bin", "address": "0x08000000"})
+        print(r_verify)
+        assert r_verify.endswith("OCDUP-RESULT: verify=OK"), \
+            "A-10: verified compare must end with the machine-readable verdict line"
 
         banner("identify_chip (CPUID + vendor id register; fake backend echoes address as value)")
         print(mcp.call("identify_chip", {}))
@@ -490,9 +505,18 @@ def main():
         print(mcp.call("identify_chip", {}))
 
         banner("dump_memory 0x08000000 x4096 -> dumps/flash-head.bin")
-        print(mcp.call("dump_memory", {"file": "dumps/flash-head.bin", "address": "0x08000000", "length": 4096}))
+        r_dump = mcp.call("dump_memory", {"file": "dumps/flash-head.bin", "address": "0x08000000", "length": 4096})
+        print(r_dump)
+        assert r_dump.endswith("OCDUP-RESULT: dump=OK"), "A-10: clean dump must end with dump=OK"
         dumped = os.path.join(work, "dumps", "flash-head.bin")
         print("  file on disk:", os.path.exists(dumped), os.path.getsize(dumped) if os.path.exists(dumped) else "-")
+
+        banner("dump_memory with backend errors (A-10): file lands, verdict is PARTIAL not OK")
+        print(mcp.call("run_command", {"command": "__e2e_arm_dump_error__"}))
+        r_dump2 = mcp.call("dump_memory", {"file": "dumps/flash-head.bin", "address": "0x08000000", "length": 4096})
+        print(r_dump2)
+        assert r_dump2.endswith("OCDUP-RESULT: dump=PARTIAL"), \
+            "A-10: a dump whose backend output carries errors must be machine-readable as PARTIAL"
 
         banner("dump_memory elsewhere/evil.bin (outside dump_allowed_paths)")
         print(mcp.call("dump_memory", {"file": "elsewhere/evil.bin", "address": "0x08000000", "length": 4096}))
@@ -501,10 +525,30 @@ def main():
         print(mcp.call("dump_memory", {"file": "dumps/too-big.bin", "address": "0x08000000", "length": 99999999}))
 
         banner("flash_write build/fw.bin @0x08000000 (allowed)")
-        print(mcp.call("flash_write", {"file": "build/fw.bin", "address": "0x08000000"}))
+        r_flash = mcp.call("flash_write", {"file": "build/fw.bin", "address": "0x08000000"})
+        print(r_flash)
+        assert r_flash.endswith("OCDUP-RESULT: flash-write=OK"), \
+            "A-10: programmed+verified burn must end with flash-write=OK"
 
-        banner("flash_write elsewhere/there.bin (outside flash_allowed_paths)")
-        print(mcp.call("flash_write", {"file": "elsewhere/there.bin", "address": "0x08000000"}))
+        banner("flash_write outside flash_allowed_paths (BLOCKED carries no OCDUP-RESULT line)")
+        r_blocked = mcp.call("flash_write", {"file": "elsewhere/there.bin", "address": "0x08000000"})
+        print(r_blocked)
+        assert r_blocked.startswith("BLOCKED:") and "OCDUP-RESULT" not in r_blocked, \
+            "A-10: early BLOCKED exits keep their own machine prefix, no verdict line"
+
+        banner("flash_write with a failing read-back (A-10): machine verdict VERIFY-FAILED")
+        print(mcp.call("run_command", {"command": "__e2e_arm_fail_verify__"}))
+        r_flash_bad = mcp.call("flash_write", {"file": "build/fw.bin", "address": "0x08000000"})
+        print(r_flash_bad)
+        assert r_flash_bad.endswith("OCDUP-RESULT: flash-write=VERIFY-FAILED"), \
+            "A-10: the dangerous verdict (write claims OK, read-back differs) must be machine-readable"
+        assert "'reset run' was skipped" in r_flash_bad, "non-clean verdict still skips reset"
+
+        banner("verify_image with a mismatch (A-10): machine verdict FAILED")
+        print(mcp.call("run_command", {"command": "__e2e_arm_fail_verify__"}))
+        r_verify_bad = mcp.call("verify_image", {"file": "build/fw.bin", "address": "0x08000000"})
+        print(r_verify_bad)
+        assert r_verify_bad.endswith("OCDUP-RESULT: verify=FAILED"), "A-10: mismatch must end with verify=FAILED"
 
         banner("write_memory 0x20000000 (allow_memory_write defaults to true)")
         print(mcp.call("write_memory", {"address": "0x20000000", "values": ["0x11111111", "0x22222222"]}))
@@ -655,6 +699,8 @@ def main():
             print(crc)
             assert crc.startswith("VERIFY INCONCLUSIVE"), \
                 "CRC failure must read as INCONCLUSIVE, got: %s" % crc.splitlines()[0]
+            assert crc.endswith("OCDUP-RESULT: verify=INCONCLUSIVE"), \
+                "A-10: CRC failure must be machine-readable as INCONCLUSIVE (distinct from FAILED)"
             assert "does not match the target flash" not in crc, \
                 "CRC failure must NOT claim the firmware differs from the flash"
             assert "halt" in crc, "CRC failure must tell the caller to halt and retry"

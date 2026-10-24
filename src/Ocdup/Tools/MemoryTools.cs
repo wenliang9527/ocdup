@@ -23,7 +23,7 @@ public static class MemoryTools
         "Large ranges (whole flash bank, big RAM snapshot) belong to dump_memory - this tool is capped by memory_read_max_bytes.")]
     public static async Task<string> ReadMemory(
         [Description("Start address, hex string like '0x20000000'.")] string address,
-        [Description("Number of units to read (default 16). The total size is capped by memory_read_max_bytes.")] int count = 16,
+        [Description("Units to read (default 16); total capped by memory_read_max_bytes.")] int count = 16,
         [Description("Unit width in bits: 8, 16 or 32 (default 32).")] int width = 32,
         [Description("Output format: 'text' (backend lines, default) or 'json' (structured values).")] string format = "text",
         CancellationToken ct = default)
@@ -141,11 +141,12 @@ public static class MemoryTools
         "Read-only on the target, but it writes one file on this PC: gated by dump_allowed_paths (default 'dumps/' next to ocd.json) " +
         "and dump_max_bytes (default 64 MB, 0 = unlimited). " +
         "While running, openocd's log lines are forwarded as MCP progress notifications (when the caller requested a progress token). " +
-        "Returns the output path, byte count, a sha256 prefix and the first 64 bytes as hex words.")]
+        "Returns the output path, byte count, a sha256 prefix and the first 64 bytes as hex words. " +
+        "Last line is the machine-readable verdict: OCDUP-RESULT: dump=<OK|PARTIAL> (PARTIAL = the backend output contained errors).")]
     public static async Task<string> DumpMemory(
-        [Description("Output file path; relative paths resolve against the ocd.json directory. Parent directories are created.")] string file,
+        [Description("Output file path (relative = ocd.json dir); parent dirs are created.")] string file,
         [Description("Start address, hex string like '0x08000000'.")] string address,
-        [Description("How many bytes to dump (decimal, e.g. 1048576 for 1 MB). Large dumps can take a while - raise command_timeout_seconds if needed.")] long length,
+        [Description("Bytes to dump (decimal, e.g. 1048576 = 1 MB). Slow for large ranges - raise command_timeout_seconds if needed.")] long length,
         RequestContext<CallToolRequestParams>? context = null,
         CancellationToken ct = default)
     {
@@ -229,9 +230,10 @@ public static class MemoryTools
         if (previewLen < preview.Length) preview = preview[..previewLen];
 
         var report = FormatDumpReport(start, length, resolved, actual, sha16, preview);
+        // A-10：机器可读结论（dump 的 PARTIAL = 后端输出带错，文件已落但内容存疑）
         return LooksLikeError(output)
-            ? report + "\nNOTE: the backend output contains errors - double-check the dumped file. Output: " + output
-            : report + "\nbackend: " + (output.Length == 0 ? "(no output)" : output);
+            ? ResultTag.Append(report + "\nNOTE: the backend output contains errors - double-check the dumped file. Output: " + output, "dump", "PARTIAL")
+            : ResultTag.Append(report + "\nbackend: " + (output.Length == 0 ? "(no output)" : output), "dump", "OK");
     }
 
     private static bool LooksLikeError(string output) =>

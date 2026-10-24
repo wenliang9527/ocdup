@@ -29,7 +29,7 @@ public static class SvdTools
         "The parsed device stays loaded for read_peripheral_register / write_peripheral_register (they need no file argument after this). " +
         "PC-side file read only: no permission gate, the target is not touched.")]
     public static Task<string> LoadSvd(
-        [Description("Path to the .svd file (relative paths resolve against the ocd.json directory). Omit when \"svd_path\" is set in ocd.json.")] string? file = null,
+        [Description("Path to the .svd file (relative = ocd.json dir). Omit when svd_path is set in ocd.json.")] string? file = null,
         [Description("Optional peripheral name: list only its registers (name, address, size, access).")] string? peripheral = null,
         CancellationToken ct = default)
     {

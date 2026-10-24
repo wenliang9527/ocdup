@@ -27,6 +27,9 @@ esac
 
 - **判据**：读回校验（verify_image）是唯一权威判据。某些驱动写相吐虚假错误
   （PY32 的假 AHB 错误），文本嗅探不可靠——`burn` 的退出码只认读回。
+  若在 MCP 侧编排（不走 CLI）：`flash_write` / `verify_image` / `dump_memory`
+  的输出末行有机器可读结论 `OCDUP-RESULT: <op>=<verdict>`（v0.4.34），
+  与 CLI 退出码同判据、同词表。
 - **不省 verify**：`--no-verify` 存在但产线别用；省下的几秒换不来批次风险。
 - **不响应 Ctrl+C**：写相中断 = 半截固件。急停 = 拔治具电源/探针，下一块板
   重新烧会先擦。

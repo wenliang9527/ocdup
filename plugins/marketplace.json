@@ -10,7 +10,7 @@
       "source": "./ocdup-zcode",
       "description": "Ocdup 烧录工具链：ocdup-flash skill + /ocdup-status、/ocdup-flash 命令 + MCP App 调试面板（连接状态/Flash/寄存器/时间线，经插件内代理转发用户级 ocdup server）。",
       "category": "developer-tools",
-      "version": "0.4.7"
+      "version": "0.4.8"
     }
   ]
 }

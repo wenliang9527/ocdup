@@ -37,6 +37,12 @@
 
 ## 批次 B：v0.4.34 —— 契约变更类（**停，等确认再动**）
 
+> **执行记录（2026-10-24）**：用户已批准，全部落地并过五道门禁（build 0 警告 / 单测 414 /
+> e2e 50 段 / 面板四套件 234 / 预算 24,570 ≤ 25,500，且 **≤ 第三轮终值 24,900**）。
+> 实际词表：flash-write 五态（OK/VERIFY-FAILED/WRITE-FAILED/INCONCLUSIVE/UNVERIFIED）、
+> verify 三态（OK/FAILED/INCONCLUSIVE）、dump 两态（OK/PARTIAL）；e2e 钉死全部七种形态
+> + BLOCKED 不带标记的反向断言；插件 bump 0.4.8（SKILL.md 同步标记语法）。
+
 **A-10 失败结论结构化标记**（对外输出契约变更，第三轮已停案）：
 
 - 设计原则 additive：人读文本一字不动，输出**末行**追加机器可读行；

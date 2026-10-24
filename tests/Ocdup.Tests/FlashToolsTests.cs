@@ -30,6 +30,38 @@ public sealed class FlashToolsTests
         Assert.NotNull(FlashTools.InterpretVerifyOutput(output));
     }
 
+    // ── A-10（v0.4.34）：OCDUP-RESULT 机器可读结论行 ──
+
+    [Theory]
+    [InlineData((int)FlashTools.FlashWriteVerdict.ProgrammedVerified, "OK")]
+    [InlineData((int)FlashTools.FlashWriteVerdict.ProgrammedButVerifyFailed, "VERIFY-FAILED")]
+    [InlineData((int)FlashTools.FlashWriteVerdict.WriteFailed, "WRITE-FAILED")]
+    [InlineData((int)FlashTools.FlashWriteVerdict.ProgrammedVerifyInconclusive, "INCONCLUSIVE")]
+    [InlineData((int)FlashTools.FlashWriteVerdict.Unverified, "UNVERIFIED")]
+    public void VerdictTag_CoversTheWholeVerdictEnum(int verdict, string expected)
+    {
+        // 枚举是 internal（签名不能直接暴露），经 int 传入——值本身由 const 表达式钉死
+        Assert.Equal(expected, FlashTools.VerdictTag((FlashTools.FlashWriteVerdict)verdict));
+    }
+
+    [Theory]
+    [InlineData(true, false, "OK")]
+    [InlineData(false, false, "FAILED")]
+    [InlineData(false, true, "INCONCLUSIVE")] // CRC 没跑成 ≠ 不匹配：词表必须与 FAILED 区分
+    public void VerifyTag_InconclusiveWinsOverFailed(bool verified, bool inconclusive, string expected)
+    {
+        Assert.Equal(expected, FlashTools.VerifyTag(verified, inconclusive));
+    }
+
+    [Fact]
+    public void ResultTag_AppendIsAlwaysTheLastLine_AndKeepsTheHumanText()
+    {
+        // 人读文本一字不动（只吞尾随空白行），标记追加以换行分隔的最后一行
+        var tagged = ResultTag.Append("report body\nnote line\n\n", "verify", "OK");
+        Assert.Equal("report body\nnote line\nOCDUP-RESULT: verify=OK", tagged);
+        Assert.EndsWith("\nOCDUP-RESULT: verify=OK", tagged);
+    }
+
     // ── flash_write 三段式结论(P0-2):verify 读回是唯一判据,program 输出只作辅助信息 ──
 
     [Fact]

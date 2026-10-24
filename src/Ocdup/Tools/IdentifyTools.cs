@@ -26,7 +26,7 @@ public static class IdentifyTools
         "target_cfg filename (heuristic, not a hardware read) when DEV_ID is not decodable. " +
         "NOTE: connect already runs this automatically after a successful connect, so you rarely need to call it manually.")]
     public static async Task<string> IdentifyChip(
-        [Description("Vendor ID register address, hex string (default '0xE0042000', STM32/AT32 DBGMCU_IDCODE convention).")] string dbgmcuAddress = "0xE0042000",
+        [Description("Vendor ID register address, hex (default '0xE0042000', STM32/AT32 convention).")] string dbgmcuAddress = "0xE0042000",
         CancellationToken ct = default)
     {
         var cfg = ConfigStore.Instance.Current;

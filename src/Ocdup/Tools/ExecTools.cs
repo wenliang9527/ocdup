@@ -19,7 +19,7 @@ public static class ExecTools
         "timeoutMs = how long to wait for the core to actually halt (default 500). " +
         "Gated by read_only and allow_exec. Remember to resume afterwards, or use reset mode='run' to restart firmware.")]
     public static async Task<string> Halt(
-        [Description("How long to wait for the halt to take effect, milliseconds (default 500).")] int timeoutMs = 500,
+        [Description("Wait for the halt, milliseconds (default 500).")] int timeoutMs = 500,
         CancellationToken ct = default)
     {
         var cfg = ConfigStore.Instance.Current;
@@ -80,7 +80,7 @@ public static class ExecTools
         "Resume the target CPU after a halt. Gated by read_only and allow_exec. " +
         "address (optional): resume from a specific address instead of the current PC.")]
     public static async Task<string> Resume(
-        [Description("Optional address to resume from, hex string like '0x08000100'. Omit to resume from current PC.")] string? address = null,
+        [Description("Address to resume from, hex like '0x08000100'; omit = current PC.")] string? address = null,
         CancellationToken ct = default)
     {
         var cfg = ConfigStore.Instance.Current;

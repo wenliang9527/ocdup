@@ -70,9 +70,7 @@ public static class FlashTools
 
     [McpServerTool(Name = "flash_write")]
     [Description(
-        "Download an image to the target flash. Parameters: file (.elf/.hex/.bin; relative paths resolve against the ocd.json directory), " +
-        "address (hex load address like '0x08000000'; required for raw .bin, ignored for .elf/.hex), verify (default true), " +
-        "reset (default true: 'reset run' after programming). " +
+        "Download an image to the target flash. " +
         "The verdict comes from an independent read-back verify_image step: 'programmed + verified' (reset runs), " +
         "'programmed but verify FAILED' / 'write failed' / 'verify INCONCLUSIVE' (the backend could not run its CRC algorithm - " +
         "that says nothing about a mismatch; halt the target and retry verify_image). " +
@@ -80,10 +78,11 @@ public static class FlashTools
         "(some drivers emit spurious errors, e.g. PY32's fake AHB error); with verify=false it is also what gates the reset. " +
         "While running, openocd's log lines are forwarded as MCP progress notifications when the caller requested a progress token. " +
         "Gated by read_only / allow_flash / flash_allowed_paths / flash_max_bytes - a BLOCKED answer means the settings forbid it (see show_config). " +
+        "Last line is the machine-readable verdict: OCDUP-RESULT: flash-write=<OK|VERIFY-FAILED|WRITE-FAILED|INCONCLUSIVE|UNVERIFIED>. " +
         "Same orchestration outside MCP as 'ocdup burn <file>'.")]
     public static async Task<string> FlashWrite(
-        [Description("Path to the image to program (.elf/.hex/.bin).")] string file,
-        [Description("Load address for raw .bin images, hex string like '0x08000000'. Ignored for .elf/.hex.")] string? address = null,
+        [Description("Path to the image to program (.elf/.hex/.bin; relative = ocd.json dir).")] string file,
+        [Description("Load address for raw .bin (required there), hex like '0x08000000'; ignored for .elf/.hex.")] string? address = null,
         [Description("Verify the written image via read-back (default true).")] bool verify = true,
         [Description("Run 'reset run' after programming (default true).")] bool reset = true,
         RequestContext<CallToolRequestParams>? context = null,
@@ -98,7 +97,8 @@ public static class FlashTools
         try
         {
             var outcome = await FlashWriteCoreAsync(ConfigStore.Instance.Current, file, address, verify, reset, ct).ConfigureAwait(false);
-            return outcome.Report;
+            // A-10：机器可读结论只加在 MCP 侧（CLI 用退出码族）；早退的 ERROR/BLOCKED 不加。
+            return outcome.Ok ? ResultTag.Append(outcome.Report, "flash-write", VerdictTag(outcome.Verdict)) : outcome.Report;
         }
         finally
         {
@@ -107,6 +107,16 @@ public static class FlashTools
             try { await pumpTask.ConfigureAwait(false); } catch { /* 泵的收尾 */ }
         }
     }
+
+    /// <summary>flash_write 结论 → OCDUP-RESULT 词表（纯函数，可单测）。</summary>
+    internal static string VerdictTag(FlashWriteVerdict verdict) => verdict switch
+    {
+        FlashWriteVerdict.ProgrammedVerified => "OK",
+        FlashWriteVerdict.ProgrammedButVerifyFailed => "VERIFY-FAILED",
+        FlashWriteVerdict.WriteFailed => "WRITE-FAILED",
+        FlashWriteVerdict.ProgrammedVerifyInconclusive => "INCONCLUSIVE",
+        _ => "UNVERIFIED",
+    };
 
     // ── v0.4.20：烧录编排核心（flash_write 工具与 `ocdup burn` CLI 共用；闸与判据单一真源）──
 
@@ -258,26 +268,29 @@ public static class FlashTools
     [McpServerTool(Name = "verify_image")]
     [Description(
         "Compare an image file against the target flash WITHOUT writing anything (backend command 'verify_image') - " +
-        "answers 'what firmware is actually on the board'. Parameters: file (.elf/.hex/.bin; relative paths resolve against the ocd.json directory), " +
-        "address (required for raw .bin, hex string like '0x08000000'; ignored for .elf/.hex). " +
+        "answers 'what firmware is actually on the board'. " +
         "Read-only: no permission gate applies and no file is written on this PC. " +
         "IMPORTANT: the backend's flash-verify algorithm needs a stably halted core. If the firmware is running, " +
         "the answer can be 'VERIFY INCONCLUSIVE' (the CRC algorithm could not run) - that says NOTHING about whether " +
         "the content matches; halt (allow_exec), verify again, then resume. " +
+        "Last line is the machine-readable verdict: OCDUP-RESULT: verify=<OK|FAILED|INCONCLUSIVE>. " +
         "Also available outside MCP as 'ocdup verify <file>' (exit-code mapped).")]
     public static async Task<string> VerifyImage(
-        [Description("Path to the image to verify against target flash (.elf/.hex/.bin).")] string file,
-        [Description("Offset for raw .bin images, hex string like '0x08000000'. Ignored for .elf/.hex.")] string? address = null,
+        [Description("Path to the image to verify against target flash (.elf/.hex/.bin; relative = ocd.json dir).")] string file,
+        [Description("Offset for raw .bin (required there), hex like '0x08000000'; ignored for .elf/.hex.")] string? address = null,
         CancellationToken ct = default)
     {
         // 编排本体在 VerifyCoreAsync（v0.4.26 起与 `ocdup verify` CLI 共用；判据单一真源）
         var outcome = await VerifyCoreAsync(ConfigStore.Instance.Current, file, address, ct).ConfigureAwait(false);
-        return outcome.Report;
+        return outcome.Ok
+            ? ResultTag.Append(outcome.Report, "verify", VerifyTag(outcome.Verified, outcome.Inconclusive))
+            : outcome.Report;
     }
 
     /// <summary>verify 结果：Ok=false 时 Failure 标明类别（CLI 退出码 2/3）；
-    /// Ok=true 时 Verified 是权威结论（CLI 退出码 0/1）、Report 与 MCP 工具逐字一致。</summary>
-    internal readonly record struct VerifyOutcome(bool Ok, CoreFailure Failure, string Report, bool Verified);
+    /// Ok=true 时 Verified 是权威结论（CLI 退出码 0/1）、Inconclusive 区分 FAILED 与
+    /// 「CRC 没跑成」（两者 CLI 都 exit 1，MCP 侧的 OCDUP-RESULT 词表不同）。Report 与 MCP 工具逐字一致。</summary>
+    internal readonly record struct VerifyOutcome(bool Ok, CoreFailure Failure, string Report, bool Verified, bool Inconclusive = false);
 
     /// <summary>
     /// 比对编排（v0.4.26 从 verify_image 工具抽出，与 CLI 共用）：路径解析 → .bin 必须显式
@@ -341,8 +354,13 @@ public static class FlashTools
         var report = ComposeVerifyReport(resolved, image.Length, problem, output, crcProblem);
 
         // CRC 起不来 = 存疑：既不算通过也不算失败（exit 1），但报告措辞已说明原因。
-        return new VerifyOutcome(true, CoreFailure.Usage, report, Verified: problem is null);
+        return new VerifyOutcome(true, CoreFailure.Usage, report, Verified: problem is null, Inconclusive: crcProblem is not null);
     }
+
+    /// <summary>verify_image 结论 → OCDUP-RESULT 词表（纯函数，可单测）：INCONCLUSIVE
+    ///（CRC 算法没跑成，≠ 不匹配）优先于 FAILED 判定。</summary>
+    internal static string VerifyTag(bool verified, bool inconclusive) =>
+        inconclusive ? "INCONCLUSIVE" : verified ? "OK" : "FAILED";
 
     /// <summary>
     /// 判定 verify_image 的后端输出（纯函数，便于单测）：返回 null = 校验通过；

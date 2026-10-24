@@ -17,7 +17,7 @@ docstring 与 `show_config` 输出为准，不要凭记忆猜。
 | `status` | 后端是否在跑、版本、target 一行式摘要（只读探测，**不启动**任何东西） | 否 |
 | `show_config` | 有效设置与每项来源；`reload=true` 重读 ocd.json | 否 |
 | `flash_info` | 列出 flash banks（先逐 bank probe：自动容量配置/双 bank 的 bank1 必须 probe 过才有真实大小） | 否 |
-| `flash_write` | 烧录镜像（默认 verify + reset run） | **是** |
+| `flash_write` | 烧录镜像（默认 verify + reset run；末行机器结论 `OCDUP-RESULT: flash-write=…`） | **是** |
 | `flash_erase_sector` | 擦除扇区（last=-1 = 到 bank 末尾；**默认关闭**） | **是** |
 | `verify_image` | 镜像与目标 flash 比对，**不写任何东西**（回答「板子里到底是谁」） | 否 |
 | `read_memory` | 按地址/宽度读回；`format=json` 返回结构化值（≤ `memory_read_max_bytes`，默认 4096） | 否 |
@@ -34,6 +34,11 @@ docstring 与 `show_config` 输出为准，不要凭记忆猜。
 | `list_variables` | 列出 .elf 的变量（地址/大小/名，可过滤）——PC 侧读文件，不动目标 | 否 |
 | `read_variable` | 按名读变量（ELF 定位 → 目标读回；受 `memory_read_max_bytes`） | 否 |
 | `write_variable` | 按名写 1/2/4 字节变量（大对象引导用 write_memory） | **是** |
+
+**结论机器可读（v0.4.34）**：`flash_write` / `verify_image` / `dump_memory` 的输出
+**末行**是 `OCDUP-RESULT: <op>=<verdict>`（如 `flash-write=OK`、`verify=INCONCLUSIVE`、
+`dump=PARTIAL`）——失败结论原先包在人读文本里，脚本/面板按末行判红即可；早退的
+`ERROR:` / `BLOCKED:` 回复不带此行（它们本就有机器前缀）。
 
 **符号层 L2（v0.4.21）**：`load_svd(file)` 加载 CMSIS-SVD（列外设/寄存器清单；
 `svd_path` 可作默认镜像）→ `read_peripheral_register("RCC.CR")` 按名读 + 位域解码 +

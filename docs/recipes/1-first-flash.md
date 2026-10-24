@@ -45,6 +45,9 @@ mcp__ocdup__flash_write(file="build/fw.bin", address="0x08000000")
 - `VERIFY FAILED` —— 写声称成功但读回不符，最危险，查 target_cfg 是否配错芯片；
 - `WRITE FAILED` —— 写步骤已报错，查探针连接/供电/容量。
 
+输出末行是机器可读结论 `OCDUP-RESULT: flash-write=<OK|VERIFY-FAILED|WRITE-FAILED|INCONCLUSIVE|UNVERIFIED>`
+（v0.4.34），后续脚本按它分流，不必解析人读文本。
+
 ## 4. 运行态验证
 
 ```

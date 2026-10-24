@@ -23,7 +23,7 @@ public static class SymbolTools
         "Pairs with read_variable / write_variable.")]
     public static string ListVariables(
         [Description("Optional case-insensitive substring filter on variable names.")] string? pattern = null,
-        [Description("Path to the .elf image; relative paths resolve against the ocd.json directory. Overrides elf_path.")] string? file = null)
+        [Description("Path to the .elf image (overrides elf_path; relative = ocd.json dir).")] string? file = null)
     {
         var cfg = ConfigStore.Instance.Current;
         List<ElfSymbol> symbols;
@@ -70,7 +70,7 @@ public static class SymbolTools
         "Pass file explicitly or set elf_path in ocd.json once.")]
     public static async Task<string> ReadVariable(
         [Description("Variable name exactly as in the ELF (discover with list_variables).")] string name,
-        [Description("Path to the .elf image; relative paths resolve against the ocd.json directory. Overrides elf_path.")] string? file = null,
+        [Description("Path to the .elf image (overrides elf_path; relative = ocd.json dir).")] string? file = null,
         CancellationToken ct = default)
     {
         var cfg = ConfigStore.Instance.Current;
@@ -152,8 +152,8 @@ public static class SymbolTools
         "Destructive: gated by read_only / allow_memory_write - a BLOCKED answer means the settings forbid it (see show_config).")]
     public static async Task<string> WriteVariable(
         [Description("Variable name exactly as in the ELF (discover with list_variables).")] string name,
-        [Description("Value to write, hex string like '0x42' (masked to the variable's width).")] string value,
-        [Description("Path to the .elf image; relative paths resolve against the ocd.json directory. Overrides elf_path.")] string? file = null,
+        [Description("Value to write, hex like '0x42' (masked to the variable's width).")] string value,
+        [Description("Path to the .elf image (overrides elf_path; relative = ocd.json dir).")] string? file = null,
         CancellationToken ct = default)
     {
         var cfg = ConfigStore.Instance.Current;

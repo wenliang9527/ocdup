@@ -51,8 +51,8 @@
 | 工具 | 作用 | 权限 |
 |---|---|---|
 | `flash_info` | 列出 flash banks（驱动、基址、大小） | 只读 |
-| `flash_write` | **下载**：烧录镜像（写 → 独立读回校验判据 → 可选复位运行；结论四态：verified / verify FAILED / write failed / verify INCONCLUSIVE——CRC 算法没跑起来，**不是固件不匹配**，v0.4.30 起与 verify_image 同一份判据）；执行期 openocd 日志行以 progress notification 推回带 progressToken 的调用方 | `read_only` / `allow_flash` / 白名单 / 上限 |
-| `verify_image` | **烧后独立校验**：镜像与目标 flash 比对，不写任何东西（回答「板子里到底是谁」）。后端 CRC 算法需目标静止，固件在跑时可能报 `VERIFY INCONCLUSIVE`（**不代表固件不匹配**，halt 后重试） | 只读 |
+| `flash_write` | **下载**：烧录镜像（写 → 独立读回校验判据 → 可选复位运行；结论四态：verified / verify FAILED / write failed / verify INCONCLUSIVE——CRC 算法没跑起来，**不是固件不匹配**，v0.4.30 起与 verify_image 同一份判据）；执行期 openocd 日志行以 progress notification 推回带 progressToken 的调用方；**末行机器可读结论** `OCDUP-RESULT: flash-write=<OK\|VERIFY-FAILED\|WRITE-FAILED\|INCONCLUSIVE\|UNVERIFIED>`（v0.4.34） | `read_only` / `allow_flash` / 白名单 / 上限 |
+| `verify_image` | **烧后独立校验**：镜像与目标 flash 比对，不写任何东西（回答「板子里到底是谁」）。后端 CRC 算法需目标静止，固件在跑时可能报 `VERIFY INCONCLUSIVE`（**不代表固件不匹配**，halt 后重试）；末行 `OCDUP-RESULT: verify=<OK\|FAILED\|INCONCLUSIVE>`（v0.4.34） | 只读 |
 | `flash_erase_sector` | 擦除 flash 扇区（破坏性，默认关闭） | `read_only` / **`allow_flash_erase`（默认 false）** |
 
 ### 内存读写
@@ -60,7 +60,7 @@
 | 工具 | 作用 | 权限 |
 |---|---|---|
 | `read_memory` | **读指定地址**：按 8/16/32 位宽度读回；`format=json` 返回结构化值（免解析 OpenOCD 文本） | 只读 + 体积上限 |
-| `dump_memory` | **大块读落盘**：整片 flash / RAM 快照存成文件，返回 sha256 + 前 64 字节 | 目标侧只读；PC 侧落盘受 `dump_allowed_paths`（默认 `dumps/`）+ `dump_max_bytes`（默认 64 MB）约束 |
+| `dump_memory` | **大块读落盘**：整片 flash / RAM 快照存成文件，返回 sha256 + 前 64 字节；末行 `OCDUP-RESULT: dump=<OK\|PARTIAL>`（PARTIAL = 后端输出带错、文件已落但内容存疑，v0.4.34） | 目标侧只读；PC 侧落盘受 `dump_allowed_paths`（默认 `dumps/`）+ `dump_max_bytes`（默认 64 MB）约束 |
 | `write_memory` | 写内存/寄存器（一条命令写多个值） | `read_only` / `allow_memory_write` |
 
 ### 执行控制与逃生舱
@@ -436,13 +436,14 @@ dotnet build Ocdup.sln && dotnet test Ocdup.sln --no-build -v q
 
 | 里程碑 | 状态 |
 |---|---|
-| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 405 个单测 + 假后端 e2e 覆盖（47 个检查段） |
+| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 414 个单测 + 假后端 e2e 覆盖（50 个检查段） |
 | S4 真机联调 | ✅ AT32F403AVGT7 + CMSIS-DAP v2（DAPLink `0D28:0204`）+ atopenocd：`connect` → `flash_info` → `flash_write`（擦 25 扇区、写 + Verified OK、reset run）→ `read_memory` 运行态读回向量表。**2026-10-13 第二轮**：`burn`/`verify` 治具链路 dump → burn → verify → dump 闭环 sha256 一致；实烧 SL150 v4.0 固件（74.4KB）后 hex 覆盖区逐字节零差异、固件正常运行 |
 | 安全与正确性加固（v0.4.12–v0.4.16） | ✅ `run_command` 内容分类（写类命令与专用工具同权/重定向）、`flash_write` 以独立读回校验为权威判据、断链只读自动重放 + 空闲心跳、烧录/擦除/dump 执行期 progress notification |
 | doctor CLI | ✅ `ocdup doctor` 五项环境体检（ocd.json / OCD_BIN / scripts / 探针 / 后端端口），换机第一步 |
 | 全项目优化轮（v0.4.30） | ✅ burn/flash_write 的读回判据与 verify_image 对齐（CRC 起不来 = INCONCLUSIVE，不再误报不匹配）；watch csv 形态人读信息改走 stderr（重定向得干净 CSV）；raw 通道补断点/观察点分类（bp/wp 归 allow_exec）；ELF 符号解析加 mtime 缓存 + dump 哈希/预览单趟读；**M-bp 断点/观察点五件落地**（30 工具；2026-10-19 真机核定：length 恒下发、运行态仅硬件断点可设、观察点全清走「列出逐个删」）；`ocdup --version`/`--help` |
 | 第三轮复查（v0.4.31–v0.4.32，docs/audit-2026-10-24.md） | ✅ watch --halt Ctrl+C 窗口收尾 resume 必达（不再残留 halted）+ watch 退出码对齐家族；bp 五件 op 各归其名（list_breakpoints 断链重放生效）；read/write_variable 非对齐地址修复；SVD 数组寄存器 `[%s]` 按名可达 + svd_path 损坏时报真因；BackendSession 定向失效（不再误杀并发新连接）；工具描述瘦身 25,963→24,900 B（契约逐条保留） |
 | 第四轮批次A（v0.4.33，docs/round4-plan.md） | ✅ TryParseHex 拒带符号 hex；launcher host/transport 进 TCL 前转义（配置侧注入面收口）；ConfigStore 读-改-写单锁（并发 set_permissions/set_target 不丢更新）；doctor 探测进程补 Dispose；插件面板版本单一源（PROXY_VERSION 派生自 package.json，0.1.0→0.3.0）；插件 0.4.7（携带第三轮 SKILL.md 变更，原生 CLI 更新可达）；DSH 面板 test.js 无参跑全四套件（v1.5.2）；e2e 补非对齐 read/write_variable 场景；CI 第五道门禁：工具描述字节预算 `--budget 25500` |
+| 第四轮批次B（v0.4.34，A-10 契约变更） | ✅ flash_write / verify_image / dump_memory 输出**末行机器可读结论** `OCDUP-RESULT: <op>=<verdict>`（flash-write 五态 / verify 三态 / dump OK·PARTIAL；人读文本一字不动，早退 ERROR/BLOCKED 不带此行，CLI 仍走退出码族）；描述瘦身二期：删参数回顾句 + 参数级压缩，24,900→**24,570 B**；e2e 钉死全部七种标记形态；插件 0.4.8（SKILL.md 同步标记语法） |
 | S5 打包与客户端注册 | 🟡 已注册进 DSH（desktop + web 两个 profile）与 ZCode（`mcp.servers` 条目 + `ocdup-zcode` 插件，均指 `publish/ocdup.exe`）；换机第一步先跑 `ocdup doctor`（v0.4.15） |
 
 后续里程碑（条件断点、L3 协议字典、与 acccom 的串口协同、多后端注册表 Q8 等）见
