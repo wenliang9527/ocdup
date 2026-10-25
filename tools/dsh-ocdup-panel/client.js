@@ -2405,10 +2405,18 @@ window.__ModuleLoader__.load({
       // 那两个服务在新宿主仍在,但侧栏图标已经不归它们管了)
       // v1.3.4:右栏 tab 路线回归(用户要右侧停靠),但入口不再押注左侧图标:
       // inject 需要 slots + 两个右栏服务;左侧 panellist 注册整体移除。
-      // v1.5.3:只严格注入 slots。右栏两个服务改为 apply 内 ctx.get() 可选解析——
-      // 严格注入意味着宿主一旦撤掉右栏服务(0.1.5 的 rightbar 迁移方向),整个插件
-      // 直接不激活,连下面的 main 全局面板兜底都走不到,兜底链形同虚设。
-      inject: ['slots'],
+      //
+      // v1.5.3 实测纠错(原计划「inject 只留 slots」已回退):
+      // 本宿主的 `ctx.get(name)` 走 ReflectService.get(name, strict=true),而
+      // 服务解析要求该名字**已在 inject 里声明**——未声明的名字在代理层直接
+      // 抛 "cannot get property ... without inject"。所以把两个右栏服务从
+      // inject 移除并不会让它们变成「可选」,而是让 apply 里那两行 ctx.get()
+      // 立刻抛错 → hasRightbar=false → 插件滑进 main 全局面板兜底分支。
+      // 浏览器实测:右栏 guide 里有 acccom-serial(files/git/terminal/…),
+      // 唯独没有 OCDUP——就是这条。同宿主的 dsh-serial-panel 也保持三项全声明。
+      // 想真正做「可选」必须把解析包进 try/catch 或 ctx.inject([...], cb) 的
+      // 回调作用域,那是独立改动,不与本次 bugfix 混做。
+      inject: ['slots', 'sidebarRight', 'sidebarRightTabs'],
       // 纯函数仅供 test.js client 模式断言,生产逻辑不依赖
       _test: {
         highlight, highlightRe, compileMatcher, matcherHit, hueOf, fmtDt, sameStats,

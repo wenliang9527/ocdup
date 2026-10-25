@@ -1032,10 +1032,12 @@ const ok = (cond, label, extra) => {
     }
     mod.apply(ctxRight)
     const TAB_ID = 'dsh-ocdup-panel'
-    // v1.5.3:inject 只留 slots——右栏两服务改为 apply 内可选解析,
-    // 否则宿主撤掉它们时插件整体不激活,main 兜底也走不到。
-    ok(Array.isArray(mod.inject) && mod.inject.length === 1 && mod.inject[0] === 'slots',
-      'T25 inject 只严格依赖 slots(右栏服务走可选解析)', mod.inject)
+    // v1.5.3 实测纠错:本宿主 ctx.get() 未在 inject 声明的名字会抛错,
+    // 「只留 slots」会让右栏解析失败、插件滑进兜底分支(浏览器实测右栏无 OCDUP)。
+    // 三项必须全声明;真正做可选需另起改动(try/catch 或 ctx.inject 回调域)。
+    ok(Array.isArray(mod.inject) && mod.inject.includes('slots')
+      && mod.inject.includes('sidebarRight') && mod.inject.includes('sidebarRightTabs'),
+      'T25 inject 声明 slots + 两个右栏服务(ctx.get 要求先声明)', mod.inject)
     // 档位必须在宿主 RANKS 表内,否则 RANKS[priority] === undefined → 排名比较得 NaN
     ok(tabDefs[0].priority === 'extension' || tabDefs[0].priority === 'builtin'
       || tabDefs[0].priority === 'fallback',

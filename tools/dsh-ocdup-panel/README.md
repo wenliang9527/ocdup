@@ -283,11 +283,29 @@ ring 491 条全收齐(`?since=343` 能返回含 `started (pid 1888)` 的 148 条
 |---|---|---|---|
 | 1 | P1 | **校验失败显示绿色 ✓**:v1.4.0 起 `flashBarText` 用 `if (prog.ok \|\| prog.bytes)` 判成功,而 `wrote 139077 bytes` 在 VERIFY-FAILED / INCONCLUSIVE 时同样存在 → 烧失败也画 ✓ 绿条 | 新增 `parseResultTags` / `lastResultTag` / `verdictToneOf`;`flashProgressOf` 出现标签时 **ok 只由标签决定**,标签压过旧的 `Verified OK` 启发式 |
 | 2 | P2 | **`priority: 'plugin'` 不是合法档位**:宿主 `RANKS` 只有 `extension/builtin/fallback`,`RANKS['plugin'] === undefined` → 排名比较得 NaN。当前靠 `openTab(kind)` 按 kind 直开、不参与排名才没炸 | 改为 `extension`(宿主 `DEFAULT_BAND`,即插件贡献类型的档位) |
-| 3 | P2 | **严格注入锁死兜底链**:`inject: ['slots','sidebarRight','sidebarRightTabs']` 一旦宿主撤掉右栏服务(0.1.5 `rightbar` 迁移方向),插件整体不激活,连 `main` 全局面板兜底都走不到 | `inject` 只留 `'slots'`;两个右栏服务本来就在 `apply` 内用 `ctx.get()` 可选解析,现在才真兜得住 |
+| 3 | — | ~~严格注入锁死兜底链~~ → **原判断错误,已撤回** | 见下节 |
 
 结论词表与配色(五态):`OK` 绿 ✓ / `INCONCLUSIVE`·`PARTIAL`·`UNVERIFIED` 琥珀 !
 / `VERIFY-FAILED`·`WRITE-FAILED`·`FAILED` 红 ✕。「没验成」不判红是有意的——与 ocdup
 侧措辞一致,否则会怂恿无谓重烧。
+
+### 撤回的一条:inject 不能「只留 slots」
+
+原本打算把 `inject` 收窄成 `['slots']`,让右栏服务变成可选、兜底链更结实。**这是错的,
+已实测证伪并回退**:
+
+- 本宿主的 `ctx.get(name)` 走 `ReflectService.get(name, strict = true)`,而服务解析
+  要求该名字**已在 inject 中声明**——未声明的名字在代理层直接抛
+  `cannot get property "…" without inject`。所以移除 inject 声明不会让服务「可选」,
+  而是让 `apply` 里那两行 `ctx.get()` **立刻抛错**。
+- 后果:`hasRightbar` 恒为 `false` → 插件滑进 `main` 全局面板兜底分支。
+- **浏览器实测证据**:改完部署后,右栏 guide 列表是
+  `files/git/acccom-serial/terminal/subagent/browser/sidechat/…`,**唯独没有 `ocdup-log`**;
+  回退后同一份列表重新出现 `ocdup-log`,点开即是「OCDUP 调试」面板。
+- 同宿主的 `dsh-serial-panel` 也保持三项全声明——这是该宿主下的正确写法。
+
+要做真正的可选解析,得把 `ctx.get()` 包进 `try/catch`,或改用
+`ctx.inject([...], (ctx) => …)` 的回调作用域;那是独立改动,不与本次 bugfix 混做。
 
 **兼容**:老后端(v0.4.30 及更早,无标签)仍走原有启发式,但**字节数不再自动判通过**——
 降级为琥珀「· N 字节 · 未校验」,不再撒谎说校验 OK。
