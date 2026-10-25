@@ -1948,7 +1948,17 @@ window.__ModuleLoader__.load({
                 className: fb.active ? 'op-flow' : '',
                 style: { display: 'block', width: '100%', height: '100%', background: fb.tone },
               })),
-            h('span', { style: { flex: '0 1 auto', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, fb.text),
+            // v1.5.3:结论色必须落到**文字**上——tone 原来只喂给左侧 4px 进度条,
+            // 于是「✕ 139077 字节 · 烧录 VERIFY-FAILED」整行仍是灰色,扫一眼分不出
+            // 成败(浏览器实测:文字 color=rgb(97,102,107))。进度条保留 tone,
+            // 文字同步取 tone 并加粗;active(进行中)时不抢戏,维持中性灰。
+            h('span', {
+              style: {
+                flex: '0 1 auto', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                color: fb.active ? undefined : fb.tone,
+                fontWeight: fb.active ? undefined : 600,
+              },
+            }, fb.text),
           )
         })(),
       ) : null
