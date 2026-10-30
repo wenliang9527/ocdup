@@ -81,6 +81,18 @@ public sealed class BackendSession
             used = await ExecuteOnceAsync(cfg, command, startIfNeeded, ct, op).ConfigureAwait(false);
             return used.Output;
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // 调用方取消（MCP 宿主掐掉工具调用、Ctrl+C）不能只是往外抛：命令已经写进
+            // socket 了，OpenOCD 稍后仍会把这条应答吐出来。连接留着，下一任命令就会
+            // 把它当成自己的答案读走——现象是「读什么都返回同一个值」，而且
+            // tcl_server.c 严格一问一答、没有序号，错位会一直向后传染。
+            // 取消语义原样上抛（宿主在等这个取消），连接已在 ExecuteOnceAsync 里作废。
+            _traffic.Record(op, "err",
+                $"cancelled by the caller while running '{command}' - the control channel was dropped, " +
+                "because a late reply would otherwise be handed to the next command", Endpoint(cfg));
+            throw;
+        }
         catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException or TimeoutException)
         {
             // 连接已坏，下次调用重新建立。v0.4.31 定向失效：只丢真正失败的那条连接——
@@ -120,14 +132,34 @@ public sealed class BackendSession
     {
         // 通道串行（P1-5）：同一时刻只允许一条命令占用 TCL-RPC 连接——业务命令与心跳互斥。
         await _channelGate.WaitAsync(ct).ConfigureAwait(false);
+        TclRpcClient? client = null;
         try
         {
-            var client = await AcquireAsync(cfg, startIfNeeded, ct).ConfigureAwait(false);
+            client = await AcquireAsync(cfg, startIfNeeded, ct).ConfigureAwait(false);
             _traffic.Record(op, "cmd", command, Endpoint(cfg));
             var output = await client.CommandAsync(command, ct).ConfigureAwait(false);
             Volatile.Write(ref _lastChannelActivityTicks, Environment.TickCount64);
             _traffic.Record(op, "rsp", output, Endpoint(cfg));
             return new ChannelResult(output, client);
+        }
+        catch
+        {
+            // 这里必须作废，而不是留给 ExecuteAsync 的 catch 去做：异常从本方法穿出时
+            // ExecuteAsync 手里的 ChannelResult 还是 default（Client 为 null），那条路径
+            // 只会走无参 Invalidate()，而 _client 从未被置空过——等于什么都没清。
+            // 「这条连接已经不可信」的判据也只有这里知道：一次没走完的往返（含调用方取消）
+            // 会在 TclRpcClient 上标脏，脏连接的应答位置未知，必须整条丢弃。
+            if (client is not null)
+            {
+                InvalidateClient(client);
+            }
+            else if (ct.IsCancellationRequested)
+            {
+                // 连 AcquireAsync 都没走完就被取消：连接可能是好的，也可能是半建状态。
+                // 取消是罕见路径，宁可多断一次也不要留一条状态不明的连接。
+                Invalidate();
+            }
+            throw;
         }
         finally
         {

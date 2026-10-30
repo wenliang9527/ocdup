@@ -23,18 +23,22 @@ public sealed class TclRpcClientTests
         private readonly Func<string, string> _responder;
         private readonly bool _respond;
         private readonly int _chunkSize;
+        private readonly int _firstResponseDelayMs;
         private readonly List<string> _commands = new();
         private readonly List<string> _rawFrames = new();
+        private int _responded;
 
         public int Port { get; }
         public IReadOnlyList<string> Commands { get { lock (_commands) return _commands.ToList(); } }
         public IReadOnlyList<string> RawFrames { get { lock (_rawFrames) return _rawFrames.ToList(); } }
 
-        public FakeTclServer(Func<string, string>? responder = null, bool respond = true, int chunkSize = 0)
+        public FakeTclServer(Func<string, string>? responder = null, bool respond = true, int chunkSize = 0,
+            int firstResponseDelayMs = 0)
         {
             _responder = responder ?? (_ => "ok");
             _respond = respond;
             _chunkSize = chunkSize;
+            _firstResponseDelayMs = firstResponseDelayMs;
             _listener = new TcpListener(IPAddress.Loopback, 0);
             _listener.Start();
             Port = ((IPEndPoint)_listener.LocalEndpoint).Port;
@@ -83,7 +87,13 @@ public sealed class TclRpcClientTests
                             lock (_rawFrames) _rawFrames.Add(raw);
 
                             if (_respond)
+                            {
+                                // 只让第一条应答迟到（模拟"客户端已经超时放弃，服务端这才回话"）：
+                                // 这条迟到帧会留在 socket 里，正是串帧事故的原料。
+                                if (_firstResponseDelayMs > 0 && Interlocked.Increment(ref _responded) == 1)
+                                    await Task.Delay(_firstResponseDelayMs, _cts.Token);
                                 await WriteResponseAsync(stream, _responder(command)).ConfigureAwait(false);
+                            }
 
                             delimiter = pending.IndexOf(TclRpcClient.Delimiter);
                         }
@@ -114,7 +124,7 @@ public sealed class TclRpcClientTests
                 var count = Math.Min(_chunkSize, bytes.Length - offset);
                 await stream.WriteAsync(bytes.AsMemory(offset, count), _cts.Token).ConfigureAwait(false);
                 await stream.FlushAsync(_cts.Token).ConfigureAwait(false);
-                await Task.Delay(2).ConfigureAwait(false);
+                await Task.Delay(2);
             }
 
             await stream.WriteAsync(terminator, _cts.Token).ConfigureAwait(false);
@@ -212,6 +222,80 @@ public sealed class TclRpcClientTests
         using var client = await ConnectAsync(server, commandTimeoutMs: 300);
 
         await Assert.ThrowsAsync<TimeoutException>(() => client.CommandAsync("mdw 0x0 1"));
+    }
+
+    // ── 串帧事故（2026-10-30 现场：读什么都返回同一条旧值）──
+    //
+    // 事故链：调用方在 30s 处取消 → 请求已写出、连接没作废 → OpenOCD 的应答稍后
+    // 到达并排在 socket 里 → 下一条命令把它当成自己的答案读走。tcl_server.c 严格
+    // 一问一答且没有序号，所以错位会一直向后传染。
+    // 下面三条分别钉住：脏标记、拒绝复用、以及"没有它就会错"的现场对照。
+
+    [Fact]
+    public async Task CommandAsync_CancelledMidFlight_MarksTheChannelStale()
+    {
+        // 服务端第一条应答迟到，客户端等不及先取消——正是"请求已写出、应答还在路上"。
+        await using var server = new FakeTclServer(cmd => "reply:" + cmd, firstResponseDelayMs: 5000);
+        using var client = await ConnectAsync(server, commandTimeoutMs: 30000);
+
+        using var cts = new CancellationTokenSource();
+        var inFlight = client.CommandAsync("mdw 0xE0001004 1", cts.Token);
+        await Task.Delay(120); // 让写真正落地，别在写之前就取消
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => inFlight);
+
+        Assert.True(client.IsStale,
+            "一次没走完的往返必须把连接标脏：应答位置已经不确定，复用就会串帧");
+    }
+
+    [Fact]
+    public async Task CommandAsync_RefusesToReuseAStaleChannel()
+    {
+        await using var server = new FakeTclServer(cmd => "reply:" + cmd, firstResponseDelayMs: 5000);
+        using var client = await ConnectAsync(server, commandTimeoutMs: 30000);
+
+        using (var cts = new CancellationTokenSource())
+        {
+            var inFlight = client.CommandAsync("mdw 0xE0001004 1", cts.Token);
+            await Task.Delay(120);
+            cts.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => inFlight);
+        }
+
+        // 这条连接上"一问一答"已经不可信：第二条命令必须被挡下，而不是拿旧应答糊弄过去。
+        await Assert.ThrowsAsync<StaleChannelException>(() => client.CommandAsync("mdw 0x20000000 4"));
+
+        // 挡下之后服务端不该收到第二条命令——真要收到了，旧应答就会被错配给它。
+        await Task.Delay(150);
+        Assert.Equal("mdw 0xE0001004 1", Assert.Single(server.Commands));
+    }
+
+    [Fact]
+    public async Task CommandAsync_TimeoutAlsoMarksTheChannelStale()
+    {
+        // 超时和取消是同一类：都是"半次往返"。漏掉任何一类，错位就照旧传染。
+        await using var server = new FakeTclServer(respond: false);
+        using var client = await ConnectAsync(server, commandTimeoutMs: 300);
+
+        await Assert.ThrowsAsync<TimeoutException>(() => client.CommandAsync("mdw 0x0 1"));
+
+        Assert.True(client.IsStale);
+        await Assert.ThrowsAsync<StaleChannelException>(() => client.CommandAsync("version"));
+    }
+
+    [Fact]
+    public async Task CommandAsync_CleanRoundTripDoesNotMarkTheChannelStale()
+    {
+        // 反向钉子：正常往返绝不能被误标脏，否则每条命令都要重连一次。
+        await using var server = new FakeTclServer(cmd => "reply:" + cmd);
+        using var client = await ConnectAsync(server);
+
+        Assert.Equal("reply:a", await client.CommandAsync("a"));
+        Assert.Equal("reply:b", await client.CommandAsync("b"));
+
+        Assert.False(client.IsStale);
+        Assert.Equal(2, server.Commands.Count);
     }
 
     [Fact]
