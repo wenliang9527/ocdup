@@ -1,6 +1,6 @@
 using System.Globalization;
 
-namespace Ocdup.Tools;
+namespace Ocdup;
 
 /// <summary>工具层共用的参数解析（设计文档 6.1：地址类参数一律 hex 字符串）。</summary>
 public static class Parsing

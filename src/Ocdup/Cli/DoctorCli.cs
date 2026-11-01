@@ -146,7 +146,7 @@ public static class DoctorCli
 
         try
         {
-            var version = (await BackendSession.Instance.ExecuteAsync(cfg, "version", startIfNeeded: false, op: "doctor").ConfigureAwait(false)).Trim();
+            var version = (await BackendSession.Instance.ExecuteAsync(cfg, "version", startIfNeeded: false, op: OpNames.Doctor).ConfigureAwait(false)).Trim();
             var firstLine = version.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault() ?? "(empty)";
             return new DoctorCheck("backend port", DoctorVerdict.Ok, $"listener on {endpoint} answered: {firstLine}");
         }

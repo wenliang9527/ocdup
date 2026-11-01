@@ -132,7 +132,7 @@ public static class SvdTools
         try
         {
             output = (await BackendSession.Instance.ExecuteAsync(cfg, SvdFile.ReadCommand(register, address),
-                startIfNeeded: true, ct, op: "read_memory")).Trim();
+                startIfNeeded: true, ct, op: OpNames.ReadPeripheralRegister)).Trim();
         }
         catch (BackendException ex)
         {
@@ -194,14 +194,14 @@ public static class SvdTools
         string output;
         try
         {
-            output = (await BackendSession.Instance.ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: "write_memory")).Trim();
+            output = (await BackendSession.Instance.ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: OpNames.WritePeripheralRegister)).Trim();
         }
         catch (BackendException ex)
         {
             return ex.Message;
         }
 
-        return $"wrote {peripheral.Name}.{register.Name} @ {Ocdup.Tools.Parsing.Hex(address)} = 0x{parsed & ((1L << Math.Min(register.SizeBits, 63)) - 1):x}" +
+        return $"wrote {peripheral.Name}.{register.Name} @ {Parsing.Hex(address)} = 0x{parsed & ((1L << Math.Min(register.SizeBits, 63)) - 1):x}" +
                (output.Length == 0 ? "" : $"\nbackend: {output}") +
                $"\nread it back with read_peripheral_register(\"{peripheral.Name}.{register.Name}\") to confirm.";
     }

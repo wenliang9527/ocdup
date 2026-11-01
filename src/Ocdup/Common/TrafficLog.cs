@@ -2,7 +2,7 @@ using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace Ocdup.Backend;
+namespace Ocdup;
 
 /// <summary>
 /// 把 ocdup 与 OpenOCD 的每次交互镜像到本地 JSONL(%LOCALAPPDATA%\Ocdup\mcp-traffic.jsonl):

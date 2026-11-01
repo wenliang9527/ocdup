@@ -2,7 +2,6 @@ using System.IO;
 using System.Net.Sockets;
 using Ocdup.Config;
 using Ocdup.Launcher;
-using Ocdup.Tools;
 
 namespace Ocdup.Backend;
 
@@ -43,12 +42,15 @@ public sealed class BackendSession
     /// 断链后允许自动重放一次的 op 白名单（P1-5）：目标侧纯读，重放不产生二次效应。
     /// flash_write（program 可能已生效，重放 = 二次擦写）/ run_command（内容不可静态判定）/
     /// halt / resume / reset / write_* / flash_erase_sector / watch 一律不在列——重放不安全。
-    /// v0.4.30 增 list_breakpoints（`bp` 无参即列，纯读）。
+    /// v0.4.30 增 list_breakpoints（`bp` 无参即列，纯读）；v0.4.37 引用 <see cref="OpNames"/>
+    /// 单一真源，并增 read_peripheral_register（纯读；此前靠 SvdTools 的 "read_memory" 别名
+    /// 间接命中白名单——流量归属因此失真，audit F-8）。
     /// </summary>
     internal static readonly HashSet<string> ReplaySafeOps = new(StringComparer.Ordinal)
     {
-        "status", "connect", "flash_info", "identify_chip", "read_memory",
-        "verify_image", "dump_memory", "read_variable", "list_breakpoints",
+        OpNames.Status, OpNames.Connect, OpNames.FlashInfo, OpNames.IdentifyChip,
+        OpNames.ReadMemory, OpNames.VerifyImage, OpNames.DumpMemory, OpNames.ReadVariable,
+        OpNames.ListBreakpoints, OpNames.ReadPeripheralRegister,
     };
 
     internal static bool IsReplaySafe(string op) => ReplaySafeOps.Contains(op);
@@ -366,7 +368,7 @@ public sealed class BackendSession
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(TimeSpan.FromMilliseconds(1500));
-            var targets = await ExecuteAsync(cfg, "targets", startIfNeeded: false, timeout.Token, op: "disconnect")
+            var targets = await ExecuteAsync(cfg, "targets", startIfNeeded: false, timeout.Token, op: OpNames.Disconnect)
                 .ConfigureAwait(false);
             return Parsing.AnyTargetHalted(targets) ? HaltedTargetNote : null;
         }

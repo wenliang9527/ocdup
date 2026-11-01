@@ -49,7 +49,7 @@ public static class MemoryTools
 
         try
         {
-            var output = (await BackendSession.Instance.ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: "read_memory")).Trim();
+            var output = (await BackendSession.Instance.ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: OpNames.ReadMemory)).Trim();
             if (output.Length == 0)
                 return $"ERROR: the backend produced no output for '{command}'.";
 
@@ -124,7 +124,7 @@ public static class MemoryTools
 
         try
         {
-            var output = (await BackendSession.Instance.ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: "write_memory")).Trim();
+            var output = (await BackendSession.Instance.ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: OpNames.WriteMemory)).Trim();
             return $"wrote {parsed.Length} x {width}-bit to {Parsing.Hex(start)} ({parsed.Length * width / 8} bytes):\n" +
                    (output.Length == 0 ? "(no output - write completed silently)" : output);
         }
@@ -187,7 +187,7 @@ public static class MemoryTools
         var pumpTask = progressPump?.RunAsync(pumpCts.Token) ?? Task.CompletedTask;
         try
         {
-            output = (await BackendSession.Instance.ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: "dump_memory")).Trim();
+            output = (await BackendSession.Instance.ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: OpNames.DumpMemory)).Trim();
         }
         catch (BackendException ex)
         {

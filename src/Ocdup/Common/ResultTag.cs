@@ -1,4 +1,4 @@
-namespace Ocdup.Tools;
+namespace Ocdup;
 
 /// <summary>
 /// A-10（v0.4.34）：机器可读结论行。flash_write / verify_image / dump_memory 的输出

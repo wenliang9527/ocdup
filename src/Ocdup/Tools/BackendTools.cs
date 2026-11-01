@@ -28,8 +28,8 @@ public static class BackendTools
             // 因此永远是 0s，那行只剩 connected/not connected 有信息量）。
             var (channelConnected, channelIdle) = BackendSession.Instance.ChannelState;
 
-            var version = (await BackendSession.Instance.ExecuteAsync(cfg, "version", startIfNeeded: false, ct, op: "status")).Trim();
-            var targets = (await BackendSession.Instance.ExecuteAsync(cfg, "targets", startIfNeeded: false, ct, op: "status")).Trim();
+            var version = (await BackendSession.Instance.ExecuteAsync(cfg, "version", startIfNeeded: false, ct, op: OpNames.Status)).Trim();
+            var targets = (await BackendSession.Instance.ExecuteAsync(cfg, "targets", startIfNeeded: false, ct, op: OpNames.Status)).Trim();
 
             var sb = new StringBuilder();
             sb.AppendLine($"OpenOCD: running on {cfg.Host}:{cfg.Port}");
@@ -96,8 +96,8 @@ public static class BackendTools
 
         try
         {
-            var version = (await BackendSession.Instance.ExecuteAsync(cfg, "version", startIfNeeded: true, ct, op: "connect")).Trim();
-            var targets = (await BackendSession.Instance.ExecuteAsync(cfg, "targets", startIfNeeded: false, ct, op: "connect")).Trim();
+            var version = (await BackendSession.Instance.ExecuteAsync(cfg, "version", startIfNeeded: true, ct, op: OpNames.Connect)).Trim();
+            var targets = (await BackendSession.Instance.ExecuteAsync(cfg, "targets", startIfNeeded: false, ct, op: OpNames.Connect)).Trim();
 
             var sb = new StringBuilder();
             sb.AppendLine($"connected to OpenOCD on {cfg.Host}:{cfg.Port}");
@@ -226,7 +226,7 @@ public static class BackendTools
 
         try
         {
-            var output = (await BackendSession.Instance.ExecuteAsync(cfg, command.Trim(), startIfNeeded: true, ct, op: "run_command")).Trim();
+            var output = (await BackendSession.Instance.ExecuteAsync(cfg, command.Trim(), startIfNeeded: true, ct, op: OpNames.RunCommand)).Trim();
             return $"ran: {command.Trim()}\n" + (output.Length == 0 ? "(no output)" : output);
         }
         catch (BackendException ex)

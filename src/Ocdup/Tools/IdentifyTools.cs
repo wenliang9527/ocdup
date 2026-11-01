@@ -185,7 +185,7 @@ public static class IdentifyTools
         try
         {
             var output = (await BackendSession.Instance
-                .ExecuteAsync(cfg, $"mdw {address} 1", startIfNeeded: true, ct, op: "identify_chip")).Trim();
+                .ExecuteAsync(cfg, $"mdw {address} 1", startIfNeeded: true, ct, op: OpNames.IdentifyChip)).Trim();
             if (Parsing.TryParseMemoryOutput(output, 32, 1, out var values))
             {
                 sb.AppendLine($"  {label} @ {address}: 0x{values[0]:x8}");

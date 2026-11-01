@@ -90,7 +90,7 @@ public static class SymbolTools
         try
         {
             output = (await BackendSession.Instance
-                .ExecuteAsync(cfg, $"mdw {Parsing.Hex(readAddress)} {wordCount}", startIfNeeded: true, ct, op: "read_variable")).Trim();
+                .ExecuteAsync(cfg, $"mdw {Parsing.Hex(readAddress)} {wordCount}", startIfNeeded: true, ct, op: OpNames.ReadVariable)).Trim();
         }
         catch (BackendException ex)
         {
@@ -179,7 +179,7 @@ public static class SymbolTools
             foreach (var command in commands)
             {
                 lastOutput = (await BackendSession.Instance
-                    .ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: "write_variable")).Trim();
+                    .ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: OpNames.WriteVariable)).Trim();
             }
         }
         catch (BackendException ex)

@@ -32,7 +32,7 @@ public static class ExecTools
         var command = timeoutMs > 0 ? $"halt {timeoutMs}" : "halt";
         try
         {
-            var output = (await BackendSession.Instance.ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: "halt")).Trim();
+            var output = (await BackendSession.Instance.ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: OpNames.Halt)).Trim();
             var regs = await CoreRegsReportAsync(cfg, ct).ConfigureAwait(false);
             return $"halt issued ({command}).\n" +
                    (output.Length == 0 ? "(no output - check the target state with status)" : output) +
@@ -62,7 +62,7 @@ public static class ExecTools
             try
             {
                 var output = await BackendSession.Instance
-                    .ExecuteAsync(cfg, $"reg {reg}", startIfNeeded: false, timeout.Token, op: "halt").ConfigureAwait(false);
+                    .ExecuteAsync(cfg, $"reg {reg}", startIfNeeded: false, timeout.Token, op: OpNames.Halt).ConfigureAwait(false);
                 if (Parsing.ParseRegValue(output) is { } value)
                     parts.Add($"{reg}={Parsing.Hex(value)}");
             }
@@ -102,7 +102,7 @@ public static class ExecTools
 
         try
         {
-            var output = (await BackendSession.Instance.ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: "resume")).Trim();
+            var output = (await BackendSession.Instance.ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: OpNames.Resume)).Trim();
             return $"resume issued ({command}).\n" +
                    (output.Length == 0 ? "(no output - target is running)" : output);
         }
@@ -131,7 +131,7 @@ public static class ExecTools
 
         try
         {
-            var output = (await BackendSession.Instance.ExecuteAsync(cfg, $"reset {m}", startIfNeeded: true, ct, op: "reset")).Trim();
+            var output = (await BackendSession.Instance.ExecuteAsync(cfg, $"reset {m}", startIfNeeded: true, ct, op: OpNames.Reset)).Trim();
             var regs = m == "halt" ? await CoreRegsReportAsync(cfg, ct).ConfigureAwait(false) : "";
             return $"reset {m} issued.\n" +
                    (output.Length == 0 ? "(no output)" : output) +

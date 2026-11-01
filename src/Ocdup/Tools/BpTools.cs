@@ -65,7 +65,7 @@ public static class BpTools
             return $"ERROR: length must be between 1 and {MaxLengthBytes} bytes.";
 
         var command = BreakpointCommand(addr, length, hw);
-        return await RunAsync(cfg, command, ct, op: "add_breakpoint",
+        return await RunAsync(cfg, command, ct, op: OpNames.AddBreakpoint,
             $"breakpoint set @ {Parsing.Hex(addr)}" + (hw ? " (hardware)" : "")).ConfigureAwait(false);
     }
 
@@ -83,13 +83,13 @@ public static class BpTools
             return blocked;
 
         if (string.IsNullOrWhiteSpace(address))
-            return await RunAsync(cfg, RemoveBreakpointCommand(null), ct, op: "remove_breakpoint",
+            return await RunAsync(cfg, RemoveBreakpointCommand(null), ct, op: OpNames.RemoveBreakpoint,
                 "all breakpoints removed").ConfigureAwait(false);
 
         if (!Parsing.TryParseHex(address, out var addr))
             return $"ERROR: address '{address}' is not a hex value. Use a hex string like '0x08000100'.";
 
-        return await RunAsync(cfg, RemoveBreakpointCommand(Parsing.Hex(addr)), ct, op: "remove_breakpoint",
+        return await RunAsync(cfg, RemoveBreakpointCommand(Parsing.Hex(addr)), ct, op: OpNames.RemoveBreakpoint,
             $"breakpoint removed @ {Parsing.Hex(addr)}").ConfigureAwait(false);
     }
 
@@ -101,7 +101,7 @@ public static class BpTools
     public static async Task<string> ListBreakpoints(CancellationToken ct = default)
     {
         var cfg = ConfigStore.Instance.Current;
-        return await RunAsync(cfg, "bp", ct, op: "list_breakpoints", "breakpoints listed").ConfigureAwait(false);
+        return await RunAsync(cfg, "bp", ct, op: OpNames.ListBreakpoints, "breakpoints listed").ConfigureAwait(false);
     }
 
     [McpServerTool(Name = "add_watchpoint")]
@@ -139,7 +139,7 @@ public static class BpTools
         }
 
         var command = WatchpointCommand(addr, length, normalizedAccess, matchValue);
-        return await RunAsync(cfg, command, ct, op: "add_watchpoint",
+        return await RunAsync(cfg, command, ct, op: OpNames.AddWatchpoint,
             $"watchpoint set @ {Parsing.Hex(addr)} ({normalizedAccess})").ConfigureAwait(false);
     }
 
@@ -164,7 +164,7 @@ public static class BpTools
         if (!Parsing.TryParseHex(address, out var addr))
             return $"ERROR: address '{address}' is not a hex value. Use a hex string like '0x20000000'.";
 
-        return await RunAsync(cfg, RemoveWatchpointCommand(Parsing.Hex(addr)), ct, op: "remove_watchpoint",
+        return await RunAsync(cfg, RemoveWatchpointCommand(Parsing.Hex(addr)), ct, op: OpNames.RemoveWatchpoint,
             $"watchpoint removed @ {Parsing.Hex(addr)}").ConfigureAwait(false);
     }
 
@@ -177,7 +177,7 @@ public static class BpTools
         string listing;
         try
         {
-            listing = (await BackendSession.Instance.ExecuteAsync(cfg, "wp", startIfNeeded: true, ct, op: "remove_watchpoint")).Trim();
+            listing = (await BackendSession.Instance.ExecuteAsync(cfg, "wp", startIfNeeded: true, ct, op: OpNames.RemoveWatchpoint)).Trim();
         }
         catch (BackendException ex)
         {
@@ -192,7 +192,7 @@ public static class BpTools
         var removed = new List<string>();
         foreach (var addr in addresses)
         {
-            var result = await RunAsync(cfg, RemoveWatchpointCommand(addr), ct, op: "remove_watchpoint",
+            var result = await RunAsync(cfg, RemoveWatchpointCommand(addr), ct, op: OpNames.RemoveWatchpoint,
                 $"watchpoint removed @ {addr}").ConfigureAwait(false);
             if (!result.StartsWith("ERROR:", StringComparison.OrdinalIgnoreCase))
                 removed.Add(addr);

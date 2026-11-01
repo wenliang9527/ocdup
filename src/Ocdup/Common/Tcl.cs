@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace Ocdup.Backend;
+namespace Ocdup;
 
 /// <summary>
 /// TCL 命令字面量处理。命令最终会被包进 capture { … } 送到 OpenOCD 的 TCL-RPC 端口，

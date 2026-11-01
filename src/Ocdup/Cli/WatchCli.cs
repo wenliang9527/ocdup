@@ -190,12 +190,12 @@ public static class WatchCli
         try
         {
             if (halt)
-                await execute(cfg, "halt 200", startIfNeeded: true, ct, "watch").ConfigureAwait(false);
+                await execute(cfg, "halt 200", startIfNeeded: true, ct, OpNames.Watch).ConfigureAwait(false);
             var values = new List<uint>(vars.Count);
             foreach (var s in vars)
             {
                 var aligned = s.Address & ~3L;
-                var output = await execute(cfg, $"mdw {Parsing.Hex(aligned)} 1", startIfNeeded: !halt, ct, "watch").ConfigureAwait(false);
+                var output = await execute(cfg, $"mdw {Parsing.Hex(aligned)} 1", startIfNeeded: !halt, ct, OpNames.Watch).ConfigureAwait(false);
                 if (!Parsing.TryParseMemoryOutput(output, 32, 1, out var words))
                     throw new BackendException($"could not read '{s.Name}' @ {Parsing.Hex(s.Address)}: {output.ReplaceLineEndings(" ").Trim()}");
                 values.Add(WatchValue.Extract((uint)words[0], s.Address, (int)s.Size));
@@ -208,7 +208,7 @@ public static class WatchCli
             {
                 try
                 {
-                    await execute(cfg, "resume", startIfNeeded: false, CancellationToken.None, "watch").ConfigureAwait(false);
+                    await execute(cfg, "resume", startIfNeeded: false, CancellationToken.None, OpNames.Watch).ConfigureAwait(false);
                 }
                 catch (BackendException)
                 {

@@ -88,9 +88,9 @@ public static class RttCli
             try
             {
                 await BackendSession.Instance.ExecuteAsync(cfg, BuildServerStopCommand(options),
-                    startIfNeeded: false, CancellationToken.None, op: "rtt").ConfigureAwait(false);
+                    startIfNeeded: false, CancellationToken.None, op: OpNames.Rtt).ConfigureAwait(false);
                 await BackendSession.Instance.ExecuteAsync(cfg, BuildRttStopCommand(),
-                    startIfNeeded: false, CancellationToken.None, op: "rtt").ConfigureAwait(false);
+                    startIfNeeded: false, CancellationToken.None, op: OpNames.Rtt).ConfigureAwait(false);
             }
             catch
             {
@@ -105,7 +105,7 @@ public static class RttCli
     {
         // 1. setup：注册控制块搜索（fork：valid any time；成功时 capture 无输出）
         var setupOutput = (await BackendSession.Instance.ExecuteAsync(
-            cfg, BuildSetupCommand(options), startIfNeeded: true, ct, op: "rtt")).Trim();
+            cfg, BuildSetupCommand(options), startIfNeeded: true, ct, op: OpNames.Rtt)).Trim();
         if (!SetupAccepted(setupOutput))
         {
             Console.Error.WriteLine("ERROR: 'rtt setup' was rejected by the backend: " +
@@ -117,7 +117,7 @@ public static class RttCli
         //    游标基线取在 start 之前——控制块搜索结论只可能出现在这之后。
         var cursor = BackendSession.Instance.TotalLinesAppended;
         await BackendSession.Instance.ExecuteAsync(cfg, BuildStartCommand(),
-            startIfNeeded: false, ct, op: "rtt").ConfigureAwait(false);
+            startIfNeeded: false, ct, op: OpNames.Rtt).ConfigureAwait(false);
 
         // 3. 确认控制块：fork 找不到时只发日志（"No control block found"）、不返回错误，
         //    不扫日志就会以为一切正常、然后对着一个永不产出的 TCP 端口干等。
@@ -160,7 +160,7 @@ public static class RttCli
         if (options.Info)
         {
             var channels = (await BackendSession.Instance.ExecuteAsync(cfg, BuildChannelsCommand(),
-                startIfNeeded: false, ct, op: "rtt")).Trim();
+                startIfNeeded: false, ct, op: OpNames.Rtt)).Trim();
             Console.WriteLine(channels.Length == 0
                 ? "(the backend produced no channel listing)"
                 : channels);
@@ -169,7 +169,7 @@ public static class RttCli
 
         // 4. rtt server：让 openocd 在本机开一个 TCP 端口转发该上行通道。
         var serverOutput = (await BackendSession.Instance.ExecuteAsync(cfg, BuildServerStartCommand(options),
-            startIfNeeded: false, ct, op: "rtt")).Trim();
+            startIfNeeded: false, ct, op: OpNames.Rtt)).Trim();
         if (!SetupAccepted(serverOutput))
         {
             Console.Error.WriteLine("ERROR: 'rtt server start' was rejected by the backend: " +

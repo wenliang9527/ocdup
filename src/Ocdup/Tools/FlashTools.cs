@@ -45,7 +45,7 @@ public static class FlashTools
     /// </summary>
     public static async Task<string> BanksAfterProbeAsync(OcdConfig cfg, CancellationToken ct)
     {
-        var listed = (await BackendSession.Instance.ExecuteAsync(cfg, "flash banks", startIfNeeded: true, ct, op: "flash_info")).Trim();
+        var listed = (await BackendSession.Instance.ExecuteAsync(cfg, "flash banks", startIfNeeded: true, ct, op: OpNames.FlashInfo)).Trim();
         if (listed.Length == 0) return "";
 
         var count = 0;
@@ -57,7 +57,7 @@ public static class FlashTools
         {
             try
             {
-                await BackendSession.Instance.ExecuteAsync(cfg, $"flash probe {i}", startIfNeeded: false, ct, op: "flash_info").ConfigureAwait(false);
+                await BackendSession.Instance.ExecuteAsync(cfg, $"flash probe {i}", startIfNeeded: false, ct, op: OpNames.FlashInfo).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is BackendException or OperationCanceledException)
             {
@@ -65,7 +65,7 @@ public static class FlashTools
             }
         }
 
-        return (await BackendSession.Instance.ExecuteAsync(cfg, "flash banks", startIfNeeded: false, ct, op: "flash_info")).Trim();
+        return (await BackendSession.Instance.ExecuteAsync(cfg, "flash banks", startIfNeeded: false, ct, op: OpNames.FlashInfo)).Trim();
     }
 
     [McpServerTool(Name = "flash_write")]
@@ -180,7 +180,7 @@ public static class FlashTools
             var programCommand = new StringBuilder("program ").Append(Tcl.Quote(resolved));
             if (loadAddress is { } addr) programCommand.Append(' ').Append(Parsing.Hex(addr));
 
-            programOutput = (await BackendSession.Instance.ExecuteAsync(cfg, programCommand.ToString(), startIfNeeded: true, ct, op: "flash_write")).Trim();
+            programOutput = (await BackendSession.Instance.ExecuteAsync(cfg, programCommand.ToString(), startIfNeeded: true, ct, op: OpNames.FlashWrite)).Trim();
         }
         catch (BackendException ex)
         {
@@ -200,7 +200,7 @@ public static class FlashTools
             string verifyOutput;
             try
             {
-                verifyOutput = (await BackendSession.Instance.ExecuteAsync(cfg, verifyCommand.ToString(), startIfNeeded: false, ct, op: "flash_write")).Trim();
+                verifyOutput = (await BackendSession.Instance.ExecuteAsync(cfg, verifyCommand.ToString(), startIfNeeded: false, ct, op: OpNames.FlashWrite)).Trim();
             }
             catch (BackendException ex)
             {
@@ -254,7 +254,7 @@ public static class FlashTools
 
         try
         {
-            var resetOutput = (await BackendSession.Instance.ExecuteAsync(cfg, "reset run", startIfNeeded: false, ct, op: "flash_write")).Trim();
+            var resetOutput = (await BackendSession.Instance.ExecuteAsync(cfg, "reset run", startIfNeeded: false, ct, op: OpNames.FlashWrite)).Trim();
             sb.AppendLine(resetOutput.Length == 0 ? "reset run: done" : $"reset run: {resetOutput}");
         }
         catch (BackendException ex)
@@ -340,7 +340,7 @@ public static class FlashTools
         string output;
         try
         {
-            output = (await BackendSession.Instance.ExecuteAsync(cfg, command.ToString(), startIfNeeded: true, ct, op: "verify_image")).Trim();
+            output = (await BackendSession.Instance.ExecuteAsync(cfg, command.ToString(), startIfNeeded: true, ct, op: OpNames.VerifyImage)).Trim();
         }
         catch (BackendException ex)
         {
@@ -471,7 +471,7 @@ public static class FlashTools
         var pumpTask = progressPump?.RunAsync(pumpCts.Token) ?? Task.CompletedTask;
         try
         {
-            var output = (await BackendSession.Instance.ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: "flash_erase_sector")).Trim();
+            var output = (await BackendSession.Instance.ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: OpNames.FlashEraseSector)).Trim();
             return $"erase issued: bank {bank}, sectors {first}..{lastText}.\n" +
                    (output.Length == 0 ? "(no output - check flash_info / verify_image afterwards)" : output);
         }
@@ -497,8 +497,8 @@ public static class FlashTools
         string info;
         try
         {
-            await BackendSession.Instance.ExecuteAsync(cfg, $"flash probe {bank}", startIfNeeded: true, ct, op: "flash_erase_sector").ConfigureAwait(false);
-            info = await BackendSession.Instance.ExecuteAsync(cfg, $"flash info {bank}", startIfNeeded: false, ct, op: "flash_erase_sector").ConfigureAwait(false);
+            await BackendSession.Instance.ExecuteAsync(cfg, $"flash probe {bank}", startIfNeeded: true, ct, op: OpNames.FlashEraseSector).ConfigureAwait(false);
+            info = await BackendSession.Instance.ExecuteAsync(cfg, $"flash info {bank}", startIfNeeded: false, ct, op: OpNames.FlashEraseSector).ConfigureAwait(false);
         }
         catch (BackendException)
         {
