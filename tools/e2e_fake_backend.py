@@ -35,6 +35,13 @@
     25. CRC 算法起不来（v0.4.29，真机 2026-10-13 抓原文）：verify_image 回
         `target not halted` / `timed out while waiting for target halted` → VERIFY INCONCLUSIVE
         + halt 指引；**绝不**说成「固件不匹配」（模型据此会无谓重烧）
+    26. flash_erase_sector 快乐路径（v0.4.36）：显式 last 数字下发；默认 last=-1 走 probe +
+        flash info 扇区表解析成数字（F-2 修复的端到端回归——字面量 token 'last' 曾必失败）
+    27. ocdup watch / doctor CLI（v0.4.36）：--count 3 恰出 3 行 CSV 且 exit 0；doctor
+        五项体检在 e2e 环境最多 WARN、无 FAIL（exit 0）
+   另（v0.4.36）：假后端 banks 改真机 `#N :` **双 bank** 形态（P2-10——「probe bank 0 不覆盖
+        bank 1」的真机实测行为此前零自动化）；原 print-only 段全部补最小断言（F-5：工具面
+        30 工具、BLOCKED 家、read_only 家、超限/坏参、raw 命令替换封堵 F-1）。
 """
 import json
 import os
@@ -96,7 +103,19 @@ def handle_command(cmd):
                 "--  ------------------ ---------- ------ ------------------ ------------\n"
                 " 0* at32f435zmt7       cortex_m   little at32f435zmt7.cpu   " + state)
     if c.startswith("flash banks"):
-        return "0 : at32f435zmt7.flash (at32f435xx) at 0x08000000, size 0x00100000, buswidth 2, chipwidth 4"
+        # P2-10（v0.4.36）：按真机形态回 `#N : ...` 双 bank——真机实测「probe bank 0 不会带上
+        # bank 1」（AT32F403AVGT7）。此前单 bank 无 `#` 前缀，bank 计数解析（`#\s*(\d+)\s*:`）
+        # 与逐 bank probe 的真实行为在 e2e 里永远走不到（假后端全绿、真机才见分晓）。
+        return ("#0 : at32f435zmt7.flash (at32f435xx) at 0x08000000, size 0x00100000, buswidth 2, chipwidth 4\n"
+                "#1 : at32f435zmt7.flash (at32f435xx) at 0x08100000, size 0x00100000, buswidth 2, chipwidth 4")
+    if c.startswith("flash probe"):
+        # 真机 probe 回驱动容量发现输出；e2e 无驱动细节，回空即可——flash_info 的断言看
+        # banks 行形态与「probe 命令确实逐 bank 下达」
+        return ""
+    if c.startswith("flash info"):
+        # F-2（v0.4.36）：flash_erase_sector last=-1 的扇区表来源。扇区行按真机形态
+        # `#   N: ...`（# 后带空格），8 扇区 → last 解析为 7
+        return "".join("# %2d: 0x%08x (0x800 2kB) not protected\n" % (i, i * 0x800) for i in range(8))
     if c.startswith("program"):
         return ("** Programming Started **\n"
                 "info : fake program command: " + c + "\n"
@@ -149,7 +168,12 @@ def handle_command(cmd):
     if c.startswith("mww") or c.startswith("mwh") or c.startswith("mwb"):
         return ""
     if c.startswith("flash erase_sector"):
-        return "erased sectors 0..last on bank 0"
+        # F-6（v0.4.36）：回显实际参数——此前固定文本「0..last」自证回显，把 F-2 的
+        # 字面量 token 'last' 缺陷掩盖成「全绿」；客户端若再发非法 token，这里回 Error 行
+        m = re.match(r"flash erase_sector (\d+) (\d+) (\d+)$", c)
+        if m:
+            return "erased sectors %s..%s on bank %s" % (m.group(2), m.group(3), m.group(1))
+        return "Error: fake backend could not parse flash erase_sector: " + c
     if c.startswith("rtt server start"):
         m = re.match(r"rtt server start (\d+) (\d+)$", c)
         if m:
@@ -457,32 +481,70 @@ def main():
         mcp.initialize()
 
         banner("tools/list")
-        print(mcp.tools())
+        tools = mcp.tools()
+        print(tools)
+        EXPECTED_TOOLS = {
+            "connect", "status", "disconnect", "backend_log", "run_command", "show_config",
+            "set_permissions", "halt", "resume", "reset",
+            "add_breakpoint", "remove_breakpoint", "list_breakpoints",
+            "add_watchpoint", "remove_watchpoint",
+            "read_memory", "write_memory", "dump_memory",
+            "identify_chip", "flash_info", "flash_write", "verify_image", "flash_erase_sector",
+            "load_svd", "read_peripheral_register", "write_peripheral_register",
+            "set_target", "list_variables", "read_variable", "write_variable",
+        }
+        assert set(tools) == EXPECTED_TOOLS, \
+            "tools/list must register exactly the 30-tool surface; diff: %s" % (
+                {"missing": sorted(EXPECTED_TOOLS - set(tools)), "extra": sorted(set(tools) - EXPECTED_TOOLS)},)
 
         banner("show_config")
-        print(mcp.call("show_config"))
+        r_sc = mcp.call("show_config")
+        print(r_sc)
+        assert "cmsis-dap" in r_sc and "at32f435xx" in r_sc, \
+            "show_config must echo the resolved interface/target cfg"
 
         banner("disconnect (fake backend is an external listener -> reported, not stopped)")
-        print(mcp.call("disconnect", {}))
+        r_disc = mcp.call("disconnect", {})
+        print(r_disc)
+        assert "cannot stop it" in r_disc, "external listener must be reported honestly, not stopped"
         print(mcp.call("status", {}))
 
         banner("status")
         print(mcp.call("status"))
 
         banner("connect")
-        print(mcp.call("connect"))
+        r_conn = mcp.call("connect")
+        print(r_conn)
+        assert "On-Chip Debugger" in r_conn and "at32f435zmt7" in r_conn, \
+            "connect must report the backend version and the targets line"
 
         banner("backend_log (fake backend was started outside ocdup -> no captured output)")
-        print(mcp.call("backend_log"))
+        r_bl = mcp.call("backend_log")
+        print(r_bl)
+        assert "no captured backend output" in r_bl, \
+            "an externally-started backend must be explained honestly (its output is not captured)"
 
         banner("flash_info")
-        print(mcp.call("flash_info"))
+        r_fi = mcp.call("flash_info")
+        print(r_fi)
+        assert "#0 :" in r_fi and "#1 :" in r_fi, \
+            "flash_info must list both banks in the real-machine '#N :' form"
+        assert any(c.startswith("flash probe 0") for c in backend.commands) \
+            and any(c.startswith("flash probe 1") for c in backend.commands), \
+            "dual-bank: bank 1 must be probed explicitly (probing bank 0 does not cover it - real-machine finding)"
 
         banner("read_memory 0x20000000 x8 (32-bit)")
-        print(mcp.call("read_memory", {"address": "0x20000000", "count": 8}))
+        r_mem = mcp.call("read_memory", {"address": "0x20000000", "count": 8})
+        print(r_mem)
+        assert "0x20000000: 20000000" in r_mem, \
+            "text format must carry address:value lines (fake increments, so the first word reads back the address)"
 
         banner("read_memory format=json (structured values)")
-        print(mcp.call("read_memory", {"address": "0x20000000", "count": 8, "format": "json"}))
+        r_memj = mcp.call("read_memory", {"address": "0x20000000", "count": 4, "format": "json"})
+        print(r_memj)
+        rj = json.loads(r_memj)
+        assert rj.get("width") == 32 and len(rj.get("values", [])) == 4 and "20000000" in rj["values"][0], \
+            "json format must carry width + one value per word (structured, not free text)"
 
         banner("verify_image build/fw.bin @0x08000000 (read-only compare)")
         r_verify = mcp.call("verify_image", {"file": "build/fw.bin", "address": "0x08000000"})
@@ -491,15 +553,29 @@ def main():
             "A-10: verified compare must end with the machine-readable verdict line"
 
         banner("identify_chip (CPUID + vendor id register; fake backend echoes address as value)")
-        print(mcp.call("identify_chip", {}))
-        print(mcp.call("identify_chip", {"dbgmcu_address": "hello"}))
+        r_id = mcp.call("identify_chip", {})
+        print(r_id)
+        assert "0xE000ED00" in r_id, "identify_chip must report the CPUID address it read"
+        r_id_bad = mcp.call("identify_chip", {"dbgmcuAddress": "hello"})
+        print(r_id_bad)
+        assert r_id_bad.startswith("ERROR:"), \
+            "a bad dbgmcuAddress must be an ERROR, not a crash (note: snake_case silently binds to null - camelCase only)"
 
         banner("set_target list / unknown name / switch (fake backend is external -> warning)")
-        print(mcp.call("set_target", {"name": "list"}))
-        print(mcp.call("set_target", {"name": "GD32F303"}))
-        print(mcp.call("set_target", {"name": "AT32F403A"}))
+        r_tl = mcp.call("set_target", {"name": "list"})
+        print(r_tl)
+        assert "AT32F403A" in r_tl and "AT32F435" in r_tl, "set_target list must show the configured presets"
+        r_tu = mcp.call("set_target", {"name": "GD32F303"})
+        print(r_tu)
+        assert r_tu.startswith("ERROR:"), "unknown preset must be an ERROR"
+        r_ts = mcp.call("set_target", {"name": "AT32F403A"})
+        print(r_ts)
+        assert "AT32F403A" in r_ts, "the switch must confirm the preset it applied"
         print(mcp.call("set_target", {"name": "at32f403a"}))
-        print(mcp.call("show_config"))
+        r_sc2 = mcp.call("show_config")
+        print(r_sc2)
+        assert "target/at32f403axx.cfg" in r_sc2, \
+            "after the switch, show_config must reflect the new target_cfg (runtime patch really applied)"
 
         banner("identify_chip again after switch (mismatch gone: preset == running target)")
         print(mcp.call("identify_chip", {}))
@@ -551,16 +627,52 @@ def main():
         assert r_verify_bad.endswith("OCDUP-RESULT: verify=FAILED"), "A-10: mismatch must end with verify=FAILED"
 
         banner("write_memory 0x20000000 (allow_memory_write defaults to true)")
-        print(mcp.call("write_memory", {"address": "0x20000000", "values": ["0x11111111", "0x22222222"]}))
+        r_wm = mcp.call("write_memory", {"address": "0x20000000", "values": ["0x11111111", "0x22222222"]})
+        print(r_wm)
+        assert "wrote 2" in r_wm, "write_memory must report the written value count"
+        assert "mww 0x20000000 0x11111111 0x22222222" in backend.commands, \
+            "values must land as one mww carrying every word (OpenOCD writes them consecutively)"
 
         banner("flash_erase_sector (allow_flash_erase defaults to false -> BLOCKED)")
-        print(mcp.call("flash_erase_sector", {}))
+        r_eb = mcp.call("flash_erase_sector", {})
+        print(r_eb)
+        assert r_eb.startswith("BLOCKED:") and "allow_flash_erase" in r_eb, \
+            "the DESTRUCTIVE erase tool must stay behind allow_flash_erase by default"
+
+        banner("flash_erase_sector happy path (v0.4.36, F-6): explicit last + default last=-1 via sector table")
+        print(mcp.call("set_permissions", {"allowFlashErase": True}))
+        r_er = mcp.call("flash_erase_sector", {"bank": 0, "first": 0, "last": 3})
+        print(r_er)
+        assert "erase issued: bank 0, sectors 0..3." in r_er, "explicit erase must echo first..last verbatim"
+        assert "flash erase_sector 0 0 3" in backend.commands, "explicit erase must issue the numeric sector range"
+        r_er_def = mcp.call("flash_erase_sector", {})
+        print(r_er_def)
+        assert "erase issued: bank 0, sectors 0..7." in r_er_def, \
+            "default last=-1 must resolve to the last sector index from the flash info table (8 sectors)"
+        assert "flash erase_sector 0 0 7" in backend.commands, \
+            "F-2: the resolved last must be a numeric sector index - never the literal token 'last'"
+        assert any(c.startswith("flash info 0") for c in backend.commands), \
+            "resolution must read the flash info sector table"
+        r_er_range = mcp.call("flash_erase_sector", {"first": 99})
+        print(r_er_range)
+        assert r_er_range.startswith("ERROR:") and "out of range" in r_er_range, \
+            "first beyond the sector count must be rejected before any erase command is issued"
+        print(mcp.call("set_permissions", {"allowFlashErase": False}))
 
         banner("run_command (escape hatch, echo passthrough; allow_raw_command explicitly on in e2e config)")
-        print(mcp.call("run_command", {"command": "mdb 0x40010800 4"}))
+        r_rc = mcp.call("run_command", {"command": "mdb 0x40010800 4"})
+        print(r_rc)
+        assert "0x40010800" in r_rc, "read-class raw command must pass through and carry the read output"
 
         banner("run_command write-class (content policy: program -> BLOCKED, redirect flash_write)")
-        print(mcp.call("run_command", {"command": "program build/fw.bin verify"}))
+        r_rc2 = mcp.call("run_command", {"command": "program build/fw.bin verify"})
+        print(r_rc2)
+        assert r_rc2.startswith("BLOCKED:") and "flash_write" in r_rc2, \
+            "raw program must be BLOCKED and redirected to the dedicated tool"
+        r_rc3 = mcp.call("run_command", {"command": "mdb 0 [program build/fw.bin]"})
+        print(r_rc3)
+        assert r_rc3.startswith("BLOCKED:") and "command substitution" in r_rc3, \
+            "F-1: '[' command substitution must be BLOCKED even behind an innocent head command"
 
         banner("P1-5: forced connection drop on next read; read-only op replays once after reconnect")
         print(mcp.call("run_command", {"command": "__e2e_arm_drop__"}))
@@ -691,6 +803,40 @@ def main():
         assert v3.returncode == 2, "verify should exit 2 on missing file, got %d" % v3.returncode
         assert "does not exist" in v3.stderr, "verify should print the path guidance to stderr"
 
+        banner("ocdup watch CLI (v0.4.36, P2-9): --count 3 samples named ELF variables over the fake backend")
+        w1 = subprocess.run(
+            ["dotnet", DLL, "watch", "--name", "gCounter", "--name", "gUnaligned",
+             "--count", "3", "--interval", "50", "--format", "csv"],
+            cwd=work, env=dict(env), capture_output=True, text=True, encoding="utf-8", timeout=90)
+        print("  exit:", w1.returncode)
+        print("  stdout head:", w1.stdout.strip().splitlines()[:3])
+        assert w1.returncode == 0, "watch should exit 0 after --count samples, got %d (stderr: %s)" % (
+            w1.returncode, w1.stderr[-400:])
+        csv_lines = [l for l in w1.stdout.splitlines() if re.match(r"^\d\d:\d\d:\d\d\.\d\d\d,", l)]
+        assert len(csv_lines) == 3 and all(len(l.split(",")) == 3 for l in csv_lines), \
+            "watch --count 3 must emit exactly 3 CSV rows (time + 2 named variables), got %d" % len(csv_lines)
+        assert "gCounter" in w1.stderr, "csv mode routes the human banner (variable list) to stderr, stdout stays pure data"
+        assert "mdw 0x20000004 1" in backend.commands, "watch samples gCounter with the same aligned mdw reads"
+        assert "mdw 0x20000010 1" in backend.commands, \
+            "each variable is sampled with one aligned mdw per tick (watch is the single-word sampler; " \
+            "cross-word extraction lives in read_variable)"
+
+        banner("ocdup doctor CLI (v0.4.36, P2-9): contract pin - FAIL items -> exit 1, every FAIL carries a fix hint")
+        # e2e 环境无 OCD_BIN / scripts / 探针 → doctor 如实 FAIL（它是冷启动预检，这正是设计行为）；
+        # 钉的是契约而非环境：FAIL 逐项带 how-to-fix、退出码 1、在监的假后端端口检查必须 [OK]。
+        d1 = subprocess.run(
+            ["dotnet", DLL, "doctor"],
+            cwd=work, env=dict(env), capture_output=True, text=True, encoding="utf-8", timeout=90)
+        print("  exit:", d1.returncode)
+        print(d1.stdout.strip())
+        assert d1.returncode == 1, \
+            "doctor must exit 1 when checks FAIL (the e2e env has no OCD_BIN/scripts/probe), got %d" % d1.returncode
+        assert "[FAIL]" in d1.stdout and "[OK]" in d1.stdout, "doctor must render [FAIL]/[OK] verdicts per check"
+        assert "how to fix" in d1.stdout, "every FAIL must carry an actionable fix hint"
+        assert "summary:" in d1.stdout, "doctor must end with the ok/warn/fail summary line"
+        assert "backend port" in d1.stdout and "answered" in d1.stdout, \
+            "the listening fake backend must be probed read-only and reported [OK]"
+
         banner("CRC-algorithm failure (v0.4.29, real-machine 2026-10-13): INCONCLUSIVE, never 'firmware mismatch'")
         for arm, label in (("__e2e_arm_crc_running__", "target not halted"),
                            ("__e2e_arm_crc_halted__", "timed out while waiting for target halted")):
@@ -782,11 +928,19 @@ def main():
         assert "Did you mean" in r3, "unknown peripheral should suggest the closest names"
 
         banner("halt -> read -> resume (exec control, allow_exec defaults to true)")
-        print(mcp.call("halt", {}))
-        print(mcp.call("read_memory", {"address": "0x20000000", "count": 2}))
+        r_h = mcp.call("halt", {})
+        print(r_h)
+        assert "BLOCKED" not in r_h, "halt must go through with allow_exec on"
+        r_hm = mcp.call("read_memory", {"address": "0x20000000", "count": 2})
+        print(r_hm)
+        assert "0x20000000: 20000000" in r_hm, "halted-state read must still work"
         print(mcp.call("resume", {}))
         print(mcp.call("reset", {"mode": "run"}))
         print(mcp.call("reset", {"mode": "halt"}))
+        assert any(c == "halt" or c.startswith("halt ") for c in backend.commands) \
+            and "resume" in backend.commands \
+            and "reset run" in backend.commands and "reset halt" in backend.commands, \
+            "exec commands must reach the backend verbatim (halt carries its timeoutMs argument)"
 
         banner("breakpoints / watchpoints (M-bp, v0.4.30): add/list/remove + gating")
         # 命令面按 2026-10-19 真机核定（AT32F403AVGT7 + atopenocd-py32）：bp/wp 的
@@ -847,23 +1001,42 @@ def main():
         print(mcp.call("show_config", {"reload": True}))
 
         banner("read_memory count=4000 (over memory_read_max_bytes)")
-        print(mcp.call("read_memory", {"address": "0x20000000", "count": 4000}))
+        r_lim = mcp.call("read_memory", {"address": "0x20000000", "count": 4000})
+        print(r_lim)
+        assert r_lim.startswith("BLOCKED:") and "memory_read_max_bytes" in r_lim, \
+            "reads over memory_read_max_bytes must be BLOCKED with the setting named"
 
         banner("read_memory bad address")
-        print(mcp.call("read_memory", {"address": "hello"}))
+        r_bad = mcp.call("read_memory", {"address": "hello"})
+        print(r_bad)
+        assert r_bad.startswith("ERROR:"), "a bad address must be an ERROR before any command is issued"
 
         banner("set_permissions runtime patch (allow_set_permissions=true in e2e config)")
         print(mcp.call("set_permissions", {"readOnly": True}))
-        print(mcp.call("flash_write", {"file": "build/fw.bin", "address": "0x08000000"}))
+        r_spf = mcp.call("flash_write", {"file": "build/fw.bin", "address": "0x08000000"})
+        print(r_spf)
+        assert r_spf.startswith("BLOCKED:"), "read_only=true must gate flash_write at runtime (no restart needed)"
         print(mcp.call("set_permissions", {"readOnly": False}))
         print(mcp.call("show_config"))
 
         banner("symbol layer L1: list/read/write_variable (mini ELF fixture, elf_path in ocd.json)")
-        print(mcp.call("list_variables", {}))
-        print(mcp.call("list_variables", {"pattern": "gcount"}))
-        print(mcp.call("read_variable", {"name": "gCounter"}))
-        print(mcp.call("read_variable", {"name": "missing_var"}))
-        print(mcp.call("write_variable", {"name": "gCounter", "value": "0x42"}))
+        r_lv = mcp.call("list_variables", {})
+        print(r_lv)
+        assert "gCounter" in r_lv and "gUnaligned" in r_lv and "doThing" not in r_lv, \
+            "list_variables shows OBJECT symbols (FUNC excluded)"
+        r_lp = mcp.call("list_variables", {"pattern": "gcount"})
+        print(r_lp)
+        assert "gCounter" in r_lp and "gUnaligned" not in r_lp, "the pattern must filter case-insensitively"
+        r_rv = mcp.call("read_variable", {"name": "gCounter"})
+        print(r_rv)
+        assert "0x20000004" in r_rv, "gCounter@0x20000004 must read back the fake word (little-endian extract)"
+        r_rm = mcp.call("read_variable", {"name": "missing_var"})
+        print(r_rm)
+        assert r_rm.startswith("ERROR:"), "unknown variable must be an ERROR"
+        r_wv = mcp.call("write_variable", {"name": "gCounter", "value": "0x42"})
+        print(r_wv)
+        assert any(c.startswith("mww 0x20000004 0x00000042") for c in backend.commands), \
+            "aligned u32 write must issue one mww at the symbol address (value zero-padded to the width)"
 
         banner("A-3 (v0.4.31): unaligned variable access - one aligned mdw read, byte-wise mwb write chain")
         # gUnaligned@0x20000012(u32) 骑在 word 边界：读=对齐 mdw 0x20000010 起两字再小端摘字节，
@@ -881,14 +1054,25 @@ def main():
             assert cmd in backend.commands, \
                 "unaligned u32 write must degrade to a byte-wise mwb chain (missing %s)" % cmd
 
-        banner("ocd.json -> read_only=true; show_config(reload) then flash_write")
+        banner("ocd.json -> read_only=true; show_config(reload) then every write/exec path must be BLOCKED")
         write_config(work, read_only=True)
         print(mcp.call("show_config", {"reload": True}))
-        print(mcp.call("flash_write", {"file": "build/fw.bin", "address": "0x08000000"}))
-        print(mcp.call("write_memory", {"address": "0x20000000", "values": ["0x1"]}))
-        print(mcp.call("halt", {}))
-        print(mcp.call("set_target", {"name": "AT32F403A"}))
-        print(mcp.call("disconnect", {}))
+        r_ro1 = mcp.call("flash_write", {"file": "build/fw.bin", "address": "0x08000000"})
+        print(r_ro1)
+        assert r_ro1.startswith("BLOCKED:") and "read_only" in r_ro1, "read_only must gate flash_write"
+        r_ro2 = mcp.call("write_memory", {"address": "0x20000000", "values": ["0x1"]})
+        print(r_ro2)
+        assert r_ro2.startswith("BLOCKED:"), "read_only must gate write_memory"
+        r_ro3 = mcp.call("halt", {})
+        print(r_ro3)
+        assert r_ro3.startswith("BLOCKED:"), "read_only must gate halt (exec control)"
+        r_ro4 = mcp.call("set_target", {"name": "AT32F403A"})
+        print(r_ro4)
+        assert r_ro4.startswith("BLOCKED:"), "read_only must gate set_target"
+        r_ro5 = mcp.call("disconnect", {})
+        print(r_ro5)
+        assert r_ro5.startswith("BLOCKED:") and "read_only" in r_ro5, \
+            "disconnect stays behind read_only (P0-3: backend lifecycle, no allow_exec) - the panel button path"
 
         banner("backend commands observed")
         for c in backend.commands:
@@ -936,7 +1120,10 @@ def main():
     mcp2 = Mcp(DLL, work, env)
     try:
         mcp2.initialize()
-        print(mcp2.call("connect"))
+        r_dead = mcp2.call("connect")
+        print(r_dead)
+        assert "error" in r_dead.lower() and "BLOCKED" not in r_dead, \
+            "connect on a dead port with no OCD_BIN must fail with an actionable error"
     finally:
         mcp2.close()
 
@@ -946,7 +1133,10 @@ def main():
     mcp3 = Mcp(DLL, work, env2)
     try:
         mcp3.initialize()
-        print(mcp3.call("connect"))
+        r_py = mcp3.call("connect")
+        print(r_py)
+        assert "error" in r_py.lower() and "BLOCKED" not in r_py, \
+            "OCD_BIN=python must fail startup detection with a real error, not a hang or a lie"
     finally:
         mcp3.close()
 

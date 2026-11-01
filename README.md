@@ -436,7 +436,7 @@ dotnet build Ocdup.sln && dotnet test Ocdup.sln --no-build -v q
 
 | 里程碑 | 状态 |
 |---|---|
-| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 435 个单测 + 假后端 e2e 覆盖（50 个检查段） |
+| S1 骨架 / S2 控制层 / S3 烧录与读内存 | ✅ 435 个单测 + 假后端 e2e 覆盖（52 个检查段，全段带断言）（50 个检查段） |
 | S4 真机联调 | ✅ AT32F403AVGT7 + CMSIS-DAP v2（DAPLink `0D28:0204`）+ atopenocd：`connect` → `flash_info` → `flash_write`（擦 25 扇区、写 + Verified OK、reset run）→ `read_memory` 运行态读回向量表。**2026-10-13 第二轮**：`burn`/`verify` 治具链路 dump → burn → verify → dump 闭环 sha256 一致；实烧 SL150 v4.0 固件（74.4KB）后 hex 覆盖区逐字节零差异、固件正常运行 |
 | 安全与正确性加固（v0.4.12–v0.4.16） | ✅ `run_command` 内容分类（写类命令与专用工具同权/重定向）、`flash_write` 以独立读回校验为权威判据、断链只读自动重放 + 空闲心跳、烧录/擦除/dump 执行期 progress notification |
 | doctor CLI | ✅ `ocdup doctor` 五项环境体检（ocd.json / OCD_BIN / scripts / 探针 / 后端端口），换机第一步 |
@@ -447,6 +447,7 @@ dotnet build Ocdup.sln && dotnet test Ocdup.sln --no-build -v q
 | 串帧修复（94fc133，v0.4.34 后续） | ✅ TCL-RPC「半次往返毒化连接」修复：取消/超时后迟到的应答被定向作废，不再错位传染（现象「读什么都返回同一条旧值」）；单测 408→424 |
 | DSH 面板 v1.5.3 | ✅ 读 `OCDUP-RESULT` 机器结论行上色/判红 + 修「烧失败画绿✓」；断言 234→**250**（client 169→185） |
 | 第五轮快赢批（v0.4.35，docs/audit-2026-11-01.md） | ✅ raw 通道封堵 `[...]` 命令替换绕过（含 `[` 段一律 BLOCKED——替换先于头命令求值，曾可从参数里走私 BLOCKED 清单命令，F-1）；flash_erase_sector 的 last=-1 弃字面量 token `last`（主线必失败、e2e 自证回显掩盖，F-2）改 probe + 数 flash info 扇区表下发数字；断链重放一律不自动拉起后端（disconnect 探针交还契约不再被重放破坏，F-3）；watch --halt 的 halt 窗口 Ctrl+C 也补发 resume（F-4）；工程卫生（undefined/ 会话残留清理 + wireless cfg 入库 + tag v0.4.34）；文档校准（435 单测 / 250 断言 / recipe 4 坏命令修复）；描述 24,570→**24,708 B**；单测 424→**435** |
+| 第五轮 e2e 补强批（v0.4.36，audit F-5/F-6/P2-9/P2-10） | ✅ e2e print-only 段全部补最小断言（工具面 30 工具精确钉死、BLOCKED/read_only 家、超限/坏参、raw 命令替换封堵端到端回归）；flash_erase_sector 快乐路径入 e2e（显式 last 数字下发 + 默认 last=-1 扇区表解析）；watch / doctor CLI 首次入 e2e（CSV 采样 3 行 + doctor FAIL 契约）；假后端 banks 改真机 `#N :` 双 bank 形态（「probe bank 0 不覆盖 bank 1」的真机实测行为首次有自动化）；检查段 →**52**（此前口径 50 含 `def banner` 定义行，本次起按实际调用数计），全段带断言 |
 | S5 打包与客户端注册 | 🟡 已注册进 DSH（desktop + web 两个 profile）与 ZCode（`mcp.servers` 条目 + `ocdup-zcode` 插件，均指 `publish/ocdup.exe`）；换机第一步先跑 `ocdup doctor`（v0.4.15） |
 
 后续里程碑（条件断点、L3 协议字典、与 acccom 的串口协同、多后端注册表 Q8 等）见
