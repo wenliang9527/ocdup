@@ -219,4 +219,19 @@ public sealed class FlashToolsTests
         Assert.StartsWith("verified:", report);
         Assert.Contains("matches the target flash", report);
     }
+
+    // ── F-2（v0.4.35）：flash info 扇区表 → 扇区数（erase last=-1「到 bank 末尾」的解析前提）──
+
+    [Theory]
+    [InlineData("#   0: 0x00000000 (0x800 2kB) not protected\n#   1: 0x00000800 (0x800 2kB) not protected\n#   2: 0x00001000 (0x800 2kB) not protected", 3)]
+    [InlineData("# 7: 0x00007000 (0x800 2kB) not protected", 8)] // 只看最大编号，不假设连续
+    public void CountSectors_TakesMaxIndexPlusOne(string info, int expected)
+        => Assert.Equal(expected, FlashTools.CountSectors(info));
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("flash bank 0 not probed")]
+    [InlineData("some output without sector rows")]
+    public void CountSectors_Unparsable_ReturnsNull(string info)
+        => Assert.Null(FlashTools.CountSectors(info));
 }

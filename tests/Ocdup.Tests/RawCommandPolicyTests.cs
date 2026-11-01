@@ -70,6 +70,30 @@ public sealed class RawCommandPolicyTests : IDisposable
         Assert.Null(RawCommandPolicy.Evaluate(Load("{}"), "# mdb 0x0 1"));
     }
 
+    // ── F-1（v0.4.35，audit D7-1）：'[' 命令替换在头命令之前求值——Passthrough 等于让
+    //    BLOCKED 清单与路径白名单从参数里被绕过，含 '[' 的段一律拦下 ──
+
+    [Theory]
+    [InlineData("mdb 0 [program C:/evil.bin]")]              // 替换里走私写相命令（audit 攻击链原形）
+    [InlineData("mdb 0x1000000} [load_image C:/evil.bin]")]  // 不平衡 '}' + 替换（capture 截断链）
+    [InlineData("mww 0x40010800 [expr 1+2]")]                // 无害外表的替换同样拦（宁多拦）
+    [InlineData("flash banks [info banks]")]                 // flash 子命令分支同样覆盖
+    public void CommandSubstitution_IsBlocked_RegardlessOfHead(string command)
+    {
+        var blocked = RawCommandPolicy.Evaluate(Load("{}"), command);
+
+        Assert.NotNull(blocked);
+        Assert.StartsWith("BLOCKED:", blocked);
+        Assert.Contains("command substitution", blocked);
+    }
+
+    [Fact]
+    public void CommentSegment_WithBrackets_IsStillIgnored()
+    {
+        // 注释段不参与求值，'[' 在注释里无害——维持 Passthrough。
+        Assert.Null(RawCommandPolicy.Evaluate(Load("{}"), "# note [x] nothing to run"));
+    }
+
     // ── 带文件的 flash 写：raw 通道无法执行路径白名单/大小上限，一律重定向专用工具 ──
 
     [Theory]

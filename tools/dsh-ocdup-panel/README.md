@@ -402,7 +402,7 @@ node test.js core     & node test.js window & node test.js api & node test.js cl
     (backendStateOf)与结论压缩(backendVerdict)、注册契约(右栏 tab 类型/body key=id/guide 无 commandId/
     左侧不注册 panellist/无右栏服务退回 main)、轮转空态与加载入口(有/无 .1 两支、点击走 POST /rotated、fmtStamp 时间格式)、
    失配胶囊一键切换(点击走 POST /api/ocdup-target {preset} → 成功后自动 connect → 失败不重连)
-   ——client 模式 169 项,四模式合计 234 项断言。
+   ——client 模式 185 项,四模式合计 250 项断言（v1.5.3 起）。
 
 v1.4.0 新增覆盖:null 行不吞后续批 + 非字符串 text/tool 归一(core)、轮转后新文件
 变大也救 .1 且头部不跳(api,T12c)、flashStillLatest 两视图语义(client,T17b)、

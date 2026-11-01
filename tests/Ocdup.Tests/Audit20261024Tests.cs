@@ -83,6 +83,32 @@ public sealed class Audit20261024Tests : IDisposable
             Assert.Equal(["mdw 0x20000000 1"], commands); // 无 halt：只有读取，没有 halt/resume
     }
 
+    [Fact]
+    public async Task WatchSample_ResumeSentEvenWhenCancelledDuringHalt()
+    {
+        // F-4（v0.4.35）：Ctrl+C 落在 halt 命令自身窗口（`halt 200` 要等目标停稳，天然高发）。
+        // 旧实现 halt 在 try 之外——取消落在这里时 finally 不执行，resume 不发，目标残留 halted。
+        var commands = new List<string>();
+        var cts = new CancellationTokenSource();
+        cts.Cancel(); // 取消已就位：halt 一发即折
+
+        Task<string> Execute(OcdConfig cfg, string command, bool startIfNeeded, CancellationToken ct, string op)
+        {
+            lock (commands) commands.Add(command);
+            if (command.StartsWith("halt", StringComparison.Ordinal))
+                throw new OperationCanceledException();
+            return Task.FromResult("0x20000000: 44332211"); // 收尾 resume 用 None，照常发出
+        }
+
+        var vars = new List<ElfSymbol> { new("gCounter", 0x20000000, 4) };
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => WatchCli.SampleCoreAsync(Execute, ConfigWithSvd(), vars, halt: true, cts.Token));
+
+        lock (commands)
+            Assert.Equal(["halt 200", "resume"], commands);
+    }
+
     // ── A-6：watch 退出码对齐 burn/verify/rtt 家族（0/1/2/3：usage=2、backend=3）──
 
     [Fact]

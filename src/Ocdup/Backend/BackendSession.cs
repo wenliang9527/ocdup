@@ -107,9 +107,12 @@ public sealed class BackendSession
                     "The command may have taken effect, so it was NOT replayed; call connect and retry.", ex);
 
             // P1-5：只读命令重放安全——自动重连并重放一次；写操作维持「不重放」。
+            // v0.4.35（audit F-3）：重放一律不以 startIfNeeded 执行——重放是「通道重试」，
+            // 不该复刻「确保后端」的旧决定，否则显式 disconnect 后在飞只读命令的重放会把
+            // 已交还的探针重新拉起占住。
             try
             {
-                used = await ExecuteOnceAsync(cfg, command, startIfNeeded, ct, op).ConfigureAwait(false);
+                used = await ExecuteOnceAsync(cfg, command, startIfNeeded: false, ct, op).ConfigureAwait(false);
                 _traffic.Record("backend", "SYS", $"read-only op '{op}' replayed once after reconnect", Endpoint(cfg));
                 return used.Output;
             }

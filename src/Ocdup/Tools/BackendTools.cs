@@ -202,8 +202,9 @@ public static class BackendTools
         "flash_write / dump_memory / disconnect; 'flash erase_sector'/'erase_address' -> allow_flash_erase, " +
         "'flash fill*'/protect -> allow_flash, 'mww/mwh/mwb' -> allow_memory_write, " +
         "'reset'/'halt'/'resume'/'step' plus breakpoint/watchpoint commands ('bp'/'rbp'/'wp'/'rwp') -> allow_exec. " +
-        "Single-line command only. Gated by read_only and allow_raw_command (default false) - a BLOCKED answer means the " +
-        "settings forbid it (see show_config).")]
+        "Single-line command only. Segments containing '[' command substitution are BLOCKED (TCL evaluates it before " +
+        "the head command, so classification could be bypassed). Gated by read_only and allow_raw_command (default false) " +
+        "- a BLOCKED answer means the settings forbid it (see show_config).")]
     public static async Task<string> RunCommand(
         [Description("The OpenOCD/TCL command to run, e.g. 'mdb 0x40010800 4' or 'ap0 32 0x00000000'.")] string command,
         CancellationToken ct = default)

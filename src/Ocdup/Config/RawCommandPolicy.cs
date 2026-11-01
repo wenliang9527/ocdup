@@ -9,6 +9,7 @@ namespace Ocdup.Config;
 /// allow_raw_command（默认 false，见 OcdConfig）。
 /// v0.4.30 起断点/观察点命令（bp/rbp/wp/rwp）也归 ExecControl 类——它们改变目标的执行
 /// 行为（命中即停），与 halt/resume 同级，不能留在 Passthrough 里绕过 allow_exec。
+/// v0.4.35 起含 '[' 命令替换的段一律拦下（替换先于头命令求值，静态分类可被绕过——audit F-1）。
 /// </summary>
 public static class RawCommandPolicy
 {
@@ -23,6 +24,7 @@ public static class RawCommandPolicy
         ExecControl,       // reset / halt / resume / step：走 allow_exec 闸
         PcDump,            // dump_image：PC 侧落盘，重定向 dump_memory
         BackendControl,    // shutdown / exit：重定向 disconnect
+        CommandSubstitution, // 含 '['：TCL 命令替换在头命令之前求值，无法静态定级（v0.4.35，audit F-1）
     }
 
     /// <summary>
@@ -49,6 +51,9 @@ public static class RawCommandPolicy
                 Class.BackendControl => $"BLOCKED: '{head}' stops the OpenOCD backend through the raw channel. " +
                     "Use the dedicated tool mcp__ocdup__disconnect - it is gated by read_only, idempotent, and " +
                     "reports who owns the listener. See show_config.",
+                Class.CommandSubstitution => "BLOCKED: '[' command substitution cannot be statically classified - " +
+                    "TCL evaluates it BEFORE the head command, so a gated command could run from inside the arguments. " +
+                    "Send the literal values, or use the dedicated tools. See show_config.",
                 _ => null,
             };
             if (blocked is not null) return blocked;
@@ -69,6 +74,11 @@ public static class RawCommandPolicy
         var tokens = Tokenize(segment);
         if (tokens.Length == 0) return Class.Passthrough;
         if (tokens[0].StartsWith('#')) return Class.Passthrough; // TCL 注释段
+
+        // v0.4.35（audit F-1）：'[' 命令替换在头命令执行之前求值——`mdb 0 [program evil.bin]`
+        // 会在分类放行后先执行 program，BLOCKED 清单与路径白名单全部失效。含 '[' 一律拦下
+        //（'$var' 与 '"' 不引入新命令，维持原判）。
+        if (segment.Contains('[')) return Class.CommandSubstitution;
 
         var head = tokens[0].ToLowerInvariant();
         if (head == "flash" && tokens.Length > 1)

@@ -150,7 +150,10 @@ public static class WatchCli
         }
         catch (OperationCanceledException)
         {
-            // Ctrl+C：正常收尾
+            // Ctrl+C：正常收尾。--halt 时收尾 resume 已在 SampleCoreAsync 的 finally 里发出
+            //（v0.4.35 起含取消落在 halt 窗口的情形）；这里只提示核实目标状态。
+            if (options.Halt)
+                notes.WriteLine("Ctrl+C: the final resume was sent; if the target still looks halted, run `resume` to check.");
         }
 
         notes.WriteLine($"done: {samples} sample(s).");
@@ -179,13 +182,15 @@ public static class WatchCli
     /// halt→读取窗口时，采样 ct 已取消——finally 里的 resume 若还用它，
     /// 通道闸 WaitAsync(ct) 会直接抛 OCE，resume 永远到不了后端，目标被留在 halted。
     /// 所以收尾命令一律 <see cref="CancellationToken.None"/>：收尾必须真正发出去。
+    /// v0.4.35（audit F-4）：halt 也移进 try——`halt 200` 要等目标停稳（≥200ms），
+    /// 是取消高发窗口；halt 在 try 之外时，取消落在这里 finally 不执行，resume 不发。
     /// </summary>
     internal static async Task<List<uint>> SampleCoreAsync(ExecuteFn execute, OcdConfig cfg, List<ElfSymbol> vars, bool halt, CancellationToken ct)
     {
-        if (halt)
-            await execute(cfg, "halt 200", startIfNeeded: true, ct, "watch").ConfigureAwait(false);
         try
         {
+            if (halt)
+                await execute(cfg, "halt 200", startIfNeeded: true, ct, "watch").ConfigureAwait(false);
             var values = new List<uint>(vars.Count);
             foreach (var s in vars)
             {

@@ -446,7 +446,24 @@ public static class FlashTools
         if (first < 0) return "ERROR: first must be >= 0.";
         if (last != -1 && last < first) return "ERROR: last must be >= first, or -1 for 'to the end of the bank'.";
 
-        var lastText = last == -1 ? "last" : last.ToString();
+        string lastText;
+        if (last == -1)
+        {
+            // v0.4.35（audit F-2）：主线 openocd 不认字面量 'last'（旧实现发出去必失败——
+            // e2e 假后端自证回显把它掩盖了）。「到 bank 末尾」改为先 probe 再数 `flash info`
+            // 扇区表；解析不出就带指引报错，让调用方改传显式 first/last。
+            var sectors = await ResolveSectorCountAsync(cfg, bank, ct).ConfigureAwait(false);
+            if (sectors is null)
+                return $"ERROR: cannot resolve last=-1 (to the end of bank {bank}): the sector table from " +
+                       $"'flash info {bank}' did not parse. Run flash_info, then retry with explicit first/last sector numbers.";
+            if (first >= sectors.Value)
+                return $"ERROR: first={first} is out of range for bank {bank} ({sectors.Value} sectors per flash info).";
+            lastText = (sectors.Value - 1).ToString();
+        }
+        else
+        {
+            lastText = last.ToString();
+        }
         var command = $"flash erase_sector {bank} {first} {lastText}";
 
         var progressPump = FlashProgress.Start(BackendSession.Instance, context?.Server, context?.Params?.Meta);
@@ -467,6 +484,37 @@ public static class FlashTools
             pumpCts.Cancel();
             try { await pumpTask.ConfigureAwait(false); } catch { /* 泵的收尾 */ }
         }
+    }
+
+    /// <summary>
+    /// last=-1（到 bank 末尾）的扇区数来源（v0.4.35，audit F-2）：probe（幂等；未 probe 的补上，
+    /// 否则扇区表出不来）→ `flash info {bank}` 数扇区行。形态注记：`#N:` 编号行与 `flash banks`
+    /// 的 bank 编号同形（AT32 双 bank 实测先例见 BanksAfterProbeAsync）；atopenocd fork 的
+    /// flash info 扇区表归真机批 T 复核。失败返回 null → 调用方带指引报错。
+    /// </summary>
+    private static async Task<int?> ResolveSectorCountAsync(OcdConfig cfg, int bank, CancellationToken ct)
+    {
+        string info;
+        try
+        {
+            await BackendSession.Instance.ExecuteAsync(cfg, $"flash probe {bank}", startIfNeeded: true, ct, op: "flash_erase_sector").ConfigureAwait(false);
+            info = await BackendSession.Instance.ExecuteAsync(cfg, $"flash info {bank}", startIfNeeded: false, ct, op: "flash_erase_sector").ConfigureAwait(false);
+        }
+        catch (BackendException)
+        {
+            return null;
+        }
+        return CountSectors(info);
+    }
+
+    /// <summary>纯函数：`flash info` 输出 → 扇区数（取 `#N:` 最大编号 + 1；一行都解析不出 → null）。
+    /// `#` 后的空白可选——banks 行实测是 `#0 :`，flash info 扇区行是 `#   0:`，一式两吃。</summary>
+    internal static int? CountSectors(string info)
+    {
+        var max = -1;
+        foreach (Match m in Regex.Matches(info, @"#\s*(\d+)\s*:"))
+            max = Math.Max(max, int.Parse(m.Groups[1].Value));
+        return max < 0 ? null : max + 1;
     }
 
     /// <summary>保守判断：OpenOCD 失败时会输出 Error:/failed 文本，命中就不做后续动作。</summary>

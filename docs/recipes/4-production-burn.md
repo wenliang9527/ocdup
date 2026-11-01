@@ -9,7 +9,7 @@
 ```bash
 #!/usr/bin/env bash
 set -u
-export OCD_CONFIG=/ fixture / ocd.json        # 治具自己的配置（钉死 cfg，别用 auto）
+export OCD_CONFIG=/fixture/ocd.json           # 治具自己的配置（钉死 cfg，别用 auto；路径不能带空格）
 
 ocdup doctor > precheck.log 2>&1 || { echo "ENV FAIL"; exit 2; }   # 环境预检，FAIL 即退出码 1
 
