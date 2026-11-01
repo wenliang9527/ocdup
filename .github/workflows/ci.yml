@@ -5,11 +5,26 @@ on:
     branches: ['**']
   pull_request:
 
+# v0.4.38 (audit D8-1b): a PR branch pushes AND raises a PR - without this group every
+# push runs the full two-job suite twice side by side. Superseded runs on the same ref cancel.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-test:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
+      # v0.4.38 (audit D8-1a): restore was re-downloading the package set every run
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
 
       - uses: actions/setup-dotnet@v4
         with:
