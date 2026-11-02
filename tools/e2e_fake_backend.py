@@ -42,6 +42,12 @@
    另（v0.4.36）：假后端 banks 改真机 `#N :` **双 bank** 形态（P2-10——「probe bank 0 不覆盖
         bank 1」的真机实测行为此前零自动化）；原 print-only 段全部补最小断言（F-5：工具面
         30 工具、BLOCKED 家、read_only 家、超限/坏参、raw 命令替换封堵 F-1）。
+    28. read_memory 宽读失败自动降级（v0.4.39，session cad81f 的 0x40020808）：mdw 恒败 /
+        mdb 正常的确定性触发点，text 带 fallback 标注、json 小端重组；mdb 字节数=单元数×步长。
+    29. flash_write 前置 halt（v0.4.39，撞机铁律入编排）：halt 先于 program 下达、报告带
+        pre-halt 行；allow_exec=false 时无 halt 下达、NOTE 降级且烧录仍 flash-write=OK。
+    30. write_memory verify（v0.4.39）：写后回读同宽同数；驻留窗口命中 → verified 行；
+        顽固单元 0x20005000 → ERROR 带地址/期望/实际。
 """
 import json
 import os
@@ -59,6 +65,10 @@ DELIM = b"\x1a"
 HOST = "127.0.0.1"
 STATE = {"drop_armed": False}  # P1-5 断链模拟：arm 后，下一条指定读命令被假后端直接断开
 TARGET_HALTED = False  # P0-3（v0.4.28）：halt/resume/reset 驱动的目标执行态，targets 照实回报
+# v0.4.39（write_memory verify）：写入驻留窗口 [0x20004000, 0x20006000)——窗口内写入在
+# 读回时命中（verify 快乐路径），窗口外维持「读回地址派生值」的原行为（既有段不受扰）。
+# 0x20005000 是顽固单元：写接受、读回永远地址派生 → verify 必不一致的确定性场景。
+MEM = {}
 PORT = 29171
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DLL = os.environ.get("OCDUP_DLL") or os.path.join(REPO_ROOT, "src", "Ocdup", "bin", "Debug", "net8.0", "ocdup.dll")
@@ -166,6 +176,16 @@ def handle_command(cmd):
             return "verified %d bytes in 0.01s" % size
         return "Error: fake backend could not parse verify_image"
     if c.startswith("mww") or c.startswith("mwh") or c.startswith("mwb"):
+        # v0.4.39（write_memory verify）：写入只对驻留窗口生效（见 MEM 注释）；顽固单元
+        # 0x20005000 刻意不驻留——「写被接受、值没进去」的确定性回归场景。
+        parts = c.split()
+        base = int(parts[1], 16)
+        step = 1 if c.startswith("mwb") else (2 if c.startswith("mwh") else 4)
+        mask = (1 << (step * 8)) - 1
+        for i, tok in enumerate(parts[2:]):
+            unit = base + i * step
+            if 0x20004000 <= unit < 0x20006000 and unit != 0x20005000:
+                MEM[unit] = int(tok, 16) & mask
         return ""
     if c.startswith("flash erase_sector"):
         # F-6（v0.4.36）：回显实际参数——此前固定文本「0..last」自证回显，把 F-2 的
@@ -232,13 +252,24 @@ def handle_command(cmd):
         addr = int(parts[1], 16)
         count = int(parts[2]) if len(parts) > 2 else 1
         width = 8 if c.startswith("mdb") else (16 if c.startswith("mdh") else 32)
+        # v0.4.39（read_memory 降级）：宽读在 0x40020808 恒失败（session cad81f 真机形态：
+        # "Failed to read memory at 0x4002080a"），逐字节 mdb 正常——降级链路的确定性触发点
+        if width > 8 and addr == 0x40020808:
+            return "Failed to read memory at 0x%08x" % (addr + 2)
         fmt = {8: "%02x", 16: "%04x", 32: "%08x"}[width]
         mask = (1 << width) - 1
         step = width // 8
         per_line = 32 // width
+
+        def unit_value(a):
+            # 驻留窗口内优先回写入值（write_memory verify 的回读路径），其余地址派生
+            if 0x20004000 <= a < 0x20006000 and a in MEM:
+                return MEM[a]
+            return a & mask
+
         lines = []
         for i in range(0, count, per_line):
-            vals = " ".join(fmt % ((addr + (i + k) * step) & mask) for k in range(min(per_line, count - i)))
+            vals = " ".join(fmt % unit_value(addr + (i + k) * step) for k in range(min(per_line, count - i)))
             lines.append("0x%08x: %s " % (addr + i * step, vals))
         return "\n".join(lines)
     return "echo: " + c
@@ -546,6 +577,19 @@ def main():
         assert rj.get("width") == 32 and len(rj.get("values", [])) == 4 and "20000000" in rj["values"][0], \
             "json format must carry width + one value per word (structured, not free text)"
 
+        banner("read_memory wide-read failure -> auto byte fallback (v0.4.39, session cad81f's 0x40020808)")
+        r_fb = mcp.call("read_memory", {"address": "0x40020808", "count": 2, "width": 32})
+        print(r_fb)
+        assert "auto-fell back to byte reads" in r_fb and "0x40020808" in r_fb, \
+            "a failed 32-bit read must retry once as byte reads and label the fallback"
+        assert "mdw 0x40020808 2" in backend.commands and "mdb 0x40020808 8" in backend.commands, \
+            "the fallback must re-issue the same range as byte reads (2 words = 8 bytes)"
+        r_fbj = mcp.call("read_memory", {"address": "0x40020808", "count": 1, "width": 32, "format": "json"})
+        print(r_fbj)
+        fj = json.loads(r_fbj)
+        assert fj.get("fallback") and len(fj.get("values", [])) == 1 and fj["values"][0] == "0x0b0a0908", \
+            "json fallback must reassemble the byte reads little-endian into the requested width (bytes 08 09 0a 0b)"
+
         banner("verify_image build/fw.bin @0x08000000 (read-only compare)")
         r_verify = mcp.call("verify_image", {"file": "build/fw.bin", "address": "0x08000000"})
         print(r_verify)
@@ -600,11 +644,16 @@ def main():
         banner("dump_memory length=99999999 (over dump_max_bytes)")
         print(mcp.call("dump_memory", {"file": "dumps/too-big.bin", "address": "0x08000000", "length": 99999999}))
 
-        banner("flash_write build/fw.bin @0x08000000 (allowed)")
+        banner("flash_write build/fw.bin @0x08000000 (allowed; v0.4.39 pre-halt)")
         r_flash = mcp.call("flash_write", {"file": "build/fw.bin", "address": "0x08000000"})
         print(r_flash)
         assert r_flash.endswith("OCDUP-RESULT: flash-write=OK"), \
             "A-10: programmed+verified burn must end with flash-write=OK"
+        assert "pre-halt" in r_flash, \
+            "v0.4.39 (session cad81f crash rule): the orchestration must halt the target before programming"
+        first_program = next(i for i, c in enumerate(backend.commands) if c.startswith("program"))
+        assert any(c == "halt" for c in backend.commands[:first_program]), \
+            "the halt must be issued BEFORE the program command (firmware stands still while the image lands)"
 
         banner("flash_write outside flash_allowed_paths (BLOCKED carries no OCDUP-RESULT line)")
         r_blocked = mcp.call("flash_write", {"file": "elsewhere/there.bin", "address": "0x08000000"})
@@ -632,6 +681,19 @@ def main():
         assert "wrote 2" in r_wm, "write_memory must report the written value count"
         assert "mww 0x20000000 0x11111111 0x22222222" in backend.commands, \
             "values must land as one mww carrying every word (OpenOCD writes them consecutively)"
+
+        banner("write_memory verify (v0.4.39): read-back match + stubborn cell mismatch")
+        r_wv = mcp.call("write_memory", {"address": "0x20004000", "values": ["0xdeadbeef", "0x0badc0de"], "verify": True})
+        print(r_wv)
+        assert "wrote 2" in r_wv and "verified: read-back matches all 2 value(s)" in r_wv, \
+            "verify must read back with the same width and confirm the values stuck"
+        assert "mdw 0x20004000 2" in backend.commands, \
+            "the read-back must be one read of the same unit count at the same address"
+        r_wv_bad = mcp.call("write_memory", {"address": "0x20005000", "values": ["0x11111111"], "verify": True})
+        print(r_wv_bad)
+        assert r_wv_bad.startswith("ERROR:") and "did not stick" in r_wv_bad \
+            and "0x20005000" in r_wv_bad and "wrote 0x11111111" in r_wv_bad and "read back 0x20005000" in r_wv_bad, \
+            "a write that was accepted but did not stick must be an ERROR with address/expected/actual"
 
         banner("flash_erase_sector (allow_flash_erase defaults to false -> BLOCKED)")
         r_eb = mcp.call("flash_erase_sector", {})
@@ -1100,6 +1162,15 @@ def main():
         r5 = mcp5.call("halt", {})
         print(r5)
         assert "BLOCKED" in r5 and "allow_exec" in r5, "halt must stay behind allow_exec"
+        # v0.4.39：flash_write 的前置 halt 被闸拦时降级为 NOTE 继续烧——不挡烧录主路径
+        n_before = len(backend.commands)
+        r5b = mcp5.call("flash_write", {"file": "build/fw.bin", "address": "0x08000000"})
+        print(r5b)
+        assert "firmware kept running" in r5b and "allow_exec=false" in r5b, \
+            "v0.4.39: allow_exec=false must skip the pre-program halt with a NOTE, not block the burn"
+        assert r5b.endswith("OCDUP-RESULT: flash-write=OK"), "the burn itself still completes and verifies"
+        assert not any(c == "halt" for c in backend.commands[n_before:]), \
+            "no halt command may reach the backend when allow_exec=false (the skip is honest)"
         d5 = mcp5.call("disconnect", {})
         print(d5)
         assert "BLOCKED" not in d5, "disconnect is backend lifecycle - read_only only, no allow_exec"

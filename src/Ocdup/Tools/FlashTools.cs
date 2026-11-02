@@ -85,6 +85,8 @@ public static class FlashTools
         [Description("Load address for raw .bin (required there), hex like '0x08000000'; ignored for .elf/.hex.")] string? address = null,
         [Description("Verify the written image via read-back (default true).")] bool verify = true,
         [Description("Run 'reset run' after programming (default true).")] bool reset = true,
+        [Description("Halt the target before programming (default true) so the firmware stands still while the image lands; " +
+                     "skipped with a NOTE when allow_exec=false.")] bool halt = true,
         RequestContext<CallToolRequestParams>? context = null,
         CancellationToken ct = default)
     {
@@ -96,7 +98,7 @@ public static class FlashTools
         var pumpTask = progressPump?.RunAsync(pumpCts.Token) ?? Task.CompletedTask;
         try
         {
-            var outcome = await FlashWriteCoreAsync(ConfigStore.Instance.Current, file, address, verify, reset, ct).ConfigureAwait(false);
+            var outcome = await FlashWriteCoreAsync(ConfigStore.Instance.Current, file, address, verify, reset, halt, ct).ConfigureAwait(false);
             // A-10：机器可读结论只加在 MCP 侧（CLI 用退出码族）；早退的 ERROR/BLOCKED 不加。
             return outcome.Ok ? ResultTag.Append(outcome.Report, "flash-write", VerdictTag(outcome.Verdict)) : outcome.Report;
         }
@@ -128,16 +130,19 @@ public static class FlashTools
     internal readonly record struct CoreOutcome(bool Ok, CoreFailure Failure, string Report, FlashWriteVerdict Verdict);
 
     /// <summary>
-    /// 烧录编排：路径解析 → C2 闸（read_only/allow_flash/白名单/上限）→ `program`（不带
-    /// verify）→ 独立 `verify_image` 读回 → <see cref="ClassifyFlashWrite"/> 三段式结论 →
+    /// 烧录编排：路径解析 → C2 闸（read_only/allow_flash/白名单/上限）→ 前置 halt（v0.4.39，
+    /// 被 allow_exec 拦住或 halt 失败时降级 NOTE 继续烧）→ `program`（不带 verify）→ 独立
+    /// `verify_image` 读回 → <see cref="ClassifyFlashWrite"/> 三段式结论 →
     /// <see cref="ShouldResetRun"/> 门控 reset。v0.4.13（P0-2）定案：校验与写相分离——
     /// PY32 等驱动会在写相吐虚假 AHB 错误（操作实际已生效），「读回是否与镜像一致」才是
     /// 烧录成功的权威回答；program 错误文本降级为辅助信息，只用来区分两种失败形态。
+    /// 前置 halt（v0.4.39，现场实战 session cad81f 的撞机教训：固件在跑时烧录+复位，
+    /// 现场只能靠「connect → halt → flash_write」人肉纪律）——这里把纪律固化进编排。
     /// 校验通道失败按存疑判失败（保守），reset 不会执行。行为与 v0.4.13 起的 flash_write
     /// 完全一致（e2e 链路 4 钉死）；CLI 侧仅多出退出码映射（见 BurnCli.MapExitCode）。
     /// </summary>
     internal static async Task<CoreOutcome> FlashWriteCoreAsync(
-        OcdConfig cfg, string file, string? address, bool verify, bool reset, CancellationToken ct)
+        OcdConfig cfg, string file, string? address, bool verify, bool reset, bool halt, CancellationToken ct)
     {
         string resolved;
         try
@@ -171,6 +176,35 @@ public static class FlashTools
             return new CoreOutcome(false, CoreFailure.Usage,
                 "ERROR: a raw .bin image needs an explicit load address, e.g. flash_write(file=\"build/fw.bin\", address=\"0x08000000\"). " +
                 "An .elf/.hex image carries its own addresses and needs no address argument.", default);
+        }
+
+        // v0.4.39：前置 halt——让固件在写相保持静止。闸被拦（allow_exec=false）或 halt 本身
+        // 失败都不挡烧录主路径：降级为 NOTE 如实上报（与「烧录前必须 halt」的人肉铁律一致，
+        // 但把决定权留给调用方）。op 归 flash_write：这是编排内步骤，不是独立 exec 请求。
+        string? haltLine = null;
+        if (halt)
+        {
+            if (PermissionGate.CheckExec(cfg, "halt before programming") is { })
+            {
+                haltLine = "NOTE: the firmware kept running while the image was programmed - the pre-program halt was " +
+                           "skipped because allow_exec=false. Halt the target manually first if the machine must stand still.";
+            }
+            else
+            {
+                try
+                {
+                    var haltOutput = (await BackendSession.Instance
+                        .ExecuteAsync(cfg, "halt", startIfNeeded: true, ct, op: OpNames.FlashWrite)).Trim();
+                    haltLine = haltOutput.Length == 0
+                        ? "pre-halt: halt issued before programming."
+                        : $"pre-halt: halt issued before programming ({Compact(haltOutput)}).";
+                }
+                catch (BackendException ex)
+                {
+                    haltLine = $"NOTE: the pre-program halt failed ({Compact(ex.Message)}) - continuing; " +
+                               "the firmware may have kept running while the image was programmed.";
+                }
+            }
         }
 
         // program 不再带 verify——校验由下一步独立的 verify_image 承担。
@@ -214,6 +248,7 @@ public static class FlashTools
         var verdict = ClassifyFlashWrite(verify, programOutput, verifyProblem, crcProblem);
 
         var sb = new StringBuilder();
+        if (haltLine is not null) sb.AppendLine(haltLine);
         sb.AppendLine($"programmed: {resolved} ({image.Length} bytes)");
         if (loadAddress is { } reported) sb.AppendLine($"load address: {Parsing.Hex(reported)}");
         sb.AppendLine(programOutput.Length == 0 ? "(the program step produced no output)" : programOutput);

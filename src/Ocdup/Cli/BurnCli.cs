@@ -35,7 +35,7 @@ public static class BurnCli
 
         // 刻意不用可取消 token：写相中途取消 = 半截固件（见类注释）。Ctrl+C 由外壳兜底。
         var outcome = await FlashTools.FlashWriteCoreAsync(
-            cfg, options.File, options.Address, options.Verify, options.Reset, CancellationToken.None)
+            cfg, options.File, options.Address, options.Verify, options.Reset, options.Halt, CancellationToken.None)
             .ConfigureAwait(false);
 
         if (outcome.Ok)
@@ -74,6 +74,8 @@ public static class BurnCli
                            .elf/.hex carry their own addresses)
           --no-verify      skip the read-back verification (NOT recommended in production)
           --no-reset       skip 'reset run' after a clean pass (fixture does the cycling)
+          --no-halt        skip the pre-program halt (NOT recommended - the firmware
+                           keeps running while the image lands)
           --help           this text
 
         exit codes:
@@ -98,6 +100,7 @@ public sealed record BurnOptions(
     string? Address,
     bool Verify,
     bool Reset,
+    bool Halt,
     bool Help,
     IReadOnlyList<string> Errors)
 {
@@ -108,11 +111,12 @@ public sealed record BurnOptions(
         string? address = null;
         var verify = true;
         var reset = true;
+        var halt = true;
 
         // v0.4.25：解析循环收敛进 ArgScanner（两个无值旗标不吃下一个选项）
         var scanner = new ArgScanner("burn", args,
-            knownKeys: new[] { "--file", "--address", "--no-verify", "--no-reset" },
-            flags: new[] { "--no-verify", "--no-reset" });
+            knownKeys: new[] { "--file", "--address", "--no-verify", "--no-reset", "--no-halt" },
+            flags: new[] { "--no-verify", "--no-reset", "--no-halt" });
         while (scanner.Next(out var key, out var value))
         {
             switch (key)
@@ -135,6 +139,9 @@ public sealed record BurnOptions(
                 case "--no-reset":
                     reset = false;
                     break;
+                case "--no-halt":
+                    halt = false;
+                    break;
                 default:
                     break; // 未知选项：ArgScanner 已报错且不消费下一个参数
             }
@@ -150,6 +157,6 @@ public sealed record BurnOptions(
         }
 
         errors.AddRange(scanner.Errors); // 扫描器自己的缺值/未知错误并入统一报告
-        return new BurnOptions(file ?? "", address, verify, reset, scanner.Help, errors);
+        return new BurnOptions(file ?? "", address, verify, reset, halt, scanner.Help, errors);
     }
 }

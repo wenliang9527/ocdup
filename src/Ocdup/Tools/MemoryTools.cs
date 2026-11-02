@@ -19,6 +19,7 @@ public static class MemoryTools
         "width (8, 16 or 32 bits, default 32), format ('text' = the backend's '<addr>: <values>' lines, default; " +
         "'json' = structured {address,width,count,bytes,values:[hex strings]} parsed from the same text - an unparseable output " +
         "returns an ERROR with the raw text). " +
+        "If a 16/32-bit read fails, it retries once as byte reads and labels the fallback (no extra FIFO side effects). " +
         "Read-only. If the read fails while the CPU is running, halt first and resume afterwards (both gated by allow_exec). " +
         "Large ranges (whole flash bank, big RAM snapshot) belong to dump_memory - this tool is capped by memory_read_max_bytes.")]
     public static async Task<string> ReadMemory(
@@ -53,6 +54,43 @@ public static class MemoryTools
             if (output.Length == 0)
                 return $"ERROR: the backend produced no output for '{command}'.";
 
+            // v0.4.39（现场实战 2026-11-02，session cad81f 的 0x40020808）：宽读取失败自动降级
+            // 逐字节重试一次——AT32 真机上 mdw/mdh 偶发 "Failed to read memory at 0x..."，
+            // 逐字节 mdb 能过。首读已失败，降级不会对 FIFO 外设产生二次读副作用；
+            // 降级也失败则沿用原失败输出走下方常规路径。
+            if (width != 8 && LooksLikeReadFailure(output))
+            {
+                var bytesToRead = (int)totalBytes;
+                var byteOutput = (await BackendSession.Instance
+                    .ExecuteAsync(cfg, $"mdb {Parsing.Hex(start)} {bytesToRead}", startIfNeeded: false, ct, op: OpNames.ReadMemory)).Trim();
+                if (byteOutput.Length > 0 && !LooksLikeReadFailure(byteOutput))
+                {
+                    if (!json)
+                        return $"NOTE: {count} x {width}-bit read failed at {Parsing.Hex(start)}; " +
+                               $"auto-fell back to byte reads ({bytesToRead} bytes):\n" + byteOutput;
+
+                    if (Parsing.TryParseMemoryOutput(byteOutput, 8, bytesToRead, out var byteValues) &&
+                        AssembleLittleEndian(byteValues, count, width) is { } assembled)
+                    {
+                        var sj = new StringBuilder(count * 14 + 160);
+                        sj.Append("{\"address\":\"").Append(Parsing.Hex(start))
+                          .Append("\",\"width\":").Append(width)
+                          .Append(",\"count\":").Append(count)
+                          .Append(",\"bytes\":").Append(totalBytes)
+                          .Append(",\"fallback\":\"byte reads (the wide read failed)\"")
+                          .Append(",\"values\":[");
+                        for (var i = 0; i < assembled.Length; i++)
+                        {
+                            if (i > 0) sj.Append(',');
+                            sj.Append('"').Append(Parsing.HexValue(assembled[i], width)).Append('"');
+                        }
+                        sj.Append("]}");
+                        return sj.ToString();
+                    }
+                    // 降级读到了但解析不成 → 交回原失败输出，由下方常规路径如实报错
+                }
+            }
+
             if (json)
             {
                 if (!Parsing.TryParseMemoryOutput(output, width, count, out var values))
@@ -83,13 +121,16 @@ public static class MemoryTools
     [McpServerTool(Name = "write_memory")]
     [Description(
         "Write values to target memory or memory-mapped registers in ONE backend command. Parameters: address (hex string like '0x40010800'), " +
-        "values (one or more hex values, e.g. [\"0x11111111\"] or [\"0x01\",\"0x02\"]), width (8/16/32 bits, default 32). " +
+        "values (one or more hex values, e.g. [\"0x11111111\"] or [\"0x01\",\"0x02\"]), width (8/16/32 bits, default 32), " +
+        "verify (default false): read the values back and compare - catches a write that did not stick " +
+        "(running firmware overwrote it, write-once register). " +
         "Destructive: gated by read_only and allow_memory_write - a BLOCKED answer means the settings forbid it (see show_config). " +
         "Max 256 values per call; for firmware images use flash_write instead.")]
     public static async Task<string> WriteMemory(
         [Description("Start address, hex string like '0x40010800'.")] string address,
         [Description("Hex values to write, in order.")] string[] values,
         [Description("Unit width in bits: 8, 16 or 32 (default 32).")] int width = 32,
+        [Description("Read the values back and compare after writing (default false).")] bool verify = false,
         CancellationToken ct = default)
     {
         var cfg = ConfigStore.Instance.Current;
@@ -125,13 +166,80 @@ public static class MemoryTools
         try
         {
             var output = (await BackendSession.Instance.ExecuteAsync(cfg, command, startIfNeeded: true, ct, op: OpNames.WriteMemory)).Trim();
-            return $"wrote {parsed.Length} x {width}-bit to {Parsing.Hex(start)} ({parsed.Length * width / 8} bytes):\n" +
-                   (output.Length == 0 ? "(no output - write completed silently)" : output);
+            var wrote = $"wrote {parsed.Length} x {width}-bit to {Parsing.Hex(start)} ({parsed.Length * width / 8} bytes):\n" +
+                        (output.Length == 0 ? "(no output - write completed silently)" : output);
+            if (!verify)
+                return wrote;
+
+            // v0.4.39（现场实战 2026-11-02，session cad81f）：写后回读比对——「写命令被接受」
+            // ≠「值进去了」，运行态固件/写保护寄存器会静默吞写，现场只能人肉写后读回。
+            // 回读失败不算写失败（写已发生），如实降级为 NOTE 交人工判断。
+            var reader = width switch { 8 => "mdb", 16 => "mdh", _ => "mdw" };
+            try
+            {
+                var readOutput = (await BackendSession.Instance
+                    .ExecuteAsync(cfg, $"{reader} {Parsing.Hex(start)} {parsed.Length}", startIfNeeded: false, ct, op: OpNames.WriteMemory)).Trim();
+                if (!Parsing.TryParseMemoryOutput(readOutput, width, parsed.Length, out var readBack))
+                    return wrote + $"\nNOTE: verify inconclusive - the read-back could not be parsed as {parsed.Length} x {width}-bit " +
+                           $"values (unaligned word address on a byte-limited transport?). Raw output: {readOutput}";
+
+                return FirstReadBackMismatch(parsed, readBack, start, width) is { } mismatch
+                    ? "ERROR: verify FAILED - the write was accepted, but the value did not stick.\n" + mismatch +
+                      "\nCommon causes: the firmware overwrote it (target running), a write-once/protected register, or a wrong address. " +
+                      "Halt the target and retry, or read back manually."
+                    : wrote + $"\nverified: read-back matches all {parsed.Length} value(s).";
+            }
+            catch (BackendException ex)
+            {
+                return wrote + "\nNOTE: verify inconclusive - the read-back failed: " + ex.Message;
+            }
         }
         catch (BackendException ex)
         {
             return ex.Message;
         }
+    }
+
+    /// <summary>OpenOCD 读失败的输出特征（真机形态："Failed to read memory at 0x..."，session cad81f 实测）。</summary>
+    internal static bool LooksLikeReadFailure(string output) =>
+        output.Contains("failed to read memory", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 把逐字节读回的值按小端组装成 width 位值（纯函数，可单测；Cortex-M 是小端）。
+    /// 字节数不足 → null（调用方按解析失败处理）。
+    /// </summary>
+    internal static long[]? AssembleLittleEndian(long[] byteValues, int count, int width)
+    {
+        var step = width / 8;
+        if (byteValues.Length < checked(count * step)) return null;
+        var values = new long[count];
+        for (var i = 0; i < count; i++)
+        {
+            long v = 0;
+            for (var b = step - 1; b >= 0; b--)
+                v = (v << 8) | (byteValues[i * step + b] & 0xFF);
+            values[i] = v;
+        }
+        return values;
+    }
+
+    /// <summary>写后回读比对（纯函数，可单测）：返回第一条不一致的描述（含不一致总数），全部一致 → null。</summary>
+    internal static string? FirstReadBackMismatch(long[] expected, long[] readBack, long startAddr, int width)
+    {
+        var mismatches = 0;
+        var first = -1;
+        for (var i = 0; i < expected.Length; i++)
+        {
+            if (i < readBack.Length && readBack[i] != expected[i])
+            {
+                mismatches++;
+                if (first < 0) first = i;
+            }
+        }
+        if (first < 0) return null;
+        return $"first mismatch at {Parsing.Hex(startAddr + first * (width / 8))}: " +
+               $"wrote {Parsing.HexValue(expected[first], width)}, read back {Parsing.HexValue(readBack[first], width)} " +
+               $"({mismatches} of {expected.Length} location(s) differ).";
     }
 
     [McpServerTool(Name = "dump_memory")]

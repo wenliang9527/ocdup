@@ -28,6 +28,18 @@ public sealed class BurnCliTests
         Assert.Equal("0x08000000", o.Address);
         Assert.False(o.Verify);
         Assert.False(o.Reset);
+        // v0.4.39：前置 halt 默认开（现场撞机铁律入编排），--no-halt 显式关
+        Assert.True(o.Halt);
+        Assert.Empty(o.Errors);
+    }
+
+    [Fact]
+    public void Parse_NoHalt_FlagOptsOut()
+    {
+        var o = BurnOptions.Parse(["--file", "build/fw.elf", "--no-halt"]);
+        Assert.True(o.Verify);
+        Assert.True(o.Reset);
+        Assert.False(o.Halt);
         Assert.Empty(o.Errors);
     }
 
