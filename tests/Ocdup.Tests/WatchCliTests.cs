@@ -4,8 +4,27 @@ using Ocdup.Cli;
 namespace Ocdup.Tests;
 
 /// <summary>watch CLI（M-watch）的纯函数面：选项解析、对齐取值、行渲染。</summary>
-public sealed class WatchCliTests
+public sealed class WatchCliTests : IDisposable
 {
+    private readonly string _dir;
+
+    public WatchCliTests()
+    {
+        _dir = Path.Combine(Path.GetTempPath(), "ocdup-watch-tests-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(_dir);
+    }
+
+    public void Dispose()
+    {
+        try { Directory.Delete(_dir, recursive: true); } catch { /* 临时目录尽力清理 */ }
+    }
+
+    private Ocdup.Config.OcdConfig Config()
+    {
+        var path = Path.Combine(_dir, "ocd.json");
+        File.WriteAllText(path, "{}");
+        return Ocdup.Config.OcdConfig.LoadFrom(path);
+    }
     // ── WatchOptions.Parse ──
 
     [Fact]
@@ -95,6 +114,48 @@ public sealed class WatchCliTests
     {
         // 小端内存 0x11 0x22 0x33 0x44 → mdw 读回 word = 0x44332211
         Assert.Equal(expected, WatchValue.Extract(0x44332211u, address, size));
+    }
+
+    // ── v0.4.40（audit 附二 P3）：骑字界变量要跨两个字，此前恒发单字读、值被静默截断 ──
+
+    [Theory]
+    [InlineData(0x20000010, 4, 1)]  // 对齐 u32：单字
+    [InlineData(0x20000012, 4, 2)]  // gUnaligned 形态（e2e 夹具）：骑字界 → 两字
+    [InlineData(0x20000011, 4, 2)]  // x…1 起的 u32：同样骑
+    [InlineData(0x20000013, 2, 2)]  // u16 @x…3：低半字在 word0、高半字在 word1
+    [InlineData(0x20000012, 2, 1)]  // 半字对齐 u16：单字够
+    [InlineData(0x20000013, 1, 1)]  // u8 永远单字
+    public void WordCount_StraddlingVariablesNeedTwoWords(long address, int size, int expected)
+        => Assert.Equal(expected, WatchValue.WordCount(address, size));
+
+    [Fact]
+    public void Extract_WordArray_ReassemblesStraddlingWord()
+    {
+        // word0=0x22221100 @0x20000010，word1=0x00004433 @0x20000014：
+        // u32 @0x20000012 的小端字节 = 00(u10) 11(u11) | 33 22? — 精确算：
+        // 字节流 = 00 11 22 22 33 44 00 00（小端），offset=2 起 4 字节 = 22 22 33 44 → 0x44332222
+        var words = new long[] { 0x22221100, 0x00004433 };
+        Assert.Equal(0x44332222u, WatchValue.Extract(words, 0x20000012, 4));
+        // u16 @0x20000013：字节流 offset=3 起 2 字节 = 22 33 → 0x3322
+        Assert.Equal(0x3322u, WatchValue.Extract(words, 0x20000013, 2));
+    }
+
+    [Fact]
+    public async Task SampleCore_StraddlingVariable_ReadsTwoWords()
+    {
+        var commands = new List<string>();
+        var vars = new List<ElfSymbol> { new("gUnaligned", 0x20000012, 4) };
+        var values = await WatchCli.SampleCoreAsync(
+            (cfg, cmd, start, ct, op) =>
+            {
+                lock (commands) commands.Add(cmd);
+                return Task.FromResult("0x20000010: 22221100 \n0x20000014: 00004433 ");
+            },
+            Config(), vars, halt: false, CancellationToken.None);
+
+        Assert.Equal([0x44332222u], values);
+        lock (commands)
+            Assert.Equal(["mdw 0x20000010 2"], commands); // 双字读，不再是被截断的单字
     }
 
     [Theory]

@@ -104,9 +104,18 @@ public sealed class BackendSession
             _traffic.Record(op, "err", $"control channel failed: {ex.Message}", Endpoint(cfg));
 
             if (!IsReplaySafe(op))
+            {
+                // v0.4.40（现场实战 session cad81f）：「可能已生效」的歧义收窄成确定性证据——
+                // 命令记录（cmd）在发出前落流量日志，响应（rsp）没来 = 命令确实已下发、
+                // 效果未确认；写类操作重连后回读才能定案。附已知故障 hint（KnownIssues）。
+                var hint = KnownIssues.HintFor(ex.Message);
                 throw new BackendException(
                     $"ERROR: the control channel failed while running '{command}': {ex.Message}. " +
-                    "The command may have taken effect, so it was NOT replayed; call connect and retry.", ex);
+                    "The command WAS dispatched to OpenOCD (the traffic log has its record without a matching reply), " +
+                    "but its effect is unconfirmed - it was NOT replayed; call connect and retry, " +
+                    "and for writes read the value back to confirm it stuck." +
+                    (hint is null ? "" : "\n" + hint), ex);
+            }
 
             // P1-5：只读命令重放安全——自动重连并重放一次；写操作维持「不重放」。
             // v0.4.35（audit F-3）：重放一律不以 startIfNeeded 执行——重放是「通道重试」，

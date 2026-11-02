@@ -879,9 +879,11 @@ def main():
             "watch --count 3 must emit exactly 3 CSV rows (time + 2 named variables), got %d" % len(csv_lines)
         assert "gCounter" in w1.stderr, "csv mode routes the human banner (variable list) to stderr, stdout stays pure data"
         assert "mdw 0x20000004 1" in backend.commands, "watch samples gCounter with the same aligned mdw reads"
-        assert "mdw 0x20000010 1" in backend.commands, \
-            "each variable is sampled with one aligned mdw per tick (watch is the single-word sampler; " \
-            "cross-word extraction lives in read_variable)"
+        assert "mdw 0x20000010 2" in backend.commands, \
+            "v0.4.40 (audit P3): the straddling u32 gUnaligned@0x20000012 must be sampled with a TWO-word read " \
+            "(the old single-word read silently truncated its value)"
+        assert not any(c == "mdw 0x20000010 1" for c in backend.commands), \
+            "the truncated single-word read must be gone entirely"
 
         banner("ocdup doctor CLI (v0.4.36, P2-9): contract pin - FAIL items -> exit 1, every FAIL carries a fix hint")
         # e2e 环境无 OCD_BIN / scripts / 探针 → doctor 如实 FAIL（它是冷启动预检，这正是设计行为）；

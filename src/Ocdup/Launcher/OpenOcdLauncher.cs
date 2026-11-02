@@ -437,6 +437,13 @@ public sealed class OpenOcdLauncher : IDisposable
                       "Options: plug an AT-Link / CMSIS-DAP probe instead, or swap the J-Link driver to WinUSB with Zadig " +
                       "(SEGGER tools will not see the probe until you switch the driver back).");
         }
+        else if (KnownIssues.HintFor(recent) is { } hint)
+        {
+            // v0.4.40：目标断电/SWD 断线这一类硬件故障不再淹在 openocd 原始输出里（session cad81f：
+            // "Error connecting DP: cannot read IDR" 后模型只能瞎猜），尾部追加可操作提示
+            sb.AppendLine();
+            sb.Append(hint);
+        }
         return sb.ToString();
     }
 

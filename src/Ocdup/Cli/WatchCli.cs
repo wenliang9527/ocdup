@@ -195,10 +195,13 @@ public static class WatchCli
             foreach (var s in vars)
             {
                 var aligned = s.Address & ~3L;
-                var output = await execute(cfg, $"mdw {Parsing.Hex(aligned)} 1", startIfNeeded: !halt, ct, OpNames.Watch).ConfigureAwait(false);
-                if (!Parsing.TryParseMemoryOutput(output, 32, 1, out var words))
+                // v0.4.40（audit 附二 P3 定案）：骑字界变量（u32 非对齐、u16 @x…3）需要跨两个字，
+                // 此前恒发单字读、值被静默截断——读几个字由 WordCount 决定
+                var wordCount = WatchValue.WordCount(s.Address, (int)s.Size);
+                var output = await execute(cfg, $"mdw {Parsing.Hex(aligned)} {wordCount}", startIfNeeded: !halt, ct, OpNames.Watch).ConfigureAwait(false);
+                if (!Parsing.TryParseMemoryOutput(output, 32, wordCount, out var words))
                     throw new BackendException($"could not read '{s.Name}' @ {Parsing.Hex(s.Address)}: {output.ReplaceLineEndings(" ").Trim()}");
-                values.Add(WatchValue.Extract((uint)words[0], s.Address, (int)s.Size));
+                values.Add(WatchValue.Extract(words, s.Address, (int)s.Size));
             }
             return values;
         }
@@ -333,12 +336,35 @@ public sealed record WatchOptions(
 /// <summary>变量取值工具（纯函数）：mdw 只能读对齐的 32 位字，小端移位掩码摘出 1/2/4 字节标量。</summary>
 public static class WatchValue
 {
+    /// <summary>
+    /// 该变量横跨几个对齐 32 位字（v0.4.40，audit 附二 P3）：地址低两位 + 尺寸越过字界
+    /// （u32 @x…1/2/3、u16 @x…3）就需要两字——此前恒读单字，骑字界变量的值被静默截断。
+    /// </summary>
+    public static int WordCount(long address, int size) => (address & 3) + size > 4 ? 2 : 1;
+
+    /// <summary>单字形态（1 字变量恒走这里；保留给既有测试与简单调用）。</summary>
     public static uint Extract(uint word, long address, int size) => size switch
     {
         1 => (word >> (int)((address & 3) * 8)) & 0xFF,
         2 => (word >> (int)((address & 3) * 8)) & 0xFFFF,
         _ => word,
     };
+
+    /// <summary>
+    /// 通用摘取：按小端把 1..2 个对齐字拼成字节流，再按地址低两位移位、按尺寸掩码。
+    /// words 数量必须与 <see cref="WordCount"/> 一致（采样循环据此下发 mdw 读数；
+    /// 入参用 long[] 与 Parsing.TryParseMemoryOutput 的产物直通，避免逐元素转换）。
+    /// </summary>
+    public static uint Extract(long[] words, long address, int size)
+    {
+        if (words.Length == 1)
+            return Extract((uint)words[0], address, size);
+
+        var stream = (uint)words[0] | ((ulong)(uint)(words.Length > 1 ? words[1] : 0) << 32);
+        var shift = (int)(address & 3) * 8;
+        var mask = size >= 4 ? 0xFFFF_FFFFUL : (1UL << (size * 8)) - 1;
+        return (uint)((stream >> shift) & mask);
+    }
 
     public static string FormatHex(uint value, int size) => size switch
     {
