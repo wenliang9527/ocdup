@@ -1,6 +1,6 @@
 ---
 name: ocdup-flash
-description: Use when flashing firmware or reading/writing target memory, registers or variables on a connected MCU via the Ocdup toolchain - the mcp__ocdup__* OpenOCD-facing MCP tools (connect/status, flash_info/flash_write/verify_image/flash_erase_sector, read/write_memory, dump_memory, halt/resume/reset, add/remove/list_breakpoint, add/remove_watchpoint, run_command, backend_log, identify_chip, set_target, set_permissions, list_variables, read/write_variable, load_svd, read/write_peripheral_register) and the ocdup watch/rtt/burn/verify CLIs. Covers the flash workflow (connect, flash_info, flash_write, verify read-back), halt/resume for reliable reads and crash triage, chip identify and hot target switching, breakpoints/watchpoints for catching runaway code, permission gates (BLOCKED > show_config, never bypass), probe auto-detect boundaries, and port discipline (single backend on 6666 shared by DSH and ZCode). 触发词：烧录、刷机、固件下载、烧写、读flash、读内存、dump、向量表、卡死、跑飞、复位、识别芯片、什么芯片、切换芯片、换板子、变量名、按名读写、采样、寄存器、位域、SVD、RTT、printf日志、量产、探针、OpenOCD、DAPLink、AT-Link、ST-Link、J-Link、AT32、PY32、断点、观察点、watchpoint、breakpoint。
+description: Use when flashing firmware or reading/writing target memory, registers or variables on a connected MCU via Ocdup: the mcp__ocdup__* MCP tools (connect/status, flash info/write/verify/erase, memory/register/variable access, dump_memory, halt/resume/reset, breakpoints/watchpoints, run_command, identify_chip, set_target, set_permissions, load_svd) and the ocdup watch/rtt/burn/verify CLIs. Covers flash write with verify read-back, halt/resume for reliable reads and crash triage, chip identify and hot switching, permission gates (BLOCKED > show_config, never bypass), single backend on port 6666 (shared by DSH and ZCode). 触发词：烧录、刷机、固件下载、烧写、读flash、读内存、dump、向量表、卡死、跑飞、复位、识别芯片、什么芯片、切换芯片、换板子、变量名、按名读写、采样、寄存器、位域、SVD、RTT、printf日志、量产、探针、OpenOCD、DAPLink、AT-Link、ST-Link、J-Link、AT32、PY32、断点、观察点。
 ---
 
 # Ocdup 烧录工具链（AI 操作手册）
@@ -17,11 +17,11 @@ docstring 与 `show_config` 输出为准，不要凭记忆猜。
 | `status` | 后端是否在跑、版本、target 一行式摘要（只读探测，**不启动**任何东西） | 否 |
 | `show_config` | 有效设置与每项来源；`reload=true` 重读 ocd.json | 否 |
 | `flash_info` | 列出 flash banks（先逐 bank probe：自动容量配置/双 bank 的 bank1 必须 probe 过才有真实大小） | 否 |
-| `flash_write` | 烧录镜像（默认 verify + reset run；末行机器结论 `OCDUP-RESULT: flash-write=…`） | **是** |
+| `flash_write` | 烧录镜像（默认 verify + reset run；**v0.4.39 起默认先 halt 再编程**——固件在写相保持静止，`allow_exec=false` 时降级 NOTE 继续烧；末行机器结论 `OCDUP-RESULT: flash-write=…`） | **是** |
 | `flash_erase_sector` | 擦除扇区（last=-1 = 到 bank 末尾；**默认关闭**） | **是** |
 | `verify_image` | 镜像与目标 flash 比对，**不写任何东西**（回答「板子里到底是谁」） | 否 |
-| `read_memory` | 按地址/宽度读回；`format=json` 返回结构化值（≤ `memory_read_max_bytes`，默认 4096） | 否 |
-| `write_memory` | 写内存/寄存器（一条命令多值，单次 ≤256） | **是** |
+| `read_memory` | 按地址/宽度读回；`format=json` 返回结构化值（≤ `memory_read_max_bytes`，默认 4096）；宽读失败自动降级逐字节重试一次（输出带 fallback 标注，v0.4.39） | 否 |
+| `write_memory` | 写内存/寄存器（一条命令多值，单次 ≤256）；`verify=true` 写后回读比对（v0.4.39——写命令被接受 ≠ 值进去了，运行态固件/写保护寄存器会静默吞写） | **是** |
 | `dump_memory` | 大块读落盘（整片 flash/RAM 快照），返回路径 + 字节数 + sha256 | 否 |
 | `halt` / `resume` / `reset` | 执行控制：halt 后读写才可靠，并带回核心寄存器现场（pc/lr/sp/xpsr，"跑飞在哪"一步定位）；`reset halt` 同样带回 | **是**（执行状态） |
 | `add_breakpoint` / `remove_breakpoint` / `list_breakpoints` | 断点（`bp`/`rbp`）：add 带 address + 可选 length（默认 2，恒下发）/hw；remove 不带地址 = 全清；list 是纯读无闸。**真机核定（2026-10-19）**：软断点需目标 halted（运行态设回 `can't add breakpoint: target running`），硬件断点（hw=true）运行态可设 | **是**（执行状态） |
@@ -44,6 +44,16 @@ docstring 与 `show_config` 输出为准，不要凭记忆猜。
 `svd_path` 可作默认镜像）→ `read_peripheral_register("RCC.CR")` 按名读 + 位域解码 +
 reset 比对（簇寄存器带路径，如 `"TIM1.PWM.CCR"`）→ `write_peripheral_register` 按名写
 （走 allow_memory_write 闸；SVD access 为 read-only 的寄存器即使放行也拒写）。
+
+**符号层 L1 实战纪律（v0.4.41 沉淀，现场踩坑换来的）**：
+- **只用工程自己的 `objects/*.axf`**（Keil 输出目录里那份）——参考工程/参考程序目录下的
+  axf 符号完全不同，拿错了会得出「list_variables 无用」的误诊（2026-11-02 现场实况：
+  错拿参考程序 axf，实际工程 axf 里 s_po/s_ax 等业务变量全都能按名查到）。
+- **elf_path 在 ocd.json 里配一次**，之后 `read_variable`/`write_variable` 按名读写——
+  **不要手工维护 fromelf 地址簿**：固件版本一动 RAM 布局整体移位，手记地址会静默落进
+  别的变量（现场曾把 0x20000089 当 s_home_after 写，实际那是另一个变量的内部字节）。
+- 同名 static（多编译单元各一份）会列出**全部地址**让你挑；`list_variables` 只列
+  OBJECT（函数不占行）。axf 必须与板上固件**同源同版本**——烧了新固件就读新构建的 axf。
 
 另有 **`ocdup watch` 子命令 CLI**（M-watch，不是 MCP 工具）：按符号名定时采样变量
 （`--name` 多个、`--interval`、`--format csv` 重定向画曲线、`--halt` 每拍暂停固件读
@@ -75,7 +85,9 @@ halt 后重试（v0.4.30 起 burn/flash_write 与 verify_image 用同一份判�
 2. `flash_info`——确认 flash bank 基址与大小（本机 AT32F403AVGT7 为
    0x08000000 起、1MB）。
 3. `flash_write file=<构建产物> [address=<hex>]`——**`.bin` 必须显式给
-   address；`.elf`/`.hex` 自带地址不用给**。默认 `verify=true`、`reset=true`。
+   address；`.elf`/`.hex` 自带地址不用给**。默认 `verify=true`、`reset=true`、
+   `halt=true`（v0.4.39：编排自动先 halt 再编程，报告带 `pre-halt` 行——
+   烧前让固件静止是编排内的固定步骤，不再依赖人肉「connect → halt → 烧」纪律）。
    结论由烧录后**独立的 `verify_image` 读回**判定（v0.4.13）：
    `programmed + verified`（随后 reset run）/ `programmed but verify FAILED`
    （写声称成功但读回不符，最危险）/ `write failed`；program 阶段的
@@ -165,11 +177,17 @@ dump_memory file=dumps/flash.bin address=0x08000000 length=1048576
 
 1. `connect` 失败/超时 → 看返回的 `--- recent openocd output ---` 诊断
    （末 200 行）与 `backend:` 行；常见原因：探针没插、驱动被占用
-   （J-Link × SEGGER）、`OCD_SCRIPTS` 指错目录。
+   （J-Link × SEGGER）、`OCD_SCRIPTS` 指错目录。`Error connecting DP:
+   cannot read IDR` = 目标断电/复位保持/SWD 断线（v0.4.40 起输出尾部直接附
+   行动指引）——查供电与 SWD 线后重试 connect，不是固件问题。
 2. `flash_write` 结论不是 `verified`（VERIFY FAILED / WRITE FAILED /
    VERIFY INCONCLUSIVE）→ reset run 已自动跳过；INCONCLUSIVE 是「CRC 算法没跑起来」
    （固件在跑），**不是固件损坏**，halt 后重试 verify_image；真失配先 `flash_info`
    确认 bank，再用已知好镜像重试；烧录进度/异步
    `Info:`/`Error:` → `backend_log`（仅 ocdup 自己拉起的后端有捕获）；疑似版本
    语义差异 → 记录 OpenOCD 版本（`status` 输出）再定位。
-3. 权限问题 → `show_config`；配置改动后 → `show_config reload=true`。
+3. **控制通道中断**（`the control channel failed`，v0.4.40 起带确定性证据）：
+   流量日志里该命令有 cmd 无 rsp = **已下发、效果未确认**——只读操作重连后自动
+   重放一次；写类操作不会被重放，`connect` 重连后**回读确认**再继续（关键 patch
+   直接用 `write_memory verify=true` 让工具自己读回比对）。
+4. 权限问题 → `show_config`；配置改动后 → `show_config reload=true`。

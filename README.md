@@ -51,7 +51,7 @@
 | 工具 | 作用 | 权限 |
 |---|---|---|
 | `flash_info` | 列出 flash banks（驱动、基址、大小） | 只读 |
-| `flash_write` | **下载**：烧录镜像（写 → 独立读回校验判据 → 可选复位运行；结论四态：verified / verify FAILED / write failed / verify INCONCLUSIVE——CRC 算法没跑起来，**不是固件不匹配**，v0.4.30 起与 verify_image 同一份判据）；执行期 openocd 日志行以 progress notification 推回带 progressToken 的调用方；**末行机器可读结论** `OCDUP-RESULT: flash-write=<OK\|VERIFY-FAILED\|WRITE-FAILED\|INCONCLUSIVE\|UNVERIFIED>`（v0.4.34） | `read_only` / `allow_flash` / 白名单 / 上限 |
+| `flash_write` | **下载**：烧录镜像（**默认先 halt 再编程**，v0.4.39——固件在写相静止，`allow_exec=false` 降级 NOTE；写 → 独立读回校验判据 → 可选复位运行；结论四态：verified / verify FAILED / write failed / verify INCONCLUSIVE——CRC 算法没跑起来，**不是固件不匹配**，v0.4.30 起与 verify_image 同一份判据）；执行期 openocd 日志行以 progress notification 推回带 progressToken 的调用方；**末行机器可读结论** `OCDUP-RESULT: flash-write=<OK\|VERIFY-FAILED\|WRITE-FAILED\|INCONCLUSIVE\|UNVERIFIED>`（v0.4.34） | `read_only` / `allow_flash` / 白名单 / 上限 |
 | `verify_image` | **烧后独立校验**：镜像与目标 flash 比对，不写任何东西（回答「板子里到底是谁」）。后端 CRC 算法需目标静止，固件在跑时可能报 `VERIFY INCONCLUSIVE`（**不代表固件不匹配**，halt 后重试）；末行 `OCDUP-RESULT: verify=<OK\|FAILED\|INCONCLUSIVE>`（v0.4.34） | 只读 |
 | `flash_erase_sector` | 擦除 flash 扇区（破坏性，默认关闭） | `read_only` / **`allow_flash_erase`（默认 false）** |
 
@@ -59,9 +59,9 @@
 
 | 工具 | 作用 | 权限 |
 |---|---|---|
-| `read_memory` | **读指定地址**：按 8/16/32 位宽度读回；`format=json` 返回结构化值（免解析 OpenOCD 文本） | 只读 + 体积上限 |
+| `read_memory` | **读指定地址**：按 8/16/32 位宽度读回；`format=json` 返回结构化值（免解析 OpenOCD 文本）；宽读失败自动降级逐字节重试一次（v0.4.39，输出带 fallback 标注） | 只读 + 体积上限 |
 | `dump_memory` | **大块读落盘**：整片 flash / RAM 快照存成文件，返回 sha256 + 前 64 字节；末行 `OCDUP-RESULT: dump=<OK\|PARTIAL>`（PARTIAL = 后端输出带错、文件已落但内容存疑，v0.4.34） | 目标侧只读；PC 侧落盘受 `dump_allowed_paths`（默认 `dumps/`）+ `dump_max_bytes`（默认 64 MB）约束 |
-| `write_memory` | 写内存/寄存器（一条命令写多个值） | `read_only` / `allow_memory_write` |
+| `write_memory` | 写内存/寄存器（一条命令写多个值）；`verify=true` 写后回读比对（v0.4.39——写命令被接受 ≠ 值进去了，不一致 ERROR 带地址/期望/实际） | `read_only` / `allow_memory_write` |
 
 ### 执行控制与逃生舱
 
@@ -450,6 +450,8 @@ dotnet build Ocdup.sln && dotnet test Ocdup.sln --no-build -v q
 | 第五轮 e2e 补强批（v0.4.36，audit F-5/F-6/P2-9/P2-10） | ✅ e2e print-only 段全部补最小断言（工具面 30 工具精确钉死、BLOCKED/read_only 家、超限/坏参、raw 命令替换封堵端到端回归）；flash_erase_sector 快乐路径入 e2e（显式 last 数字下发 + 默认 last=-1 扇区表解析）；watch / doctor CLI 首次入 e2e（CSV 采样 3 行 + doctor FAIL 契约）；假后端 banks 改真机 `#N :` 双 bank 形态（「probe bank 0 不覆盖 bank 1」的真机实测行为首次有自动化）；检查段 →**52**（此前口径 50 含 `def banner` 定义行，本次起按实际调用数计），全段带断言 |
 | 第五轮重构批（v0.4.37，audit F-7/F-8） | ✅ op 字符串契约单一真源 `OpNames`（40+ 处调用点 + ReplaySafeOps 白名单全部引用常量，新增工具/改白名单从此编译期对齐）；SvdTools 弃 `"read_memory"`/`"write_memory"` 别名、寄存器读写按真实工具名归属流量，read_peripheral_register（纯读）显式入重放白名单；Parsing/ResultTag/TrafficLog/Tcl 四个叶子助手下沉 `Ocdup` 根命名空间（src/Ocdup/Common/），**Backend→Tools 与 Launcher→Backend 两处循环依赖解除**，层级回归单向 Cli→Tools→Backend→Launcher |
 | 第五轮发布链加固批（v0.4.38，audit D8-1/D8-2） | ✅ publish.cmd：发布前检查工作树干净（脏树 = 发布仓库里不存在的版本，exit 3）、发布后 `ocdup.exe --version` 冒烟并回显版本 + commit sha；顺带排掉一枚环境雷——脚本里的 `find` 在 Git-Bash 派生 PATH 下会命中 GNU find（`/I`、`/C` 被当盘符路径：锁检查静默失效 / 递归扫全盘卡死），锁检查与计数全部改 findstr + 纯 cmd 计数；CI 加 concurrency 组（同 ref 旧跑自动取消）+ NuGet 缓存 |
+| 现场实战批1·写路径与烧录安全（v0.4.39，session cad81f 校准实战驱动） | ✅ `write_memory` 增 `verify` 回读比对参数（写命令被接受 ≠ 值进去了——现场人肉「写后读回」×8 次的编排固化；不一致 ERROR 带地址/期望/实际）；`flash_write` 前置 halt 默认开（撞机铁律入编排，`allow_exec=false` 降级 NOTE 继续烧；burn CLI 加 `--no-halt`）；`read_memory` 宽读失败自动降级逐字节重试（session 实测 0x40020808 "Failed to read memory" 场景，text 带 fallback 标注 / json 小端重组）；e2e 52→**56** 段；单测 435→**449**；描述 24,708→**25,307 B** |
+| 现场实战批2·观测与错误可操作性（v0.4.40） | ✅ watch 骑字界截断修复（audit 附二 P3：`(addr&3)+size>4` 跨两字读，u32@x…1/2/3、u16@x…3 不再静默截断，e2e 断言翻转钉死）；断链文案从「可能已生效」升级为确定性证据（流量日志有 cmd 无 rsp = 已下发、效果未确认，写类重连后回读定案）；新增 `KnownIssues` 已知故障表（DP cannot read IDR=目标断电/SWD 断线等，命中附行动指引，挂断链文案与启动失败输出尾部）；单测 449→**468** |
 | S5 打包与客户端注册 | 🟡 已注册进 DSH（desktop + web 两个 profile）与 ZCode（`mcp.servers` 条目 + `ocdup-zcode` 插件，均指 `publish/ocdup.exe`）；换机第一步先跑 `ocdup doctor`（v0.4.15） |
 
 后续里程碑（条件断点、L3 协议字典、与 acccom 的串口协同、多后端注册表 Q8 等）见
