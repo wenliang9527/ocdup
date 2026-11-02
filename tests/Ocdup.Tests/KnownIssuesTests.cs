@@ -40,6 +40,17 @@ public sealed class KnownIssuesTests
         Assert.Contains("read the value back", hint);
     }
 
+    [Fact]
+    public void HintFor_ChineseLocaleSocketTeardown_AlsoMatches()
+    {
+        // session cad81f 现场原文（中文 Windows 的 SocketException.Message 是本地化文本，
+        // 英文模式在中文系统上永远不命中——复核批发现并补的模式）
+        var hint = KnownIssues.HintFor("远程主机强迫关闭了一个现有的连接。");
+        Assert.NotNull(hint);
+        Assert.Contains("reconnects automatically", hint);
+        Assert.Contains("read the value back", hint);
+    }
+
     [Theory]
     [InlineData("")]
     [InlineData("0x20000000: 20000000")]

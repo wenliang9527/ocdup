@@ -21,6 +21,11 @@ public static class KnownIssues
         ("remote host forcibly closed",
             "the control channel was torn down at the transport level (backend exit or link loss) - " +
             "the next call reconnects automatically; for writes, read the value back to confirm what landed."),
+        // 中文 Windows 的 SocketException.Message 是本地化文本（session cad81f 现场原文），
+        // 英文模式在中文系统上永远不命中——按原文各自登记，hint 同语义。
+        ("远程主机强迫关闭",
+            "the control channel was torn down at the transport level (backend exit or link loss) - " +
+            "the next call reconnects automatically; for writes, read the value back to confirm what landed."),
     ];
 
     /// <summary>在输出/异常文本里找已知故障模式；命中返回可追加的提示段，否则 null。</summary>
